@@ -6,6 +6,7 @@ version: 1.0.0
 entrypoints:
   - "com.dfsek.terra.addons.dendry.DendryAddon"
 website:
-  issues: https://github.com/user/DendryTerra/issues
-  source: https://github.com/user/DendryTerra
+  issues: https://github.com/diytechy/DendryTerra/issues
+  source: https://github.com/diytechy/DendryTerra
+  docs:   https://github.com/diytechy/DendryTerra
 license: GNU General Public License v3.0
