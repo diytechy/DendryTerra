@@ -1,4 +1,4 @@
-package com.dfsek.terra.addons.dendry;
+package dendryterra;
 
 import com.dfsek.seismic.type.sampler.Sampler;
 import com.dfsek.tectonic.api.config.template.object.ObjectTemplate;

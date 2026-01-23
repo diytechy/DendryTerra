@@ -1,7 +1,7 @@
-package com.dfsek.terra.addons.dendry;
+package dendryterra;
 
 import com.dfsek.seismic.type.sampler.Sampler;
-import com.dfsek.terra.addons.dendry.math.*;
+import dendryterra.math.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

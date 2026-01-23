@@ -1,4 +1,4 @@
-package com.dfsek.terra.addons.dendry.math;
+package dendryterra.math;
 
 /**
  * Mathematical utility functions for Dendry noise generation.

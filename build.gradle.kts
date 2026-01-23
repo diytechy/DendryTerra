@@ -2,7 +2,7 @@ plugins {
     java
 }
 
-group = "com.dfsek.terra.addons"
+group = "dendryterra"
 version = "1.0.0"
 
 repositories {

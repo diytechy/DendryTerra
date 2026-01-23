@@ -1,4 +1,4 @@
-package com.dfsek.terra.addons.dendry.math;
+package dendryterra.math;
 
 /**
  * Immutable 2D vector with direction operations.

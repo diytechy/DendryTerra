@@ -1,4 +1,4 @@
-package com.dfsek.terra.addons.dendry.math;
+package dendryterra.math;
 
 /**
  * Catmull-Rom spline interpolation using chordal parameterization.

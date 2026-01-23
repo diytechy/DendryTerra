@@ -1,4 +1,4 @@
-package com.dfsek.terra.addons.dendry.math;
+package dendryterra.math;
 
 /**
  * Immutable 3D line segment with elevation.

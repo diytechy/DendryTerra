@@ -1,4 +1,4 @@
-package com.dfsek.terra.addons.dendry;
+package dendryterra;
 
 /**
  * Enum representing the different return value types for the Dendry sampler.
