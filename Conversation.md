@@ -155,3 +155,31 @@ PseudoErosionTemplate.java	Template with sampler field
 noise.h	Core C++ algorithm
 spline.cpp	Catmull-Rom implementation
 math2d.cpp	Distance calculations
+
+## Note
+
+My only concern with this implementation is the possibility for the Claud generated function to iterate through points multiple time for each single sample point.  Caching points through the sampler itself or forcing smaller grid windows might be necessary, but it's not clear to me if this is truly necessary without familiarizing with other addons.
+
+After reviewing generated code, there are multiple notes:
+
+Multiple action items:
+
+
+2. When the Dendry sampler is provided, all x,z points in the tool will be passed through the Dendry sampler, please create a flow diagram that shows how functions from DendrySampler.java are stepped through and what conditions might cause some functions to be skipped or used cached results to ultimately provide a result back to the Terra tool.  Add relevant comments into DendrySampler.java for clarity, and provide rationale for any scaling action that is occurring, especially on the x/z coordinate inputs.
+
+################
+
+In the generated flow diagram you note "generateNeighboringPoints3D" uses cached points if they are available, but in the function "generateNeighboringPoints3D", 
+
+
+########################
+
+The noise filter does run, but it takes significantly longer to run than any other sampler.  To improve execution speed and configurability, I have proposed these changes.  Alternatives may exist.
+1. Instead of a parameter "frequency", use a parameter "gridsize" to derive how large the grids are to evaluate.  This will make it more clear to the user how it functions.
+2. Add a parameter "branches" to point to another sampler that will be queried at the center of the cells location to determine the number of branches (In the code called "SUBDIVISIONS") to implement for each cell.  The number of branches should them be stored with other cell information, and should be stored in the cache so it does not need to be recalculated once the cell properties are calculated.  This will allow the number of branches to change on a cell by cell basis.
+3. Update subdivideSegments (and other functions if necessary) to use CatmullRom splines instead of straight linear interpolation.  Add adjustable factors as necessary to give segments  more curvature, noting that more aggressive curvature is typically found at the lowest elevation (branch levels n=1).  Note this may require additional property data to be stored in the Segment3D, especially to get accurate distance calculations.
+4. Update the return option "Distance" to return the 2d distance, if it is not already.  This may require updates to the "findNearestSegment" function.
+5. Update the return option "Weighted" so it truly returns the minimum weighted 2d distance to any segment.  Noting this means the weighted distance to each segment would need to be computed in "findNearestSegment" and the minimum to be return, and therefore it would also require the segment to carry it's level property data, so it's weighted distance can be computed.
+6. The point cache should NOT be initialized, instead the runtime will simply allow points at level 1 to be calculated inherently (by just not existing in the cache) and each cached point should have an age that allows the oldest cache point to be replaced by the newest query point if it does not exist in the cache.
+7. It appears all math functions are being performed using default java functions, can seismic be utilized?  Does Paralithic have application?
+8. There are multiple for loops that don't appear to have sequential dependency, can these be run in parallel?  Or will that already happen automatically?
