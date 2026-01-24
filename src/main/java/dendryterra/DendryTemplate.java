@@ -100,6 +100,48 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double connectDistanceFactor = 2.0;
 
+    // ========== Performance Tuning Flags ==========
+
+    /**
+     * Enable LRU caching of cell data.
+     * Disable to test performance without caching overhead.
+     */
+    @Value("use-cache")
+    @Default
+    private @Meta boolean useCache = true;
+
+    /**
+     * Enable parallel stream processing for large segment lists.
+     * Disable to test sequential processing performance.
+     */
+    @Value("use-parallel")
+    @Default
+    private @Meta boolean useParallel = true;
+
+    /**
+     * Enable Catmull-Rom spline subdivision.
+     * Disable to use simple linear subdivision (faster).
+     */
+    @Value("use-splines")
+    @Default
+    private @Meta boolean useSplines = true;
+
+    /**
+     * Enable debug timing output to console.
+     * Shows per-phase execution times for profiling.
+     */
+    @Value("debug-timing")
+    @Default
+    private @Meta boolean debugTiming = false;
+
+    /**
+     * Threshold for parallel processing (segment count).
+     * Only use parallel streams when segment count exceeds this.
+     */
+    @Value("parallel-threshold")
+    @Default
+    private @Meta int parallelThreshold = 100;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 1 || n > 5) {
@@ -139,7 +181,9 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             returnType, controlSampler, salt,
             branchesSampler, defaultBranches,
             curvature, curvatureFalloff,
-            connectDistance, connectDistanceFactor
+            connectDistance, connectDistanceFactor,
+            useCache, useParallel, useSplines,
+            debugTiming, parallelThreshold
         );
     }
 }

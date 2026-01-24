@@ -9,13 +9,16 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 /**
  * Dendry noise sampler implementing hierarchical multi-resolution branching.
- * Optimized with lazy LRU caching, parallel processing, and configurable parameters.
+ * Optimized with configurable caching, parallel processing, and debug timing.
  */
 public class DendrySampler implements Sampler {
     private static final Logger LOGGER = LoggerFactory.getLogger(DendrySampler.class);
@@ -30,7 +33,7 @@ public class DendrySampler implements Sampler {
     private final Sampler controlSampler;
     private final long salt;
 
-    // New configuration parameters
+    // Branch and curvature parameters
     private final Sampler branchesSampler;
     private final int defaultBranches;
     private final double curvature;
@@ -38,19 +41,25 @@ public class DendrySampler implements Sampler {
     private final double connectDistance;
     private final double connectDistanceFactor;
 
+    // Performance flags
+    private final boolean useCache;
+    private final boolean useParallel;
+    private final boolean useSplines;
+    private final boolean debugTiming;
+    private final int parallelThreshold;
+
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
-    private static final int PARALLEL_THRESHOLD = 100;
 
-    /**
-     * Lazy LRU cache for cell data (points and branch counts).
-     * Replaces the eager 128x128 fixed array with on-demand generation and eviction.
-     */
+    // Lazy LRU cache (optional based on useCache flag)
     private final LoadingCache<Long, CellData> cellCache;
 
-    /**
-     * Cached cell data including point position and branch count.
-     */
+    // Timing statistics (only used when debugTiming is true)
+    private final AtomicLong sampleCount = new AtomicLong(0);
+    private final AtomicLong totalTimeNs = new AtomicLong(0);
+    private volatile long lastLogTime = 0;
+    private static final long LOG_INTERVAL_MS = 5000; // Log every 5 seconds
+
     private static class CellData {
         final Point2D point;
         final int branchCount;
@@ -67,7 +76,9 @@ public class DendrySampler implements Sampler {
                          Sampler controlSampler, long salt,
                          Sampler branchesSampler, int defaultBranches,
                          double curvature, double curvatureFalloff,
-                         double connectDistance, double connectDistanceFactor) {
+                         double connectDistance, double connectDistanceFactor,
+                         boolean useCache, boolean useParallel, boolean useSplines,
+                         boolean debugTiming, int parallelThreshold) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -82,21 +93,32 @@ public class DendrySampler implements Sampler {
         this.curvatureFalloff = curvatureFalloff;
         this.connectDistance = connectDistance;
         this.connectDistanceFactor = connectDistanceFactor;
+        this.useCache = useCache;
+        this.useParallel = useParallel;
+        this.useSplines = useSplines;
+        this.debugTiming = debugTiming;
+        this.parallelThreshold = parallelThreshold;
 
-        // Initialize lazy LRU cache
-        this.cellCache = Caffeine.newBuilder()
-            .maximumSize(MAX_CACHE_SIZE)
-            .build(this::generateCellData);
+        // Initialize cache only if enabled
+        if (useCache) {
+            this.cellCache = Caffeine.newBuilder()
+                .maximumSize(MAX_CACHE_SIZE)
+                .build(this::generateCellData);
+        } else {
+            this.cellCache = null;
+        }
+
+        if (debugTiming) {
+            LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useCache={}, useParallel={}, useSplines={}, parallelThreshold={}",
+                resolution, gridsize, useCache, useParallel, useSplines, parallelThreshold);
+        }
     }
 
-    /**
-     * Generate cell data on demand (called by cache on miss).
-     */
     private CellData generateCellData(Long key) {
         int cellX = unpackX(key);
         int cellY = unpackY(key);
         Point2D point = generatePoint(cellX, cellY);
-        int branches = getBranchCount(cellX, cellY);
+        int branches = computeBranchCount(cellX, cellY);
         return new CellData(point, branches);
     }
 
@@ -112,14 +134,10 @@ public class DendrySampler implements Sampler {
         return (int) key;
     }
 
-    /**
-     * Get branch count for a cell, using branches sampler if available.
-     */
-    private int getBranchCount(int cellX, int cellY) {
+    private int computeBranchCount(int cellX, int cellY) {
         if (branchesSampler == null) {
             return defaultBranches;
         }
-        // Query at cell center in world coordinates
         double centerX = (cellX + 0.5) * gridsize;
         double centerY = (cellY + 0.5) * gridsize;
         int branches = (int) Math.round(branchesSampler.getSample(salt, centerX, centerY));
@@ -128,13 +146,31 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double z) {
-        // Convert world coordinates to noise space by dividing by gridsize
-        return evaluate(seed, x / gridsize, z / gridsize);
+        long startTime = debugTiming ? System.nanoTime() : 0;
+
+        double result = evaluate(seed, x / gridsize, z / gridsize);
+
+        if (debugTiming) {
+            long elapsed = System.nanoTime() - startTime;
+            totalTimeNs.addAndGet(elapsed);
+            long count = sampleCount.incrementAndGet();
+
+            long now = System.currentTimeMillis();
+            if (now - lastLogTime > LOG_INTERVAL_MS) {
+                lastLogTime = now;
+                double avgNs = (double) totalTimeNs.get() / count;
+                double avgMs = avgNs / 1_000_000.0;
+                LOGGER.info("DendrySampler stats: {} samples, avg {:.4f} ms/sample ({:.0f} ns)",
+                    count, avgMs, avgNs);
+            }
+        }
+
+        return result;
     }
 
     @Override
     public double getSample(long seed, double x, double y, double z) {
-        return evaluate(seed, x / gridsize, z / gridsize);
+        return getSample(seed, x, z);
     }
 
     private double evaluate(long seed, double x, double y) {
@@ -153,7 +189,8 @@ public class DendrySampler implements Sampler {
         Cell cell1 = getCell(x, y, 1);
         Point3D[][] points1 = generateNeighboringPoints3D(cell1, 9);
         List<Segment3D> segments1 = generateSegments(points1, 1);
-        segments1 = subdivideSegmentsWithSpline(segments1, getBranchCountForCell(cell1), 1);
+        int branchCount = getBranchCountForCell(cell1);
+        segments1 = subdivideSegments(segments1, branchCount, 1);
         displaceSegments(segments1, displacementLevel1, cell1);
 
         if (resolution == 1) {
@@ -232,17 +269,19 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Get cached cell data (lazy LRU).
+     * Get cell data - uses cache if enabled, otherwise generates directly.
      */
     private CellData getCellData(int cellX, int cellY) {
-        return cellCache.get(packKey(cellX, cellY));
+        if (useCache && cellCache != null) {
+            return cellCache.get(packKey(cellX, cellY));
+        }
+        // Direct generation without caching
+        Point2D point = generatePoint(cellX, cellY);
+        int branches = computeBranchCount(cellX, cellY);
+        return new CellData(point, branches);
     }
 
-    /**
-     * Get branch count for the cell containing this Cell object.
-     */
     private int getBranchCountForCell(Cell cell) {
-        // For base level cells, get from cache
         CellData data = getCellData(cell.x, cell.y);
         return data.branchCount;
     }
@@ -264,7 +303,6 @@ public class DendrySampler implements Sampler {
                 CellData data = getCellData(px, py);
                 Point2D p2d = data.point;
 
-                // Scale by resolution to map cell-space to noise-space
                 Point2D scaled = new Point2D(p2d.x / cell.resolution, p2d.y / cell.resolution);
                 double elevation = evaluateControlFunction(scaled.x, scaled.y);
                 points[i][j] = new Point3D(scaled.x, scaled.y, elevation);
@@ -275,7 +313,6 @@ public class DendrySampler implements Sampler {
 
     private double evaluateControlFunction(double x, double y) {
         if (controlSampler != null) {
-            // Convert noise coordinates back to world coordinates
             return controlSampler.getSample(salt, x * gridsize, y * gridsize);
         }
         return x * 0.1;
@@ -315,22 +352,48 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Subdivide segments using Catmull-Rom splines with curvature blending.
+     * Subdivide segments - uses splines if enabled, otherwise linear.
      */
-    private List<Segment3D> subdivideSegmentsWithSpline(List<Segment3D> segments, int numDivisions, int level) {
+    private List<Segment3D> subdivideSegments(List<Segment3D> segments, int numDivisions, int level) {
         if (segments.isEmpty() || numDivisions <= 1) {
             return segments;
         }
 
-        // Calculate level-adjusted curvature
-        double levelCurvature = curvature * Math.pow(curvatureFalloff, level - 1);
+        if (useSplines && curvature > 0) {
+            return subdivideWithSplines(segments, numDivisions, level);
+        } else {
+            return subdivideLinear(segments, numDivisions, level);
+        }
+    }
 
+    /**
+     * Simple linear subdivision (fast).
+     */
+    private List<Segment3D> subdivideLinear(List<Segment3D> segments, int numDivisions, int level) {
+        List<Segment3D> subdivided = new ArrayList<>();
+
+        for (Segment3D seg : segments) {
+            Point3D prev = seg.a;
+            for (int j = 1; j <= numDivisions; j++) {
+                double t = (double) j / numDivisions;
+                Point3D next = (j == numDivisions) ? seg.b : Point3D.lerp(seg.a, seg.b, t);
+                subdivided.add(new Segment3D(prev, next, level));
+                prev = next;
+            }
+        }
+        return subdivided;
+    }
+
+    /**
+     * Catmull-Rom spline subdivision (smoother but slower).
+     */
+    private List<Segment3D> subdivideWithSplines(List<Segment3D> segments, int numDivisions, int level) {
+        double levelCurvature = curvature * Math.pow(curvatureFalloff, level - 1);
         List<Segment3D> subdivided = new ArrayList<>();
 
         for (int i = 0; i < segments.size(); i++) {
             Segment3D seg = segments.get(i);
 
-            // Get control points (predecessor and successor)
             Point3D p0 = (i > 0) ? segments.get(i - 1).a : seg.a;
             Point3D p1 = seg.a;
             Point3D p2 = seg.b;
@@ -344,7 +407,6 @@ public class DendrySampler implements Sampler {
                 if (j == numDivisions) {
                     next = p2;
                 } else {
-                    // Blend between linear and spline based on curvature
                     Point3D linear = Point3D.lerp(p1, p2, t);
                     Point3D spline = CatmullRomSpline.subdivide(p0, p1, p2, p3, t);
                     next = Point3D.lerp(linear, spline, levelCurvature);
@@ -387,15 +449,11 @@ public class DendrySampler implements Sampler {
         }
     }
 
-    /**
-     * Get the maximum connection distance for a given level.
-     */
     private double getConnectDistance(int level) {
         if (connectDistance > 0) {
             return connectDistance / level;
         }
-        // Auto-calculate based on grid size and level
-        double cellSize = 1.0 / Math.pow(2, level - 1);  // In noise space
+        double cellSize = 1.0 / Math.pow(2, level - 1);
         return cellSize * connectDistanceFactor;
     }
 
@@ -449,15 +507,17 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Find nearest segment using parallel streams for large lists.
-     * Returns 2D distance (Z coordinate ignored in distance calculation).
+     * Find nearest segment - uses parallel streams if enabled and list is large enough.
      */
     private NearestSegmentResult findNearestSegment(Point2D point, List<Segment3D> segments) {
         if (segments.isEmpty()) return null;
 
-        Stream<Segment3D> stream = (segments.size() > PARALLEL_THRESHOLD)
-            ? segments.parallelStream()
-            : segments.stream();
+        Stream<Segment3D> stream;
+        if (useParallel && segments.size() > parallelThreshold) {
+            stream = segments.parallelStream();
+        } else {
+            stream = segments.stream();
+        }
 
         return stream
             .map(seg -> {
@@ -476,15 +536,15 @@ public class DendrySampler implements Sampler {
             .orElse(null);
     }
 
-    /**
-     * Find nearest segment by weighted distance (for WEIGHTED return type).
-     */
     private NearestSegmentResult findNearestSegmentWeighted(Point2D point, List<Segment3D> segments) {
         if (segments.isEmpty()) return null;
 
-        Stream<Segment3D> stream = (segments.size() > PARALLEL_THRESHOLD)
-            ? segments.parallelStream()
-            : segments.stream();
+        Stream<Segment3D> stream;
+        if (useParallel && segments.size() > parallelThreshold) {
+            stream = segments.parallelStream();
+        } else {
+            stream = segments.stream();
+        }
 
         return stream
             .map(seg -> {
@@ -508,7 +568,6 @@ public class DendrySampler implements Sampler {
 
         switch (returnType) {
             case DISTANCE:
-                // Return 2D distance to nearest segment
                 NearestSegmentResult nearestDist = findNearestSegment(point, segments);
                 if (nearestDist == null) {
                     return evaluateControlFunction(x, y);
@@ -516,7 +575,6 @@ public class DendrySampler implements Sampler {
                 return nearestDist.distance;
 
             case WEIGHTED:
-                // Return minimum weighted distance (distance / segment.level)
                 NearestSegmentResult nearestWeighted = findNearestSegmentWeighted(point, segments);
                 if (nearestWeighted == null) {
                     return evaluateControlFunction(x, y);
@@ -525,7 +583,6 @@ public class DendrySampler implements Sampler {
 
             case ELEVATION:
             default:
-                // Return elevation-based result
                 NearestSegmentResult nearest = findNearestSegment(point, segments);
                 if (nearest == null) {
                     return evaluateControlFunction(x, y);

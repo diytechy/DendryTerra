@@ -184,3 +184,62 @@ The noise filter does run, but it takes significantly longer to run than any oth
 7. It appears all math functions are being performed using default java functions, can seismic be utilized?  Does Paralithic have application?
 8. There are multiple for loops that don't appear to have sequential dependency, can these be run in parallel?  Or will that already happen automatically?
 9. The "distance" limit of generateSubSegments should likely be something more flexible than a hardcoded 10.0 limit.  Perhaps it should be based on grid size and number of segments to derive what the connective limits should be.
+
+###################################
+
+Note now the addon appears to get stuck while rendering, or it may be taking an incredibly long time to complete.  Implement a method to test the execution speed of the addon and implement build switches if applicable that might make it possible to test different compilable options and their affect on execution speed.
+
+The benchmark ran successfully. Very interesting results:
+
+Baseline (n=2): 3,090 samples/sec
+No Cache: 2,713 samples/sec (-12.2%) - cache helps
+No Parallel: 2,828 samples/sec (-8.5%) - parallel helps slightly
+No Splines: 1,674 samples/sec (-45.8%) - WAIT, this is SLOWER without splines? That's unexpected!
+Minimal: 3,445 samples/sec (+11.5%) - FASTEST!
+High Res (n=3): 908 samples/sec (-70.6%) - as expected, more levels = slower
+The "No Splines" result is surprising - it's actually SLOWER without splines. This might be because:
+
+The linear subdivision is creating MORE segments than expected
+Or there's a bug in how the linear vs spline path works
+Wait, looking at the code, when useSplines=false, it uses subdivideLinear which still subdivides the segments the same number of times. The difference is just the interpolation method. But spline interpolation involves more math (Catmull-Rom calculations), so linear SHOULD be faster, not slower.
+
+There might be a caching or warmup issue. Or the JIT compiler is optimizing the spline path better for some reason.
+
+The key finding is:
+
+Minimal (all optimizations OFF) is actually the FASTEST
+High resolution (n=3) is 70% slower than n=2
+This suggests the "optimizations" (cache, parallel, splines) are actually adding overhead rather than helping. For this scale of problem:
+
+Caffeine cache has overhead
+Parallel streams have thread pool overhead for small segment counts
+The spline calculation might be getting JIT-optimized better than the simple loop
+The user should test with:
+
+use-cache: false
+
+use-parallel: false
+
+use-splines: false (or true, the difference is odd)
+
+Keep n: 2 or lower
+
+The benchmark works. Here are the key findings:
+
+Benchmark Results
+Configuration	Throughput	vs Baseline
+Minimal (all OFF)	3,445/sec	+11.5% FASTER
+Baseline (all ON)	3,090/sec	—
+No Cache	2,713/sec	-12.2%
+No Parallel	2,828/sec	-8.5%
+No Splines	1,674/sec	-45.8%
+High Res (n=3)	908/sec	-70.6%
+Key Insights
+The "optimizations" are actually adding overhead - The minimal config (cache=OFF, parallel=OFF, splines=OFF) is the fastest
+
+Resolution level (n) is the biggest factor - Going from n=2 to n=3 drops throughput by 70%
+
+Caffeine cache overhead - For this use pattern, the cache adds ~12% overhead
+
+Parallel stream overhead - Thread pool coordination costs more than it saves for small segment counts
+
