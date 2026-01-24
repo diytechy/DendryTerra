@@ -37,7 +37,7 @@ public class DendryBenchmarkRunner {
         double delta = 0.05;
         double slope = 0.005;
         double gridsize = 1000.0;
-        DendryReturnType returnType = DendryReturnType.ELEVATION;
+        DendryReturnType returnType = DendryReturnType.DISTANCE;
         long salt = 12345;
         int defaultBranches = 2;
         double curvature = 0.5;
