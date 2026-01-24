@@ -174,7 +174,7 @@ In the generated flow diagram you note "generateNeighboringPoints3D" uses cached
 
 ########################
 
-The noise filter does run, but it takes significantly longer to run than any other sampler.  To improve execution speed and configurability, I have proposed these changes.  Alternatives may exist.
+The noise filter does run, but it takes significantly longer to run than any other sampler.  To improve execution speed, accuracy, and configurability, I have proposed these changes.  Alternatives may exist.
 1. Instead of a parameter "frequency", use a parameter "gridsize" to derive how large the grids are to evaluate.  This will make it more clear to the user how it functions.
 2. Add a parameter "branches" to point to another sampler that will be queried at the center of the cells location to determine the number of branches (In the code called "SUBDIVISIONS") to implement for each cell.  The number of branches should them be stored with other cell information, and should be stored in the cache so it does not need to be recalculated once the cell properties are calculated.  This will allow the number of branches to change on a cell by cell basis.
 3. Update subdivideSegments (and other functions if necessary) to use CatmullRom splines instead of straight linear interpolation.  Add adjustable factors as necessary to give segments  more curvature, noting that more aggressive curvature is typically found at the lowest elevation (branch levels n=1).  Note this may require additional property data to be stored in the Segment3D, especially to get accurate distance calculations.

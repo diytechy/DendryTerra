@@ -28,7 +28,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
 
     @Value("slope")
     @Default
-    private @Meta double slope = 0.5;
+    private @Meta double slope = 0.005;
 
     /**
      * Grid cell size in world units. Replaces the old 'frequency' parameter.
@@ -66,7 +66,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("default-branches")
     @Default
-    private @Meta int defaultBranches = 4;
+    private @Meta int defaultBranches = 2;
 
     /**
      * Curvature factor for Catmull-Rom spline subdivision.
