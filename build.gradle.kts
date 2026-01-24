@@ -19,6 +19,7 @@ dependencies {
     compileOnly("com.dfsek.terra:base:7.0.0-BETA+a159debe3")
     compileOnly("com.dfsek.tectonic:common:4.2.1")
     compileOnly("org.slf4j:slf4j-api:2.0.9")
+    compileOnly("com.github.ben-manes.caffeine:caffeine:3.1.8")
 }
 
 java {

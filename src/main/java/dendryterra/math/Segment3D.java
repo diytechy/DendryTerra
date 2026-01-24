@@ -1,15 +1,27 @@
 package dendryterra.math;
 
 /**
- * Immutable 3D line segment with elevation.
+ * Immutable 3D line segment with elevation and resolution level.
  */
 public final class Segment3D {
     public final Point3D a;
     public final Point3D b;
+    public final int level;  // Resolution level that created this segment (1-5)
 
-    public Segment3D(Point3D a, Point3D b) {
+    /**
+     * Create a segment with specified resolution level.
+     */
+    public Segment3D(Point3D a, Point3D b, int level) {
         this.a = a;
         this.b = b;
+        this.level = level;
+    }
+
+    /**
+     * Create a segment with default level 1 (backward compatible).
+     */
+    public Segment3D(Point3D a, Point3D b) {
+        this(a, b, 1);
     }
 
     public double lengthSquared() {
@@ -44,7 +56,7 @@ public final class Segment3D {
     }
 
     /**
-     * Subdivide this segment into n equal segments.
+     * Subdivide this segment into n equal segments, preserving the level.
      */
     public Segment3D[] subdivide(int n) {
         if (n <= 0) throw new IllegalArgumentException("n must be positive");
@@ -55,7 +67,7 @@ public final class Segment3D {
         for (int i = 0; i < n; i++) {
             double t = (double)(i + 1) / n;
             Point3D next = (i == n - 1) ? b : Point3D.lerp(a, b, t);
-            segments[i] = new Segment3D(prev, next);
+            segments[i] = new Segment3D(prev, next, this.level);
             prev = next;
         }
 
@@ -76,6 +88,6 @@ public final class Segment3D {
 
     @Override
     public String toString() {
-        return "Segment3D(" + a + " -> " + b + ")";
+        return "Segment3D(" + a + " -> " + b + ", level=" + level + ")";
     }
 }

@@ -1,7 +1,11 @@
 package dendryterra.math;
 
+import com.dfsek.seismic.math.numericanalysis.interpolation.InterpolationFunctions;
+import com.dfsek.seismic.math.floatingpoint.FloatingPointFunctions;
+
 /**
  * Mathematical utility functions for Dendry noise generation.
+ * Uses Seismic library functions where available for optimization.
  */
 public final class MathUtils {
 
@@ -11,9 +15,17 @@ public final class MathUtils {
 
     /**
      * Linear interpolation between a and b.
+     * Delegates to Seismic's optimized implementation.
      */
     public static double lerp(double a, double b, double t) {
-        return a + t * (b - a);
+        return InterpolationFunctions.lerp(a, b, t);
+    }
+
+    /**
+     * Fast floor operation using Seismic.
+     */
+    public static int floor(double x) {
+        return FloatingPointFunctions.floor(x);
     }
 
     /**

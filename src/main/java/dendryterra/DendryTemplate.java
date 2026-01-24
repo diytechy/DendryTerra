@@ -30,14 +30,21 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double slope = 0.5;
 
-    @Value("frequency")
+    /**
+     * Grid cell size in world units. Replaces the old 'frequency' parameter.
+     * A gridsize of 1000 means each base grid cell covers 1000x1000 blocks.
+     */
+    @Value("gridsize")
     @Default
-    private @Meta double frequency = 0.001;
+    private @Meta double gridsize = 1000.0;
 
     @Value("return")
     @Default
     private @Meta DendryReturnType returnType = DendryReturnType.ELEVATION;
 
+    /**
+     * Control sampler for base elevation.
+     */
     @Value("sampler")
     @Default
     private @Meta Sampler controlSampler = null;
@@ -45,6 +52,53 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Value("salt")
     @Default
     private @Meta long salt = 0;
+
+    /**
+     * Optional sampler to determine branch count per cell.
+     * Queried at cell center; output clamped to [1, 8].
+     */
+    @Value("branches")
+    @Default
+    private @Meta Sampler branchesSampler = null;
+
+    /**
+     * Default branch count when no branches sampler is provided.
+     */
+    @Value("default-branches")
+    @Default
+    private @Meta int defaultBranches = 4;
+
+    /**
+     * Curvature factor for Catmull-Rom spline subdivision.
+     * 0 = linear interpolation, 1 = full spline curvature.
+     */
+    @Value("curvature")
+    @Default
+    private @Meta double curvature = 0.5;
+
+    /**
+     * Curvature falloff per level. Each level's curvature is multiplied by this.
+     * Lower values = less curvature at finer detail levels.
+     */
+    @Value("curvature-falloff")
+    @Default
+    private @Meta double curvatureFalloff = 0.7;
+
+    /**
+     * Maximum distance for sub-segment connection.
+     * 0 = auto-calculate based on grid size.
+     */
+    @Value("connect-distance")
+    @Default
+    private @Meta double connectDistance = 0;
+
+    /**
+     * Multiplier for auto-calculated connect distance.
+     * connectDistance = cellSize * connectDistanceFactor
+     */
+    @Value("connect-distance-factor")
+    @Default
+    private @Meta double connectDistanceFactor = 2.0;
 
     @Override
     public boolean validate() throws ValidationException {
@@ -57,14 +111,35 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (delta < 0) {
             throw new ValidationException("delta must be non-negative, got: " + delta);
         }
+        if (gridsize <= 0) {
+            throw new ValidationException("gridsize must be positive, got: " + gridsize);
+        }
+        if (defaultBranches < 1 || defaultBranches > 8) {
+            throw new ValidationException("default-branches must be between 1 and 8, got: " + defaultBranches);
+        }
+        if (curvature < 0 || curvature > 1) {
+            throw new ValidationException("curvature must be in range [0, 1], got: " + curvature);
+        }
+        if (curvatureFalloff < 0 || curvatureFalloff > 1) {
+            throw new ValidationException("curvature-falloff must be in range [0, 1], got: " + curvatureFalloff);
+        }
+        if (connectDistance < 0) {
+            throw new ValidationException("connect-distance must be non-negative, got: " + connectDistance);
+        }
+        if (connectDistanceFactor <= 0) {
+            throw new ValidationException("connect-distance-factor must be positive, got: " + connectDistanceFactor);
+        }
         return true;
     }
 
     @Override
     public Sampler get() {
         return new DendrySampler(
-            n, epsilon, delta, slope, frequency,
-            returnType, controlSampler, salt
+            n, epsilon, delta, slope, gridsize,
+            returnType, controlSampler, salt,
+            branchesSampler, defaultBranches,
+            curvature, curvatureFalloff,
+            connectDistance, connectDistanceFactor
         );
     }
 }
