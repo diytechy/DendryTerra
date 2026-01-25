@@ -292,3 +292,35 @@ I've updated the function to ensure two level 0 segments are connected so that t
 Can you update "generateLevel0Segments" or create a new function that runs after level0 segment creation that ensures nodes are only linked through a single segment or set of segments (only a single path should exist from any level 0 node to another level 0 node)
 
 Also, please confirm that the point data for each cell (CellData data = getCellData(cellX, cellY);) provides a consistent response for the X/Y coordinates even on successive calls, as in subsequent calls it appears to use rng.nextDouble() to generate new random values, but anytime a point is queries at a specific level for a specific position, it should return the same value.  It is not clear to me if that is occurring.
+
+#####################################################33
+
+"LinesAreStraight.png" shows level 0 lines are connected as expected, but the segments are very straight.  Is the distance actually returning the distance to the spline?  If so, what can be done to pronounce the curvature of the splines?
+
+###########################################################
+
+"SlightCurvatureButSegmented.png" shows there is now slight curvature, but some segments are once-again not connected.  When subdivision is occurring are some connections getting lost?  In regards to the lack of curvature, when displacement is occurring, is it weighted against the point distance or is it fixed?  Finally, most of the connections are either horizontal or vertical, due to the way the cell 0 points are positioned randomly with flat probability and the fact that closest distance is Euclidean.  Is there a way the point distribution into cells or distance calculation can be modified so that all connection angles have a similar probability of occurring?
+
+###########################################################
+
+"Disjointed.png" shows some disjointed behavior at the grid boundary, this picture was located at x=275,z=875, to x=650, z=1340.  Is the method used to segment and displace spline points also deterministic (derived from the connected points and salt), or could that randomness be causing these boundary artifacts?
+
+###########################################################
+
+Next up:
+
+Continue from previous discussion.
+
+At later levels (2/3/ ect) the points and segments should still be generated for surrounding level 1 cells so that their segments can be selected by the center cell level 1 points.
+
+Verify cell-crossing segments for other levels (level 1/2/ect) is also deterministic when building the spline.
+
+After segments are split, are their used both to create the spline and to act as nodes for future level segments to connect to?
+
+If a point does not have a segment path back to level 0, it should be removed.
+
+Create two new return types:
+block_elevation
+block_level
+
+If either is requested, the algorithm can store the entire cell segment solution in an array of structures representing blocks.  So after calculating all the levels, each segment would be evaluated so it's rasterized / pixilated definition could be stored for the cell.  It's x,y position is rounded to the nearest integer offset in the cell, it's elevation is stored in single, and it's level is stored as a uint8.  Then all of this could be stored to a rolling buffer that contains the block data for the last n number of cells, and set of block data (being only 8 bytes per point) should be able to be stored in a few kilobytes of RAM for a gridsize of 1000 blocks.  That way the pixilated definition of a cell would be calculated all at once, and any queries to that cell for block_elevation or block_level would be able to be returned immediately.  If there is no segment for the requested x,z pair, a value of 0 for elevation and -1 for level could be returned.  The amount of cells to allocate and round-robbin would be based on the gridsize, not to exceed 20 MB.

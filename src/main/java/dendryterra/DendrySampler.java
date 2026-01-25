@@ -190,14 +190,15 @@ public class DendrySampler implements Sampler {
         // Level 0: Root network spanning 5x5 level 1 cells
         Cell cell1 = getCell(x, y, 1);
         Point3D[][] level0Points = generateLevel0Points(cell1);
-        List<Segment3D> segments0 = generateLevel0Segments(level0Points);
+        List<Segment3D> segments0 = generateLevel0Segments(level0Points, cell1);
 
         // Subdivide and displace level 0 for curvature (larger displacement than level 1)
         double displacementLevel0 = delta * 2.0;
         int level0Subdivisions = Math.max(2, defaultBranches);  // at least 2 subdivisions
         segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
         // Use split-based displacement for tree structures (preserves all connections)
-        segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, cell1);
+        // Pass level 0 for deterministic seeding based on absolute segment coordinates
+        segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, 0);
 
         // Prune level 0 segments not connected to inner 3x3
         double innerMinX = cell1.x - 1;
@@ -361,33 +362,28 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Generate level 0 segments using minimum spanning tree.
-     * Ensures only a single path exists between any two nodes (no cycles).
-     * Uses Kruskal's algorithm with Union-Find.
+     * Generate level 0 segments using deterministic per-cell connections.
+     * Each cell connects to its lowest-priority neighbor (based on hash).
+     * This ensures consistent connections regardless of query position.
      */
-    private List<Segment3D> generateLevel0Segments(Point3D[][] points) {
+    private List<Segment3D> generateLevel0Segments(Point3D[][] points, Cell centerCell) {
         int size = points.length;  // 5
+        List<Segment3D> segments = new ArrayList<>();
 
-        // Flatten points to 1D array for easier indexing
-        List<Point3D> pointList = new ArrayList<>();
+        // For each cell in the grid, connect to lowest-priority neighbor
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                pointList.add(points[i][j]);
-            }
-        }
-        int n = pointList.size();  // 25
+                // Absolute cell coordinates
+                int cellX = centerCell.x + j - 2;
+                int cellY = centerCell.y + i - 2;
+                Point3D current = points[i][j];
+                long currentPriority = cellPriority(cellX, cellY);
 
-        // Build all possible edges between neighboring points
-        // Normalize distances to remove bias toward axis-aligned connections
-        List<Edge> edges = new ArrayList<>();
-        double sqrt2 = Math.sqrt(2.0);
+                // Find the neighbor with lowest priority
+                Point3D lowestNeighbor = null;
+                long lowestPriority = currentPriority;  // Only connect to lower priority
+                int lowestDi = 0, lowestDj = 0;
 
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                int idx1 = i * size + j;
-                Point3D p1 = pointList.get(idx1);
-
-                // Check all 8 neighbors
                 for (int di = -1; di <= 1; di++) {
                     for (int dj = -1; dj <= 1; dj++) {
                         if (di == 0 && dj == 0) continue;
@@ -395,44 +391,23 @@ public class DendrySampler implements Sampler {
                         int nj = j + dj;
                         if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
 
-                        int idx2 = ni * size + nj;
-                        if (idx2 <= idx1) continue;  // Avoid duplicate edges
+                        int neighborCellX = centerCell.x + nj - 2;
+                        int neighborCellY = centerCell.y + ni - 2;
+                        long neighborPriority = cellPriority(neighborCellX, neighborCellY);
 
-                        Point3D p2 = pointList.get(idx2);
-                        double dist = p1.projectZ().distanceTo(p2.projectZ());
-
-                        // Normalize diagonal distances by sqrt(2) to remove axis-aligned bias
-                        // Diagonals expect sqrt(2) times the distance of axis-aligned neighbors
-                        boolean isDiagonal = (di != 0 && dj != 0);
-                        double normalizedDist = isDiagonal ? dist / sqrt2 : dist;
-
-                        edges.add(new Edge(idx1, idx2, normalizedDist, p1, p2));
+                        if (neighborPriority < lowestPriority) {
+                            lowestPriority = neighborPriority;
+                            lowestNeighbor = points[ni][nj];
+                            lowestDi = di;
+                            lowestDj = dj;
+                        }
                     }
                 }
-            }
-        }
 
-        // Sort edges by distance (Kruskal's algorithm)
-        edges.sort(Comparator.comparingDouble(e -> e.distance));
-
-        // Union-Find for cycle detection
-        int[] parent = new int[n];
-        int[] rank = new int[n];
-        for (int i = 0; i < n; i++) {
-            parent[i] = i;
-            rank[i] = 0;
-        }
-
-        // Build MST
-        List<Segment3D> segments = new ArrayList<>();
-        for (Edge edge : edges) {
-            int rootA = find(parent, edge.idx1);
-            int rootB = find(parent, edge.idx2);
-
-            if (rootA != rootB) {
-                // Add edge to MST
-                segments.add(new Segment3D(edge.p1, edge.p2, 0));
-                union(parent, rank, rootA, rootB);
+                // Connect to lowest priority neighbor if one exists
+                if (lowestNeighbor != null) {
+                    segments.add(new Segment3D(current, lowestNeighbor, 0));
+                }
             }
         }
 
@@ -440,44 +415,16 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Edge class for MST algorithm.
+     * Compute a deterministic priority for a cell based on its absolute coordinates.
+     * Lower priority = this cell is a "sink" that others connect to.
+     * Uses a hash function to create pseudo-random but deterministic priorities.
      */
-    private static class Edge {
-        final int idx1, idx2;
-        final double distance;
-        final Point3D p1, p2;
-
-        Edge(int idx1, int idx2, double distance, Point3D p1, Point3D p2) {
-            this.idx1 = idx1;
-            this.idx2 = idx2;
-            this.distance = distance;
-            this.p1 = p1;
-            this.p2 = p2;
-        }
-    }
-
-    /**
-     * Find root with path compression (Union-Find).
-     */
-    private int find(int[] parent, int i) {
-        if (parent[i] != i) {
-            parent[i] = find(parent, parent[i]);
-        }
-        return parent[i];
-    }
-
-    /**
-     * Union by rank (Union-Find).
-     */
-    private void union(int[] parent, int[] rank, int x, int y) {
-        if (rank[x] < rank[y]) {
-            parent[x] = y;
-        } else if (rank[x] > rank[y]) {
-            parent[y] = x;
-        } else {
-            parent[y] = x;
-            rank[x]++;
-        }
+    private long cellPriority(int cellX, int cellY) {
+        // Use a simple hash combining coordinates with salt for deterministic priority
+        long hash = cellX * 73856093L ^ cellY * 19349663L ^ salt;
+        // Mix bits for better distribution
+        hash = hash * 0x5851F42D4C957F2DL + 0x14057B7EF767814FL;
+        return hash & 0x7FFFFFFFFFFFFFFFL;  // Ensure positive
     }
 
     /**
@@ -676,8 +623,9 @@ public class DendrySampler implements Sampler {
      * Displace segments by splitting each into two segments with a displaced midpoint.
      * Displacement is proportional to segment length for consistent curvature appearance.
      * Returns a new list (does not modify input list structure).
+     * Uses absolute segment coordinates for deterministic displacement regardless of query position.
      */
-    private List<Segment3D> displaceSegmentsWithSplit(List<Segment3D> segments, double displacementFactor, Cell cell) {
+    private List<Segment3D> displaceSegmentsWithSplit(List<Segment3D> segments, double displacementFactor, int level) {
         if (displacementFactor < MathUtils.EPSILON) return segments;
 
         List<Segment3D> result = new ArrayList<>();
@@ -693,7 +641,10 @@ public class DendrySampler implements Sampler {
 
             Vec2D perp = dir.rotateCCW90().normalize();
 
-            Random rng = initRandomGenerator((int)(seg.a.x * 100), (int)(seg.a.y * 100), cell.resolution);
+            // Use both endpoints for seed to ensure determinism based on segment identity
+            int seedX = (int)((seg.a.x + seg.b.x) * 50);
+            int seedY = (int)((seg.a.y + seg.b.y) * 50);
+            Random rng = initRandomGenerator(seedX, seedY, level);
             // Displacement proportional to segment length
             double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
 
