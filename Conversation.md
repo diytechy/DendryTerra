@@ -251,7 +251,7 @@ This means segments must be computed outside the cells, since each cell must hav
 
 Looking at why root segment does not traverse / span cell for interconnection:
 
-The issue now is that cells are not connected to each-other with segments (SegmentsNotCrossingBoundaries.png), this appears to be due to how this filter code was implemented originally, as it seems it was only intended to emulate segment connections within a single cell region.
+The issue now is that cells are not connected to each-other with segments (SegmentsNotCrossingBoundaries.png, which spans x and z from about 0 to 4000 roughly), this appears to be due to how this filter code was implemented originally, as it seems it was only intended to emulate segment connections within a single cell region.
 
 In order to rectify this, I would like you to implement the following changes, but there may be alternatives.
 

@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -180,30 +181,50 @@ public class DendrySampler implements Sampler {
         double displacementLevel3 = displacementLevel2 / 4.0;
 
         // Minimum slope constraints for sub-branch connections
+        double minSlopeLevel1 = 0.5;
         double minSlopeLevel2 = 0.9;
         double minSlopeLevel3 = 0.18;
         double minSlopeLevel4 = 0.38;
         double minSlopeLevel5 = 1.0;
-        // Level 1: Base Resolution
+
+        // Level 0: Root network spanning 5x5 level 1 cells
         Cell cell1 = getCell(x, y, 1);
-        Point3D[][] points1 = generateNeighboringPoints3D(cell1, 9);
-        List<Segment3D> segments1 = generateSegments(points1, 1);
+        Point3D[][] level0Points = generateLevel0Points(cell1);
+        List<Segment3D> segments0 = generateLevel0Segments(level0Points);
+
+        // Prune level 0 segments not connected to inner 3x3
+        double innerMinX = cell1.x - 1;
+        double innerMaxX = cell1.x + 2;
+        double innerMinY = cell1.y - 1;
+        double innerMaxY = cell1.y + 2;
+        segments0 = pruneDisconnectedSegments(segments0, innerMinX, innerMinY, innerMaxX, innerMaxY);
+
+        if (resolution == 0) {
+            return computeResult(x, y, segments0);
+        }
+
+        // Level 1: Process 3x3 cells around query cell
+        List<Segment3D> segments1 = generateLevel1Segments(cell1, segments0, minSlopeLevel1);
+        segments1 = pruneAwaySegments(segments1, cell1);
+
         int branchCount = getBranchCountForCell(cell1);
         segments1 = subdivideSegments(segments1, branchCount, 1);
         displaceSegments(segments1, displacementLevel1, cell1);
 
+        List<Segment3D> allSegments = new ArrayList<>(segments0);
+        allSegments.addAll(segments1);
+
         if (resolution == 1) {
-            return computeResult(x, y, segments1);
+            return computeResult(x, y, allSegments);
         }
 
         // Level 2: 2x Resolution
         Cell cell2 = getCell(x, y, 2);
         Point3D[][] points2 = generateNeighboringPoints3D(cell2, 5);
-        List<Segment3D> segments2 = generateSubSegments(points2, segments1, minSlopeLevel2, 2);
+        List<Segment3D> segments2 = generateSubSegments(points2, allSegments, minSlopeLevel2, 2);
         displaceSegments(segments2, displacementLevel2, cell2);
 
         if (resolution == 2) {
-            List<Segment3D> allSegments = new ArrayList<>(segments1);
             allSegments.addAll(segments2);
             return computeResult(x, y, allSegments);
         }
@@ -211,35 +232,34 @@ public class DendrySampler implements Sampler {
         // Level 3: 4x Resolution
         Cell cell3 = getCell(x, y, 4);
         Point3D[][] points3 = generateNeighboringPoints3D(cell3, 5);
-        List<Segment3D> allPreviousSegments = new ArrayList<>(segments1);
-        allPreviousSegments.addAll(segments2);
-        List<Segment3D> segments3 = generateSubSegments(points3, allPreviousSegments, minSlopeLevel3, 3);
+        allSegments.addAll(segments2);
+        List<Segment3D> segments3 = generateSubSegments(points3, allSegments, minSlopeLevel3, 3);
         displaceSegments(segments3, displacementLevel3, cell3);
 
         if (resolution == 3) {
-            allPreviousSegments.addAll(segments3);
-            return computeResult(x, y, allPreviousSegments);
+            allSegments.addAll(segments3);
+            return computeResult(x, y, allSegments);
         }
 
         // Level 4: 8x Resolution
         Cell cell4 = getCell(x, y, 8);
         Point3D[][] points4 = generateNeighboringPoints3D(cell4, 5);
-        allPreviousSegments.addAll(segments3);
-        List<Segment3D> segments4 = generateSubSegments(points4, allPreviousSegments, minSlopeLevel4, 4);
+        allSegments.addAll(segments3);
+        List<Segment3D> segments4 = generateSubSegments(points4, allSegments, minSlopeLevel4, 4);
 
         if (resolution == 4) {
-            allPreviousSegments.addAll(segments4);
-            return computeResult(x, y, allPreviousSegments);
+            allSegments.addAll(segments4);
+            return computeResult(x, y, allSegments);
         }
 
         // Level 5: 16x Resolution
         Cell cell5 = getCell(x, y, 16);
         Point3D[][] points5 = generateNeighboringPoints3D(cell5, 5);
-        allPreviousSegments.addAll(segments4);
-        List<Segment3D> segments5 = generateSubSegments(points5, allPreviousSegments, minSlopeLevel5, 5);
-        allPreviousSegments.addAll(segments5);
+        allSegments.addAll(segments4);
+        List<Segment3D> segments5 = generateSubSegments(points5, allSegments, minSlopeLevel5, 5);
+        allSegments.addAll(segments5);
 
-        return computeResult(x, y, allPreviousSegments);
+        return computeResult(x, y, allSegments);
     }
 
     private static class Cell {
@@ -308,6 +328,152 @@ public class DendrySampler implements Sampler {
             }
         }
         return points;
+    }
+
+    /**
+     * Generate level 0 points: one per level 1 cell in a 5x5 grid.
+     * All points have elevation 0 (flat network layer).
+     */
+    private Point3D[][] generateLevel0Points(Cell cell1) {
+        Point3D[][] points = new Point3D[5][5];
+
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 5; j++) {
+                int cellX = cell1.x + j - 2;  // -2 to +2 offset
+                int cellY = cell1.y + i - 2;
+
+                // Get the jittered point for this cell (reuse existing logic)
+                CellData data = getCellData(cellX, cellY);
+                Point2D p2d = data.point;
+
+                // Level 0 points are at elevation 0
+                points[i][j] = new Point3D(p2d.x, p2d.y, 0.0);
+            }
+        }
+        return points;
+    }
+
+    /**
+     * Generate level 0 segments by connecting each point to nearest neighbor.
+     * Uses 2D distance, not elevation-based flow.
+     */
+    private List<Segment3D> generateLevel0Segments(Point3D[][] points) {
+        List<Segment3D> segments = new ArrayList<>();
+        int size = points.length;  // 5
+
+        // Process inner 3x3 (indices 1-3)
+        for (int i = 1; i < size - 1; i++) {
+            for (int j = 1; j < size - 1; j++) {
+                Point3D current = points[i][j];
+
+                // Find nearest neighbor by 2D distance
+                double minDist = Double.MAX_VALUE;
+                Point3D nearest = null;
+
+                for (int di = -1; di <= 1; di++) {
+                    for (int dj = -1; dj <= 1; dj++) {
+                        if (di == 0 && dj == 0) continue;
+
+                        Point3D neighbor = points[i + di][j + dj];
+                        double dist = current.projectZ().distanceTo(neighbor.projectZ());
+
+                        if (dist < minDist) {
+                            minDist = dist;
+                            nearest = neighbor;
+                        }
+                    }
+                }
+
+                if (nearest != null && minDist > MathUtils.EPSILON) {
+                    segments.add(new Segment3D(current, nearest, 0));  // level = 0
+                }
+            }
+        }
+        return segments;
+    }
+
+    /**
+     * Remove segments that don't connect to the inner 3x3 cell region.
+     */
+    private List<Segment3D> pruneDisconnectedSegments(List<Segment3D> segments,
+                                                       double minX, double minY,
+                                                       double maxX, double maxY) {
+        return segments.stream()
+            .filter(seg -> {
+                // Keep if either endpoint is within inner region
+                boolean aInside = isPointInBounds(seg.a, minX, minY, maxX, maxY);
+                boolean bInside = isPointInBounds(seg.b, minX, minY, maxX, maxY);
+                return aInside || bInside;
+            })
+            .collect(Collectors.toList());
+    }
+
+    private boolean isPointInBounds(Point3D p, double minX, double minY,
+                                     double maxX, double maxY) {
+        return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+    }
+
+    /**
+     * Generate level 1 segments for 3x3 cell region around query cell.
+     */
+    private List<Segment3D> generateLevel1Segments(Cell queryCell, List<Segment3D> parentSegments, double minSlope) {
+        List<Segment3D> allSegments = new ArrayList<>();
+
+        // Process 3x3 grid of level 1 cells
+        for (int di = -1; di <= 1; di++) {
+            for (int dj = -1; dj <= 1; dj++) {
+                Cell cell = new Cell(queryCell.x + dj, queryCell.y + di, 1);
+
+                // Generate points for this cell's neighborhood (5x5 including neighbors)
+                Point3D[][] points = generateNeighboringPoints3D(cell, 5);
+
+                // Generate segments that connect to parent (level 0) segments
+                List<Segment3D> cellSegments = generateSubSegments(points, parentSegments, minSlope, 1);
+                allSegments.addAll(cellSegments);
+            }
+        }
+
+        return allSegments;
+    }
+
+    /**
+     * Prune segments that start outside query cell and move away from it.
+     */
+    private List<Segment3D> pruneAwaySegments(List<Segment3D> segments, Cell queryCell) {
+        // Query cell center in normalized coordinates
+        double centerX = (queryCell.x + 0.5) / queryCell.resolution;
+        double centerY = (queryCell.y + 0.5) / queryCell.resolution;
+        Point2D center = new Point2D(centerX, centerY);
+
+        // Query cell bounds
+        double cellMinX = (double) queryCell.x / queryCell.resolution;
+        double cellMaxX = (double) (queryCell.x + 1) / queryCell.resolution;
+        double cellMinY = (double) queryCell.y / queryCell.resolution;
+        double cellMaxY = (double) (queryCell.y + 1) / queryCell.resolution;
+
+        return segments.stream()
+            .filter(seg -> {
+                Point2D a = seg.a.projectZ();
+                Point2D b = seg.b.projectZ();
+
+                // If segment starts inside query cell, keep it
+                if (isInCell(a, cellMinX, cellMinY, cellMaxX, cellMaxY)) {
+                    return true;
+                }
+
+                // Segment starts outside - check if it moves toward center
+                double distA = a.distanceTo(center);
+                double distB = b.distanceTo(center);
+
+                // Keep if endpoint B is closer to center than A (moving toward)
+                return distB < distA;
+            })
+            .collect(Collectors.toList());
+    }
+
+    private boolean isInCell(Point2D p, double minX, double minY,
+                              double maxX, double maxY) {
+        return p.x >= minX && p.x < maxX && p.y >= minY && p.y < maxY;
     }
 
     private double evaluateControlFunction(double x, double y) {

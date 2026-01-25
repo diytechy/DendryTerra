@@ -144,8 +144,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
 
     @Override
     public boolean validate() throws ValidationException {
-        if (n < 1 || n > 5) {
-            throw new ValidationException("n must be between 1 and 5, got: " + n);
+        if (n < 0 || n > 5) {
+            throw new ValidationException("n must be between 0 and 5, got: " + n);
         }
         if (epsilon < 0 || epsilon >= 0.5) {
             throw new ValidationException("epsilon must be in range [0, 0.5), got: " + epsilon);
