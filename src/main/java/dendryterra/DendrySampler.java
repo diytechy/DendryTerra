@@ -368,7 +368,9 @@ public class DendrySampler implements Sampler {
 
                 // Find nearest neighbor by 2D distance
                 double minDist = Double.MAX_VALUE;
+                double minDist2 = Double.MAX_VALUE;
                 Point3D nearest = null;
+                Point3D nearest2 = null;
 
                 for (int di = -1; di <= 1; di++) {
                     for (int dj = -1; dj <= 1; dj++) {
@@ -378,6 +380,10 @@ public class DendrySampler implements Sampler {
                         double dist = current.projectZ().distanceTo(neighbor.projectZ());
 
                         if (dist < minDist) {
+                            if (minDist != minDist2) {
+                                minDist2 = minDist;
+                                nearest2 = nearest;
+                            }
                             minDist = dist;
                             nearest = neighbor;
                         }
@@ -386,6 +392,9 @@ public class DendrySampler implements Sampler {
 
                 if (nearest != null && minDist > MathUtils.EPSILON) {
                     segments.add(new Segment3D(current, nearest, 0));  // level = 0
+                }
+                if (nearest2 != null && minDist2 > MathUtils.EPSILON) {
+                    segments.add(new Segment3D(current, nearest2, 0));  // level = 0
                 }
             }
         }

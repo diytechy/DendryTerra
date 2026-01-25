@@ -1,9 +1,9 @@
 type: DENDRY
-n: 2                    # Resolution levels (1-5)
+n: 0                    # Resolution levels (1-5)
 epsilon: 0              # Point distribution bias [0, 0.5)
 delta: 0.05             # Segment displacement
 slope: 0.001              # Valley/cliff factor
-frequency: 0.001        # Grid scaling (1000)
+gridsize: 1000      # Grid scaling (1000)
 return: distance       # distance, weighted, or elevation
 sampler:                # Optional control function
   type: OPEN_SIMPLEX_2
