@@ -243,3 +243,46 @@ Caffeine cache overhead - For this use pattern, the cache adds ~12% overhead
 
 Parallel stream overhead - Thread pool coordination costs more than it saves for small segment counts
 
+#####################################################
+
+The issue now is that the root tree does not connect across cells.  It appears the key cell point q does not have any other segments to connect to, resulting in the entire segment chain staying isolated within a cell.
+
+This means segments must be computed outside the cells, since each cell must have a guarantee of a segment point, neighbors must be known to determine segment connections.  Hopefully the random property is truly consistent for a single cell per salt / seed.  Initialization / call of random function may need to be investigated / verified.
+
+Looking at why root segment does not traverse / span cell for interconnection:
+
+The issue now is that cells are not connected to each-other with segments (SegmentsNotCrossingBoundaries.png), this appears to be due to how this filter code was implemented originally, as it seems it was only intended to emulate segment connections within a single cell region.
+
+In order to rectify this, I would like you to implement the following changes, but there may be alternatives.
+
+1. Root level segments (level 0 segments) must be connected between bordering level 1 cells so that their branching segments might influence the query cell.  To achieve this:
+    A. A "resolution" level of 0 must be allowed (currently validator only allows resolutions down to 1).  0 should be the default resolution.
+    B. At level "0" / step "0", select cells by returning all cells bordering around the focus cell.  This will create a grid of 5x5 level 1 cells each with a single level 0 key-point, each cell having a level 1 gridsize.  Note these cell key-points would ideally be located at the minimum value of the control function within each level 1 cell, but a rough minimum approximation is okay.
+    C. Connect all level 0 points to create segments based on closest values as done with other segments (generateSegments), with the key uniqueness that level 0 points have an elevation of 0 and their connection should be based on closest 2d distance.
+2. Trash / remove all segments not connected to a point in the inner 3x3 level 0 cell array, because without other cell context further away it is not possible to know where segments outside this zone should be connected or branch.
+3. Continue branching / segmenting as done today for level 1, but instead of performing branching only in the query cell, also perform branching in the 8 surrounding cells.  This will be significantly more computationally expensive, but it will ensure any segments that grow can be connected between cells.
+5. Now we can remove any branch / segment that meets both of the criteria:
+    A: Starts in a cell that is not in the query cell.
+    B: Whose end point is moving away from the query cell.
+    In this way, they would not influence (or shouldn't?) any branches / resolutions from cell 1.
+6. Now continue branching, but again noting branching / segmenting must occur in adjacent level 1 cells to ensure cross-cell segments can be created.
+
+
+
+        # This generates the neighboring points... to query?  Or to generate segments from?  How does the tool know if the
+        Point3D[][] points1 = generateNeighboringPoints3D(cell1, 9);
+            This function drills in:
+                private CellData getCellData(int cellX, int cellY) {
+                    if (useCache && cellCache != null) {
+                        return cellCache.get(packKey(cellX, cellY));
+                    }
+                    // Direct generation without caching
+                    Point2D point = generatePoint(cellX, cellY);
+                    int branches = computeBranchCount(cellX, cellY);
+
+
+
+        List<Segment3D> segments1 = generateSegments(points1, 1);
+        int branchCount = getBranchCountForCell(cell1);
+        segments1 = subdivideSegments(segments1, branchCount, 1);
+        displaceSegments(segments1, displacementLevel1, cell1);

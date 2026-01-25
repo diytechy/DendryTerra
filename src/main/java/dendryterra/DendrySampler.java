@@ -184,7 +184,6 @@ public class DendrySampler implements Sampler {
         double minSlopeLevel3 = 0.18;
         double minSlopeLevel4 = 0.38;
         double minSlopeLevel5 = 1.0;
-
         // Level 1: Base Resolution
         Cell cell1 = getCell(x, y, 1);
         Point3D[][] points1 = generateNeighboringPoints3D(cell1, 9);
@@ -287,7 +286,7 @@ public class DendrySampler implements Sampler {
     }
 
     private Random initRandomGenerator(int x, int y, int level) {
-        long seed = (541L * x + 79L * y + level * 1000L + salt) & 0x7FFFFFFFL;
+        long seed = (541L * x + 79L * y + level * 863L + salt) & 0x7FFFFFFFL;
         return new Random(seed);
     }
 
