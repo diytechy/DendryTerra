@@ -197,7 +197,8 @@ public class DendrySampler implements Sampler {
         int level0Subdivisions = Math.max(2, defaultBranches);  // at least 2 subdivisions
         segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
         // Use split-based displacement for tree structures (preserves all connections)
-        segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, cell1);
+        // Pass level 0 for deterministic seeding based on absolute segment coordinates
+        segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, 0);
 
         // Prune level 0 segments not connected to inner 3x3
         double innerMinX = cell1.x - 1;
@@ -676,8 +677,9 @@ public class DendrySampler implements Sampler {
      * Displace segments by splitting each into two segments with a displaced midpoint.
      * Displacement is proportional to segment length for consistent curvature appearance.
      * Returns a new list (does not modify input list structure).
+     * Uses absolute segment coordinates for deterministic displacement regardless of query position.
      */
-    private List<Segment3D> displaceSegmentsWithSplit(List<Segment3D> segments, double displacementFactor, Cell cell) {
+    private List<Segment3D> displaceSegmentsWithSplit(List<Segment3D> segments, double displacementFactor, int level) {
         if (displacementFactor < MathUtils.EPSILON) return segments;
 
         List<Segment3D> result = new ArrayList<>();
@@ -693,7 +695,10 @@ public class DendrySampler implements Sampler {
 
             Vec2D perp = dir.rotateCCW90().normalize();
 
-            Random rng = initRandomGenerator((int)(seg.a.x * 100), (int)(seg.a.y * 100), cell.resolution);
+            // Use both endpoints for seed to ensure determinism based on segment identity
+            int seedX = (int)((seg.a.x + seg.b.x) * 50);
+            int seedY = (int)((seg.a.y + seg.b.y) * 50);
+            Random rng = initRandomGenerator(seedX, seedY, level);
             // Displacement proportional to segment length
             double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
 
