@@ -108,7 +108,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("use-cache")
     @Default
-    private @Meta boolean useCache = true;
+    private @Meta boolean useCache = false;
 
     /**
      * Enable parallel stream processing for large segment lists.
@@ -142,6 +142,16 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta int parallelThreshold = 100;
 
+    /**
+     * Duplicate branch suppression level for level 0 network.
+     * Controls how far to look for duplicate paths between nodes.
+     * Level 0 grid size = 5 + 2 * this value (e.g., 1 = 7x7, 2 = 9x9).
+     * Higher values = more thorough duplicate removal but slower.
+     */
+    @Value("duplicate-branch-suppression")
+    @Default
+    private @Meta int duplicateBranchSuppression = 1;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -171,6 +181,9 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (connectDistanceFactor <= 0) {
             throw new ValidationException("connect-distance-factor must be positive, got: " + connectDistanceFactor);
         }
+        if (duplicateBranchSuppression < 0 || duplicateBranchSuppression > 4) {
+            throw new ValidationException("duplicate-branch-suppression must be between 0 and 4, got: " + duplicateBranchSuppression);
+        }
         return true;
     }
 
@@ -183,7 +196,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             curvature, curvatureFalloff,
             connectDistance, connectDistanceFactor,
             useCache, useParallel, useSplines,
-            debugTiming, parallelThreshold
+            debugTiming, parallelThreshold,
+            duplicateBranchSuppression
         );
     }
 }

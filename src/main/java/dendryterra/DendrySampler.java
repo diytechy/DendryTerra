@@ -49,6 +49,9 @@ public class DendrySampler implements Sampler {
     private final boolean debugTiming;
     private final int parallelThreshold;
 
+    // Duplicate branch suppression (controls level 0 grid size and path pruning)
+    private final int duplicateBranchSuppression;
+
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
 
@@ -79,7 +82,8 @@ public class DendrySampler implements Sampler {
                          double curvature, double curvatureFalloff,
                          double connectDistance, double connectDistanceFactor,
                          boolean useCache, boolean useParallel, boolean useSplines,
-                         boolean debugTiming, int parallelThreshold) {
+                         boolean debugTiming, int parallelThreshold,
+                         int duplicateBranchSuppression) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -99,6 +103,7 @@ public class DendrySampler implements Sampler {
         this.useSplines = useSplines;
         this.debugTiming = debugTiming;
         this.parallelThreshold = parallelThreshold;
+        this.duplicateBranchSuppression = duplicateBranchSuppression;
 
         // Initialize cache only if enabled
         if (useCache) {
@@ -187,7 +192,7 @@ public class DendrySampler implements Sampler {
         double minSlopeLevel4 = 0.38;
         double minSlopeLevel5 = 1.0;
 
-        // Level 0: Root network spanning 5x5 level 1 cells
+        // Level 0: Root network spanning (5 + 2*suppression) level 1 cells
         Cell cell1 = getCell(x, y, 1);
         Point3D[][] level0Points = generateLevel0Points(cell1);
         List<Segment3D> segments0 = generateLevel0Segments(level0Points);
@@ -200,7 +205,8 @@ public class DendrySampler implements Sampler {
         // Pass level 0 for deterministic seeding based on absolute segment coordinates
         segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, 0);
 
-        // Prune level 0 segments not connected to inner 3x3
+        // Prune level 0 segments not connected to inner 3x3 region around query cell
+        // The inner region is always 3x3 regardless of outer grid size
         double innerMinX = cell1.x - 1;
         double innerMaxX = cell1.x + 2;
         double innerMinY = cell1.y - 1;
@@ -339,56 +345,60 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Generate level 0 points: one per level 1 cell in a 5x5 grid.
-     * All points have elevation 0 (flat network layer).
+     * Get the level 0 grid size based on duplicate branch suppression.
+     * gridSize = 5 + 2 * duplicateBranchSuppression
+     * (e.g., 0 = 5x5, 1 = 7x7, 2 = 9x9)
+     */
+    private int getLevel0GridSize() {
+        return 5 + 2 * duplicateBranchSuppression;
+    }
+
+    /**
+     * Generate level 0 points: one per level 1 cell.
+     * Grid size is determined by duplicateBranchSuppression config.
+     * Points have elevation from control function (for flow-based connections).
      */
     private Point3D[][] generateLevel0Points(Cell cell1) {
-        Point3D[][] points = new Point3D[5][5];
+        int size = getLevel0GridSize();
+        int half = size / 2;
+        Point3D[][] points = new Point3D[size][size];
 
-        for (int i = 0; i < 5; i++) {
-            for (int j = 0; j < 5; j++) {
-                int cellX = cell1.x + j - 2;  // -2 to +2 offset
-                int cellY = cell1.y + i - 2;
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                int cellX = cell1.x + j - half;
+                int cellY = cell1.y + i - half;
 
-                // Get the jittered point for this cell (reuse existing logic)
+                // Get the jittered point for this cell
                 CellData data = getCellData(cellX, cellY);
                 Point2D p2d = data.point;
 
-                // Level 0 points are at elevation 0
-                points[i][j] = new Point3D(p2d.x, p2d.y, 0.0);
+                // Get elevation from control function for flow-based connections
+                double elevation = evaluateControlFunction(p2d.x, p2d.y);
+                points[i][j] = new Point3D(p2d.x, p2d.y, elevation);
             }
         }
         return points;
     }
 
     /**
-     * Generate level 0 segments using minimum spanning tree.
-     * Ensures only a single path exists between any two nodes (no cycles).
-     * Uses Kruskal's algorithm with Union-Find.
+     * Generate level 0 segments using elevation-based connections.
+     * Each point connects to at least 2 neighbors, preferring lower elevation.
+     * This creates a deterministic, tileable network.
      */
     private List<Segment3D> generateLevel0Segments(Point3D[][] points) {
-        int size = points.length;  // 5
+        int size = points.length;
+        List<Segment3D> segments = new ArrayList<>();
 
-        // Flatten points to 1D array for easier indexing
-        List<Point3D> pointList = new ArrayList<>();
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                pointList.add(points[i][j]);
-            }
-        }
-        int n = pointList.size();  // 25
-
-        // Build all possible edges between neighboring points
-        // Normalize distances to remove bias toward axis-aligned connections
-        List<Edge> edges = new ArrayList<>();
-        double sqrt2 = Math.sqrt(2.0);
+        // Track unique connections to avoid duplicates (use canonical ordering)
+        java.util.Set<Long> addedConnections = new java.util.HashSet<>();
 
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                int idx1 = i * size + j;
-                Point3D p1 = pointList.get(idx1);
+                Point3D current = points[i][j];
 
-                // Check all 8 neighbors
+                // Collect all neighbors with their properties
+                List<NeighborInfo> neighbors = new ArrayList<>();
+
                 for (int di = -1; di <= 1; di++) {
                     for (int dj = -1; dj <= 1; dj++) {
                         if (di == 0 && dj == 0) continue;
@@ -396,48 +406,224 @@ public class DendrySampler implements Sampler {
                         int nj = j + dj;
                         if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
 
-                        int idx2 = ni * size + nj;
-                        if (idx2 <= idx1) continue;  // Avoid duplicate edges
+                        Point3D neighbor = points[ni][nj];
+                        double dist2D = current.projectZ().distanceTo(neighbor.projectZ());
+                        double elevDiff = neighbor.z - current.z;  // negative = lower
 
-                        Point3D p2 = pointList.get(idx2);
-                        double dist = p1.projectZ().distanceTo(p2.projectZ());
+                        neighbors.add(new NeighborInfo(neighbor, ni, nj, dist2D, elevDiff));
+                    }
+                }
 
-                        // Normalize diagonal distances by sqrt(2) to remove axis-aligned bias
-                        // Diagonals expect sqrt(2) times the distance of axis-aligned neighbors
-                        boolean isDiagonal = (di != 0 && dj != 0);
-                        double normalizedDist = isDiagonal ? dist / sqrt2 : dist;
+                // Sort: prefer lower elevation, then by 2D distance
+                neighbors.sort((a, b) -> {
+                    // First: prefer lower or equal elevation
+                    boolean aLowerOrEqual = a.elevDiff <= 0;
+                    boolean bLowerOrEqual = b.elevDiff <= 0;
 
-                        edges.add(new Edge(idx1, idx2, normalizedDist, p1, p2));
+                    if (aLowerOrEqual && !bLowerOrEqual) return -1;
+                    if (!aLowerOrEqual && bLowerOrEqual) return 1;
+
+                    // Among same category, sort by 2D distance
+                    return Double.compare(a.dist2D, b.dist2D);
+                });
+
+                // Connect to at least 2 neighbors
+                int connectCount = 0;
+                for (NeighborInfo n : neighbors) {
+                    if (connectCount >= 2) break;
+
+                    // Create canonical connection key (smaller index first)
+                    long key = createConnectionKey(i, j, n.gridI, n.gridJ, size);
+                    if (!addedConnections.contains(key)) {
+                        addedConnections.add(key);
+                        segments.add(new Segment3D(current, n.point, 0));
+                    }
+                    connectCount++;
+                }
+            }
+        }
+
+        // Prune duplicate short paths
+        segments = pruneDuplicatePaths(segments, points);
+
+        return segments;
+    }
+
+    /**
+     * Neighbor info for sorting during connection selection.
+     */
+    private static class NeighborInfo {
+        final Point3D point;
+        final int gridI, gridJ;
+        final double dist2D;
+        final double elevDiff;
+
+        NeighborInfo(Point3D point, int gridI, int gridJ, double dist2D, double elevDiff) {
+            this.point = point;
+            this.gridI = gridI;
+            this.gridJ = gridJ;
+            this.dist2D = dist2D;
+            this.elevDiff = elevDiff;
+        }
+    }
+
+    /**
+     * Create a canonical key for a connection between two grid positions.
+     * Ensures (i1,j1)-(i2,j2) and (i2,j2)-(i1,j1) map to the same key.
+     */
+    private long createConnectionKey(int i1, int j1, int i2, int j2, int size) {
+        int idx1 = i1 * size + j1;
+        int idx2 = i2 * size + j2;
+        if (idx1 > idx2) {
+            int tmp = idx1;
+            idx1 = idx2;
+            idx2 = tmp;
+        }
+        return ((long) idx1 << 32) | (idx2 & 0xFFFFFFFFL);
+    }
+
+    /**
+     * Prune duplicate paths between nodes.
+     * If two nodes are connected by multiple chains of length <= (1 + duplicateBranchSuppression),
+     * keep only the shortest chain. If same length, use deterministic selection.
+     */
+    private List<Segment3D> pruneDuplicatePaths(List<Segment3D> segments, Point3D[][] points) {
+        if (duplicateBranchSuppression == 0) {
+            return segments;  // No pruning for level 0
+        }
+
+        int maxPathLength = 1 + duplicateBranchSuppression;
+
+        // Build adjacency map from segments
+        Map<Long, List<Segment3D>> adjacency = new HashMap<>();
+        for (Segment3D seg : segments) {
+            long keyA = pointHash(seg.a);
+            long keyB = pointHash(seg.b);
+            adjacency.computeIfAbsent(keyA, k -> new ArrayList<>()).add(seg);
+            adjacency.computeIfAbsent(keyB, k -> new ArrayList<>()).add(seg);
+        }
+
+        // Find all pairs of nodes connected by short paths
+        java.util.Set<Segment3D> toRemove = new java.util.HashSet<>();
+
+        for (Segment3D seg : segments) {
+            if (toRemove.contains(seg)) continue;
+
+            // For each segment, look for alternate paths between its endpoints
+            List<List<Segment3D>> alternatePaths = findAlternatePaths(
+                seg.a, seg.b, seg, adjacency, maxPathLength
+            );
+
+            if (!alternatePaths.isEmpty()) {
+                // We have the direct segment (length 1) and alternate paths
+                // Keep the shortest path; if tie, use deterministic selection
+
+                // Direct segment is always length 1
+                List<Segment3D> directPath = List.of(seg);
+                List<List<Segment3D>> allPaths = new ArrayList<>();
+                allPaths.add(directPath);
+                allPaths.addAll(alternatePaths);
+
+                // Sort by length, then by deterministic hash
+                allPaths.sort((a, b) -> {
+                    int lenCompare = Integer.compare(a.size(), b.size());
+                    if (lenCompare != 0) return lenCompare;
+                    // Same length: use deterministic hash
+                    return Long.compare(pathHash(a), pathHash(b));
+                });
+
+                // Keep the first path, mark others for removal
+                List<Segment3D> keepPath = allPaths.get(0);
+                for (int i = 1; i < allPaths.size(); i++) {
+                    for (Segment3D s : allPaths.get(i)) {
+                        // Only remove if it's a short segment and not in keepPath
+                        if (!keepPath.contains(s)) {
+                            toRemove.add(s);
+                        }
                     }
                 }
             }
         }
 
-        // Sort edges by distance (Kruskal's algorithm)
-        edges.sort(Comparator.comparingDouble(e -> e.distance));
+        // Return filtered list
+        return segments.stream()
+            .filter(s -> !toRemove.contains(s))
+            .collect(Collectors.toList());
+    }
 
-        // Union-Find for cycle detection
-        int[] parent = new int[n];
-        int[] rank = new int[n];
-        for (int i = 0; i < n; i++) {
-            parent[i] = i;
-            rank[i] = 0;
-        }
+    /**
+     * Find alternate paths between two points, excluding a specific segment.
+     */
+    private List<List<Segment3D>> findAlternatePaths(Point3D start, Point3D end,
+                                                      Segment3D excludeSeg,
+                                                      Map<Long, List<Segment3D>> adjacency,
+                                                      int maxLength) {
+        List<List<Segment3D>> results = new ArrayList<>();
+        long endKey = pointHash(end);
 
-        // Build MST
-        List<Segment3D> segments = new ArrayList<>();
-        for (Edge edge : edges) {
-            int rootA = find(parent, edge.idx1);
-            int rootB = find(parent, edge.idx2);
+        // BFS to find paths up to maxLength
+        java.util.Queue<PathState> queue = new java.util.LinkedList<>();
+        queue.add(new PathState(start, new ArrayList<>(), new java.util.HashSet<>()));
 
-            if (rootA != rootB) {
-                // Add edge to MST
-                segments.add(new Segment3D(edge.p1, edge.p2, 0));
-                union(parent, rank, rootA, rootB);
+        while (!queue.isEmpty()) {
+            PathState state = queue.poll();
+
+            if (state.path.size() >= maxLength) continue;
+
+            long currentKey = pointHash(state.current);
+            List<Segment3D> neighbors = adjacency.get(currentKey);
+            if (neighbors == null) continue;
+
+            for (Segment3D seg : neighbors) {
+                if (seg == excludeSeg) continue;
+                if (state.visited.contains(seg)) continue;
+
+                Point3D next = pointsMatch(seg.a, state.current) ? seg.b : seg.a;
+                long nextKey = pointHash(next);
+
+                List<Segment3D> newPath = new ArrayList<>(state.path);
+                newPath.add(seg);
+
+                if (nextKey == endKey || pointsMatch(next, end)) {
+                    // Found a path to end
+                    results.add(newPath);
+                } else if (newPath.size() < maxLength) {
+                    java.util.Set<Segment3D> newVisited = new java.util.HashSet<>(state.visited);
+                    newVisited.add(seg);
+                    queue.add(new PathState(next, newPath, newVisited));
+                }
             }
         }
 
-        return segments;
+        return results;
+    }
+
+    /**
+     * State for path-finding BFS.
+     */
+    private static class PathState {
+        final Point3D current;
+        final List<Segment3D> path;
+        final java.util.Set<Segment3D> visited;
+
+        PathState(Point3D current, List<Segment3D> path, java.util.Set<Segment3D> visited) {
+            this.current = current;
+            this.path = path;
+            this.visited = visited;
+        }
+    }
+
+    /**
+     * Compute a deterministic hash for a path (for tie-breaking).
+     */
+    private long pathHash(List<Segment3D> path) {
+        long hash = 0;
+        for (Segment3D seg : path) {
+            // Use coordinates to create deterministic hash
+            hash ^= Double.doubleToLongBits(seg.a.x + seg.b.x) * 73856093L;
+            hash ^= Double.doubleToLongBits(seg.a.y + seg.b.y) * 19349663L;
+        }
+        return hash;
     }
 
     /**
@@ -640,18 +826,25 @@ public class DendrySampler implements Sampler {
 
     /**
      * Catmull-Rom spline subdivision (smoother but slower).
+     * Uses connectivity-based control point lookup to ensure deterministic results
+     * regardless of segment list order (important for MST/tree structures).
      */
     private List<Segment3D> subdivideWithSplines(List<Segment3D> segments, int numDivisions, int level) {
         double levelCurvature = curvature * Math.pow(curvatureFalloff, level - 1);
         List<Segment3D> subdivided = new ArrayList<>();
 
-        for (int i = 0; i < segments.size(); i++) {
-            Segment3D seg = segments.get(i);
+        // Build connectivity map: point -> list of segments connected to that point
+        Map<Long, List<Segment3D>> connectivityMap = buildConnectivityMap(segments);
 
-            Point3D p0 = (i > 0) ? segments.get(i - 1).a : seg.a;
+        for (Segment3D seg : segments) {
             Point3D p1 = seg.a;
             Point3D p2 = seg.b;
-            Point3D p3 = (i < segments.size() - 1) ? segments.get(i + 1).b : seg.b;
+
+            // Find control point p0: the "other end" of a segment connected to p1 (not p2)
+            Point3D p0 = findConnectedControlPoint(p1, p2, seg, connectivityMap);
+
+            // Find control point p3: the "other end" of a segment connected to p2 (not p1)
+            Point3D p3 = findConnectedControlPoint(p2, p1, seg, connectivityMap);
 
             Point3D prev = p1;
             for (int j = 1; j <= numDivisions; j++) {
@@ -671,6 +864,81 @@ public class DendrySampler implements Sampler {
             }
         }
         return subdivided;
+    }
+
+    /**
+     * Build a map from point hash to segments connected at that point.
+     * Uses a spatial hash of point coordinates for lookup.
+     */
+    private Map<Long, List<Segment3D>> buildConnectivityMap(List<Segment3D> segments) {
+        Map<Long, List<Segment3D>> map = new HashMap<>();
+
+        for (Segment3D seg : segments) {
+            long keyA = pointHash(seg.a);
+            long keyB = pointHash(seg.b);
+
+            map.computeIfAbsent(keyA, k -> new ArrayList<>()).add(seg);
+            map.computeIfAbsent(keyB, k -> new ArrayList<>()).add(seg);
+        }
+
+        return map;
+    }
+
+    /**
+     * Hash a point's coordinates for connectivity lookup.
+     * Uses fixed precision to handle floating point comparison.
+     */
+    private long pointHash(Point3D p) {
+        // Quantize to ~0.0001 precision for reliable matching
+        long hx = (long)(p.x * 10000);
+        long hy = (long)(p.y * 10000);
+        return (hx * 73856093L) ^ (hy * 19349663L);
+    }
+
+    /**
+     * Find a control point for spline interpolation by looking at connectivity.
+     * Given a point 'anchor' and the 'other' end of the current segment,
+     * find another segment connected to 'anchor' and return its far endpoint.
+     *
+     * @param anchor The point we're looking for connections at
+     * @param other The other end of the current segment (to exclude)
+     * @param currentSeg The current segment (to exclude from search)
+     * @param connectivityMap Map of point hash -> connected segments
+     * @return The control point, or 'anchor' itself if no other connection found
+     */
+    private Point3D findConnectedControlPoint(Point3D anchor, Point3D other, Segment3D currentSeg,
+                                               Map<Long, List<Segment3D>> connectivityMap) {
+        long key = pointHash(anchor);
+        List<Segment3D> connected = connectivityMap.get(key);
+
+        if (connected == null || connected.size() <= 1) {
+            // No other segments connected - use anchor as control point (linear at endpoint)
+            return anchor;
+        }
+
+        // Find a segment other than currentSeg connected at anchor
+        for (Segment3D seg : connected) {
+            if (seg == currentSeg) continue;
+
+            // Determine which end of this segment is at 'anchor' and return the other end
+            if (pointsMatch(seg.a, anchor)) {
+                return seg.b;
+            } else if (pointsMatch(seg.b, anchor)) {
+                return seg.a;
+            }
+        }
+
+        // No other connection found
+        return anchor;
+    }
+
+    /**
+     * Check if two points match within epsilon tolerance.
+     */
+    private boolean pointsMatch(Point3D a, Point3D b) {
+        double dx = a.x - b.x;
+        double dy = a.y - b.y;
+        return (dx * dx + dy * dy) < MathUtils.EPSILON * MathUtils.EPSILON * 10000;
     }
 
     /**

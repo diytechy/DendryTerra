@@ -45,6 +45,7 @@ public class DendryBenchmarkRunner {
         double connectDistance = 0;
         double connectDistanceFactor = 2.0;
         int parallelThreshold = 100;
+        int duplicateBranchSuppression = 1;
 
         // Create different configurations to test
         System.out.println("Creating test configurations...");
@@ -61,7 +62,8 @@ public class DendryBenchmarkRunner {
             true,   // useParallel
             true,   // useSplines
             false,  // debugTiming
-            parallelThreshold
+            parallelThreshold,
+            duplicateBranchSuppression
         );
 
         // 2. No cache
@@ -75,7 +77,8 @@ public class DendryBenchmarkRunner {
             true,   // useParallel
             true,   // useSplines
             false,  // debugTiming
-            parallelThreshold
+            parallelThreshold,
+            duplicateBranchSuppression
         );
 
         // 3. No parallel
@@ -89,7 +92,8 @@ public class DendryBenchmarkRunner {
             false,  // useParallel = OFF
             true,   // useSplines
             false,  // debugTiming
-            parallelThreshold
+            parallelThreshold,
+            duplicateBranchSuppression
         );
 
         // 4. No splines (linear subdivision)
@@ -103,7 +107,8 @@ public class DendryBenchmarkRunner {
             true,   // useParallel
             false,  // useSplines = OFF
             false,  // debugTiming
-            parallelThreshold
+            parallelThreshold,
+            duplicateBranchSuppression
         );
 
         // 5. Minimal (all optimizations OFF)
@@ -117,7 +122,8 @@ public class DendryBenchmarkRunner {
             false,  // useParallel = OFF
             false,  // useSplines = OFF
             false,  // debugTiming
-            parallelThreshold
+            parallelThreshold,
+            duplicateBranchSuppression
         );
 
         // 6. Higher resolution (n=3)
@@ -128,7 +134,8 @@ public class DendryBenchmarkRunner {
             null, defaultBranches,
             curvature, curvatureFalloff,
             connectDistance, connectDistanceFactor,
-            true, true, true, false, parallelThreshold
+            true, true, true, false, parallelThreshold,
+            duplicateBranchSuppression
         );
 
         // Run benchmarks
