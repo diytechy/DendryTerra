@@ -196,7 +196,8 @@ public class DendrySampler implements Sampler {
         double displacementLevel0 = delta * 2.0;
         int level0Subdivisions = Math.max(2, defaultBranches);  // at least 2 subdivisions
         segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
-        displaceSegments(segments0, displacementLevel0, cell1);
+        // Use split-based displacement for tree structures (preserves all connections)
+        segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, cell1);
 
         // Prune level 0 segments not connected to inner 3x3
         double innerMinX = cell1.x - 1;
@@ -377,7 +378,10 @@ public class DendrySampler implements Sampler {
         int n = pointList.size();  // 25
 
         // Build all possible edges between neighboring points
+        // Normalize distances to remove bias toward axis-aligned connections
         List<Edge> edges = new ArrayList<>();
+        double sqrt2 = Math.sqrt(2.0);
+
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 int idx1 = i * size + j;
@@ -396,7 +400,13 @@ public class DendrySampler implements Sampler {
 
                         Point3D p2 = pointList.get(idx2);
                         double dist = p1.projectZ().distanceTo(p2.projectZ());
-                        edges.add(new Edge(idx1, idx2, dist, p1, p2));
+
+                        // Normalize diagonal distances by sqrt(2) to remove axis-aligned bias
+                        // Diagonals expect sqrt(2) times the distance of axis-aligned neighbors
+                        boolean isDiagonal = (di != 0 && dj != 0);
+                        double normalizedDist = isDiagonal ? dist / sqrt2 : dist;
+
+                        edges.add(new Edge(idx1, idx2, normalizedDist, p1, p2));
                     }
                 }
             }
@@ -662,6 +672,49 @@ public class DendrySampler implements Sampler {
         return subdivided;
     }
 
+    /**
+     * Displace segments by splitting each into two segments with a displaced midpoint.
+     * Displacement is proportional to segment length for consistent curvature appearance.
+     * Returns a new list (does not modify input list structure).
+     */
+    private List<Segment3D> displaceSegmentsWithSplit(List<Segment3D> segments, double displacementFactor, Cell cell) {
+        if (displacementFactor < MathUtils.EPSILON) return segments;
+
+        List<Segment3D> result = new ArrayList<>();
+
+        for (Segment3D seg : segments) {
+            Vec2D dir = new Vec2D(seg.a.projectZ(), seg.b.projectZ());
+            double segLength = dir.length();
+
+            if (segLength < MathUtils.EPSILON) {
+                result.add(seg);
+                continue;
+            }
+
+            Vec2D perp = dir.rotateCCW90().normalize();
+
+            Random rng = initRandomGenerator((int)(seg.a.x * 100), (int)(seg.a.y * 100), cell.resolution);
+            // Displacement proportional to segment length
+            double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
+
+            Point3D mid = seg.midpoint();
+            Point3D displacedMid = new Point3D(
+                mid.x + perp.x * displacement,
+                mid.y + perp.y * displacement,
+                mid.z
+            );
+
+            // Split into two segments: a→mid and mid→b (preserves connectivity)
+            result.add(new Segment3D(seg.a, displacedMid, seg.level));
+            result.add(new Segment3D(displacedMid, seg.b, seg.level));
+        }
+
+        return result;
+    }
+
+    /**
+     * Legacy displacement (modifies list in place, for chain-ordered segments).
+     */
     private void displaceSegments(List<Segment3D> segments, double displacementFactor, Cell cell) {
         if (displacementFactor < MathUtils.EPSILON) return;
 
@@ -669,10 +722,15 @@ public class DendrySampler implements Sampler {
             Segment3D seg = segments.get(i);
 
             Vec2D dir = new Vec2D(seg.a.projectZ(), seg.b.projectZ());
+            double segLength = dir.length();
+
+            if (segLength < MathUtils.EPSILON) continue;
+
             Vec2D perp = dir.rotateCCW90().normalize();
 
             Random rng = initRandomGenerator((int)(seg.a.x * 100), (int)(seg.a.y * 100), cell.resolution);
-            double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor;
+            // Displacement proportional to segment length
+            double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
 
             Point3D mid = seg.midpoint();
             Point3D displacedMid = new Point3D(
