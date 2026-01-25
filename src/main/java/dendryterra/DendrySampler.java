@@ -192,6 +192,12 @@ public class DendrySampler implements Sampler {
         Point3D[][] level0Points = generateLevel0Points(cell1);
         List<Segment3D> segments0 = generateLevel0Segments(level0Points);
 
+        // Subdivide and displace level 0 for curvature (larger displacement than level 1)
+        double displacementLevel0 = delta * 2.0;
+        int level0Subdivisions = Math.max(2, defaultBranches);  // at least 2 subdivisions
+        segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
+        displaceSegments(segments0, displacementLevel0, cell1);
+
         // Prune level 0 segments not connected to inner 3x3
         double innerMinX = cell1.x - 1;
         double innerMaxX = cell1.x + 2;
@@ -354,51 +360,114 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Generate level 0 segments by connecting each point to nearest neighbor.
-     * Uses 2D distance, not elevation-based flow.
+     * Generate level 0 segments using minimum spanning tree.
+     * Ensures only a single path exists between any two nodes (no cycles).
+     * Uses Kruskal's algorithm with Union-Find.
      */
     private List<Segment3D> generateLevel0Segments(Point3D[][] points) {
-        List<Segment3D> segments = new ArrayList<>();
         int size = points.length;  // 5
 
-        // Process inner 3x3 (indices 1-3)
-        for (int i = 1; i < size - 1; i++) {
-            for (int j = 1; j < size - 1; j++) {
-                Point3D current = points[i][j];
+        // Flatten points to 1D array for easier indexing
+        List<Point3D> pointList = new ArrayList<>();
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                pointList.add(points[i][j]);
+            }
+        }
+        int n = pointList.size();  // 25
 
-                // Find nearest neighbor by 2D distance
-                double minDist = Double.MAX_VALUE;
-                double minDist2 = Double.MAX_VALUE;
-                Point3D nearest = null;
-                Point3D nearest2 = null;
+        // Build all possible edges between neighboring points
+        List<Edge> edges = new ArrayList<>();
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                int idx1 = i * size + j;
+                Point3D p1 = pointList.get(idx1);
 
+                // Check all 8 neighbors
                 for (int di = -1; di <= 1; di++) {
                     for (int dj = -1; dj <= 1; dj++) {
                         if (di == 0 && dj == 0) continue;
+                        int ni = i + di;
+                        int nj = j + dj;
+                        if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
 
-                        Point3D neighbor = points[i + di][j + dj];
-                        double dist = current.projectZ().distanceTo(neighbor.projectZ());
+                        int idx2 = ni * size + nj;
+                        if (idx2 <= idx1) continue;  // Avoid duplicate edges
 
-                        if (dist < minDist) {
-                            if (minDist != minDist2) {
-                                minDist2 = minDist;
-                                nearest2 = nearest;
-                            }
-                            minDist = dist;
-                            nearest = neighbor;
-                        }
+                        Point3D p2 = pointList.get(idx2);
+                        double dist = p1.projectZ().distanceTo(p2.projectZ());
+                        edges.add(new Edge(idx1, idx2, dist, p1, p2));
                     }
-                }
-
-                if (nearest != null && minDist > MathUtils.EPSILON) {
-                    segments.add(new Segment3D(current, nearest, 0));  // level = 0
-                }
-                if (nearest2 != null && minDist2 > MathUtils.EPSILON) {
-                    segments.add(new Segment3D(current, nearest2, 0));  // level = 0
                 }
             }
         }
+
+        // Sort edges by distance (Kruskal's algorithm)
+        edges.sort(Comparator.comparingDouble(e -> e.distance));
+
+        // Union-Find for cycle detection
+        int[] parent = new int[n];
+        int[] rank = new int[n];
+        for (int i = 0; i < n; i++) {
+            parent[i] = i;
+            rank[i] = 0;
+        }
+
+        // Build MST
+        List<Segment3D> segments = new ArrayList<>();
+        for (Edge edge : edges) {
+            int rootA = find(parent, edge.idx1);
+            int rootB = find(parent, edge.idx2);
+
+            if (rootA != rootB) {
+                // Add edge to MST
+                segments.add(new Segment3D(edge.p1, edge.p2, 0));
+                union(parent, rank, rootA, rootB);
+            }
+        }
+
         return segments;
+    }
+
+    /**
+     * Edge class for MST algorithm.
+     */
+    private static class Edge {
+        final int idx1, idx2;
+        final double distance;
+        final Point3D p1, p2;
+
+        Edge(int idx1, int idx2, double distance, Point3D p1, Point3D p2) {
+            this.idx1 = idx1;
+            this.idx2 = idx2;
+            this.distance = distance;
+            this.p1 = p1;
+            this.p2 = p2;
+        }
+    }
+
+    /**
+     * Find root with path compression (Union-Find).
+     */
+    private int find(int[] parent, int i) {
+        if (parent[i] != i) {
+            parent[i] = find(parent, parent[i]);
+        }
+        return parent[i];
+    }
+
+    /**
+     * Union by rank (Union-Find).
+     */
+    private void union(int[] parent, int[] rank, int x, int y) {
+        if (rank[x] < rank[y]) {
+            parent[x] = y;
+        } else if (rank[x] > rank[y]) {
+            parent[y] = x;
+        } else {
+            parent[y] = x;
+            rank[x]++;
+        }
     }
 
     /**

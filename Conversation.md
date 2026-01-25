@@ -253,19 +253,19 @@ Looking at why root segment does not traverse / span cell for interconnection:
 
 The issue now is that cells are not connected to each-other with segments (SegmentsNotCrossingBoundaries.png, which spans x and z from about 0 to 4000 roughly), this appears to be due to how this filter code was implemented originally, as it seems it was only intended to emulate segment connections within a single cell region.
 
-In order to rectify this, I would like you to implement the following changes, but there may be alternatives.
+In order to rectify this, I would like you to implement the following changes, but there may be alternatives to ensure segments crossing the level 1 cell borders.
 
 1. Root level segments (level 0 segments) must be connected between bordering level 1 cells so that their branching segments might influence the query cell.  To achieve this:
     A. A "resolution" level of 0 must be allowed (currently validator only allows resolutions down to 1).  0 should be the default resolution.
     B. At level "0" / step "0", select cells by returning all cells bordering around the focus cell.  This will create a grid of 5x5 level 1 cells each with a single level 0 key-point, each cell having a level 1 gridsize.  Note these cell key-points would ideally be located at the minimum value of the control function within each level 1 cell, but a rough minimum approximation is okay.
     C. Connect all level 0 points to create segments based on closest values as done with other segments (generateSegments), with the key uniqueness that level 0 points have an elevation of 0 and their connection should be based on closest 2d distance.
 2. Trash / remove all segments not connected to a point in the inner 3x3 level 0 cell array, because without other cell context further away it is not possible to know where segments outside this zone should be connected or branch.
-3. Continue branching / segmenting as done today for level 1, but instead of performing branching only in the query cell, also perform branching in the 8 surrounding cells.  This will be significantly more computationally expensive, but it will ensure any segments that grow can be connected between cells.
+3. Continue branching / segmenting as done today for level 1, but instead of performing branching only in the query cell, also perform branching in the 8 surrounding cells.  This will be significantly more computationally expensive, but it will ensure any segments that grow can be connected between cells.  It is important that segment connection is checked for all segments across all cells (generateSubSegments)
 5. Now we can remove any branch / segment that meets both of the criteria:
     A: Starts in a cell that is not in the query cell.
     B: Whose end point is moving away from the query cell.
     In this way, they would not influence (or shouldn't?) any branches / resolutions from cell 1.
-6. Now continue branching, but again noting branching / segmenting must occur in adjacent level 1 cells to ensure cross-cell segments can be created.
+6. Now continue branching, but again noting branching / segmenting must also occur in adjacent level 1 cells to ensure cross-cell segments can be created.
 
 
 
@@ -286,3 +286,9 @@ In order to rectify this, I would like you to implement the following changes, b
         int branchCount = getBranchCountForCell(cell1);
         segments1 = subdivideSegments(segments1, branchCount, 1);
         displaceSegments(segments1, displacementLevel1, cell1);
+
+I've updated the function to ensure two level 0 segments are connected so that there are not gaps between cells, but now some nodes are connected more than once through separate nodes.
+
+Can you update "generateLevel0Segments" or create a new function that runs after level0 segment creation that ensures nodes are only linked through a single segment or set of segments (only a single path should exist from any level 0 node to another level 0 node)
+
+Also, please confirm that the point data for each cell (CellData data = getCellData(cellX, cellY);) provides a consistent response for the X/Y coordinates even on successive calls, as in subsequent calls it appears to use rng.nextDouble() to generate new random values, but anytime a point is queries at a specific level for a specific position, it should return the same value.  It is not clear to me if that is occurring.
