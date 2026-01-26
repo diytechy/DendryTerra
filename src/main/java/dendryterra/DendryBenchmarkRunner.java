@@ -48,6 +48,7 @@ public class DendryBenchmarkRunner {
         int level0Scale = 4;  // Level 0 cells contain 4x4 level 1 cells
         double tangentAngle = Math.toRadians(45);  // 45 degrees max deviation
         double tangentStrength = 0.4;  // Tangent length as fraction of segment
+        double cachepixels = 0;  // Pixel cache disabled for benchmarks (use 0)
 
         // Create different configurations to test
         System.out.println("Creating test configurations...");
@@ -66,7 +67,8 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             level0Scale,
-            tangentAngle, tangentStrength
+            tangentAngle, tangentStrength,
+            cachepixels
         );
 
         // 2. No cache
@@ -82,7 +84,8 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             level0Scale,
-            tangentAngle, tangentStrength
+            tangentAngle, tangentStrength,
+            cachepixels
         );
 
         // 3. No parallel
@@ -98,7 +101,8 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             level0Scale,
-            tangentAngle, tangentStrength
+            tangentAngle, tangentStrength,
+            cachepixels
         );
 
         // 4. No splines (linear subdivision)
@@ -114,7 +118,8 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             level0Scale,
-            tangentAngle, tangentStrength
+            tangentAngle, tangentStrength,
+            cachepixels
         );
 
         // 5. Minimal (all optimizations OFF)
@@ -130,7 +135,8 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             level0Scale,
-            tangentAngle, tangentStrength
+            tangentAngle, tangentStrength,
+            cachepixels
         );
 
         // 6. Higher resolution (n=3)
@@ -143,7 +149,8 @@ public class DendryBenchmarkRunner {
             connectDistance, connectDistanceFactor,
             true, true, true, false, parallelThreshold,
             level0Scale,
-            tangentAngle, tangentStrength
+            tangentAngle, tangentStrength,
+            cachepixels
         );
 
         // Run benchmarks

@@ -173,6 +173,17 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double tangentStrength = 0.4;
 
+    /**
+     * Pixel cache resolution for faster repeated queries.
+     * When > 0, caches segment data as a pixel grid for each cell.
+     * Range: 0 (disabled) to gridsize.
+     * Lower values = higher resolution cache = more memory per cell.
+     * Use with PIXEL_ELEVATION or PIXEL_LEVEL return types.
+     */
+    @Value("cachepixels")
+    @Default
+    private @Meta double cachepixels = 0;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -211,6 +222,15 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (tangentStrength < 0 || tangentStrength > 1) {
             throw new ValidationException("tangent-strength must be between 0 and 1, got: " + tangentStrength);
         }
+        if (cachepixels < 0) {
+            throw new ValidationException("cachepixels must be non-negative, got: " + cachepixels);
+        }
+        if (cachepixels > gridsize) {
+            throw new ValidationException("cachepixels must not exceed gridsize, got: " + cachepixels + " > " + gridsize);
+        }
+        if (cachepixels > 0 && gridsize / cachepixels > 65535) {
+            throw new ValidationException("gridsize/cachepixels exceeds UInt16 max (65535), got: " + (gridsize / cachepixels));
+        }
         return true;
     }
 
@@ -225,7 +245,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             useCache, useParallel, useSplines,
             debugTiming, parallelThreshold,
             level0Scale,
-            Math.toRadians(tangentAngle), tangentStrength
+            Math.toRadians(tangentAngle), tangentStrength,
+            cachepixels
         );
     }
 }

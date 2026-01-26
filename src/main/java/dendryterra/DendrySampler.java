@@ -56,8 +56,14 @@ public class DendrySampler implements Sampler {
     private final double tangentAngle;    // Max angle deviation (radians)
     private final double tangentStrength; // Tangent length as fraction of segment length
 
+    // Pixel cache parameters
+    private final double cachepixels;     // Pixel cache resolution (0 = disabled)
+    private final int pixelGridSize;      // Number of pixels per cell axis (gridsize / cachepixels)
+
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
+    private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
+    private static final int PIXEL_DATA_SIZE = 9; // 2 (x) + 2 (y) + 4 (elevation) + 1 (level) bytes
 
     // Lazy LRU cache (optional based on useCache flag)
     private final LoadingCache<Long, CellData> cellCache;
@@ -78,6 +84,78 @@ public class DendrySampler implements Sampler {
         }
     }
 
+    /**
+     * Pixel data for a single cached point along a segment.
+     * Stores position (as offset from cell origin), elevation, and resolution level.
+     */
+    private static class PixelData {
+        final int xOffset;     // X offset from cell origin (0 to pixelGridSize-1)
+        final int yOffset;     // Y offset from cell origin (0 to pixelGridSize-1)
+        final float elevation; // Elevation at this point
+        final byte level;      // Resolution level (0-5)
+
+        PixelData(int xOffset, int yOffset, float elevation, byte level) {
+            this.xOffset = xOffset;
+            this.yOffset = yOffset;
+            this.elevation = elevation;
+            this.level = level;
+        }
+    }
+
+    /**
+     * Cached pixel grid for a single level 1 cell.
+     * Stores a 2D array of pixel data indexed by pixel coordinates.
+     */
+    private static class CellPixelData {
+        final int cellX;
+        final int cellY;
+        final int gridSize;
+        final PixelData[][] pixels;  // [y][x] indexed
+        long lastAccessTime;
+
+        CellPixelData(int cellX, int cellY, int gridSize) {
+            this.cellX = cellX;
+            this.cellY = cellY;
+            this.gridSize = gridSize;
+            this.pixels = new PixelData[gridSize][gridSize];
+            this.lastAccessTime = System.nanoTime();
+        }
+
+        void setPixel(int px, int py, float elevation, byte level) {
+            if (px >= 0 && px < gridSize && py >= 0 && py < gridSize) {
+                // Only set if empty or if new level is lower (more significant)
+                PixelData existing = pixels[py][px];
+                if (existing == null || level < existing.level) {
+                    pixels[py][px] = new PixelData(px, py, elevation, level);
+                }
+            }
+        }
+
+        PixelData getPixel(int px, int py) {
+            if (px >= 0 && px < gridSize && py >= 0 && py < gridSize) {
+                lastAccessTime = System.nanoTime();
+                return pixels[py][px];
+            }
+            return null;
+        }
+
+        int getMemorySize() {
+            // Approximate memory: header + array refs + pixel objects
+            int pixelCount = 0;
+            for (int y = 0; y < gridSize; y++) {
+                for (int x = 0; x < gridSize; x++) {
+                    if (pixels[y][x] != null) pixelCount++;
+                }
+            }
+            // PixelData object overhead (~24 bytes) + fields (4+4+4+1 = 13 bytes)
+            return 64 + (gridSize * gridSize * 8) + (pixelCount * 40);
+        }
+    }
+
+    // LRU pixel cache (cell key -> pixel data)
+    private final Map<Long, CellPixelData> pixelCache;
+    private final Object pixelCacheLock = new Object();
+
     public DendrySampler(int resolution, double epsilon, double delta,
                          double slope, double gridsize,
                          DendryReturnType returnType,
@@ -88,7 +166,8 @@ public class DendrySampler implements Sampler {
                          boolean useCache, boolean useParallel, boolean useSplines,
                          boolean debugTiming, int parallelThreshold,
                          int level0Scale,
-                         double tangentAngle, double tangentStrength) {
+                         double tangentAngle, double tangentStrength,
+                         double cachepixels) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -111,8 +190,16 @@ public class DendrySampler implements Sampler {
         this.level0Scale = level0Scale;
         this.tangentAngle = tangentAngle;
         this.tangentStrength = tangentStrength;
+        this.cachepixels = cachepixels;
 
-        // Initialize cache only if enabled
+        // Calculate pixel grid size
+        if (cachepixels > 0) {
+            this.pixelGridSize = (int) Math.ceil(gridsize / cachepixels);
+        } else {
+            this.pixelGridSize = 0;
+        }
+
+        // Initialize cell data cache only if enabled
         if (useCache) {
             this.cellCache = Caffeine.newBuilder()
                 .maximumSize(MAX_CACHE_SIZE)
@@ -121,9 +208,16 @@ public class DendrySampler implements Sampler {
             this.cellCache = null;
         }
 
+        // Initialize pixel cache if cachepixels is enabled
+        if (cachepixels > 0) {
+            this.pixelCache = new HashMap<>();
+        } else {
+            this.pixelCache = null;
+        }
+
         if (debugTiming) {
-            LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useCache={}, useParallel={}, useSplines={}, parallelThreshold={}",
-                resolution, gridsize, useCache, useParallel, useSplines, parallelThreshold);
+            LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useCache={}, useParallel={}, useSplines={}, parallelThreshold={}, cachepixels={}, pixelGridSize={}",
+                resolution, gridsize, useCache, useParallel, useSplines, parallelThreshold, cachepixels, pixelGridSize);
         }
     }
 
@@ -161,7 +255,16 @@ public class DendrySampler implements Sampler {
     public double getSample(long seed, double x, double z) {
         long startTime = debugTiming ? System.nanoTime() : 0;
 
-        double result = evaluate(seed, x / gridsize, z / gridsize);
+        double result;
+        double normalizedX = x / gridsize;
+        double normalizedZ = z / gridsize;
+
+        // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
+        if (usesPixelCache()) {
+            result = evaluateWithPixelCache(seed, normalizedX, normalizedZ);
+        } else {
+            result = evaluate(seed, normalizedX, normalizedZ);
+        }
 
         if (debugTiming) {
             long elapsed = System.nanoTime() - startTime;
@@ -1444,5 +1547,325 @@ public class DendrySampler implements Sampler {
                 double slopeContribution = nearest.distance * slope;
                 return baseElevation + slopeContribution;
         }
+    }
+
+    // ========== Pixel Cache Methods ==========
+
+    /**
+     * Check if pixel cache is enabled and the return type uses it.
+     */
+    private boolean usesPixelCache() {
+        return cachepixels > 0 && pixelCache != null &&
+               (returnType == DendryReturnType.PIXEL_ELEVATION || returnType == DendryReturnType.PIXEL_LEVEL);
+    }
+
+    /**
+     * Get or create pixel cache entry for a cell.
+     * Returns null if caching is disabled.
+     */
+    private CellPixelData getOrCreatePixelCache(int cellX, int cellY) {
+        if (pixelCache == null) return null;
+
+        long key = packKey(cellX, cellY);
+        synchronized (pixelCacheLock) {
+            CellPixelData data = pixelCache.get(key);
+            if (data != null) {
+                data.lastAccessTime = System.nanoTime();
+                return data;
+            }
+
+            // Create new cache entry
+            data = new CellPixelData(cellX, cellY, pixelGridSize);
+
+            // Check if we need to evict old entries
+            evictIfNeeded(data.getMemorySize());
+
+            pixelCache.put(key, data);
+            return data;
+        }
+    }
+
+    /**
+     * Get cached pixel data for a cell (without creating).
+     */
+    private CellPixelData getCachedPixelData(int cellX, int cellY) {
+        if (pixelCache == null) return null;
+
+        long key = packKey(cellX, cellY);
+        synchronized (pixelCacheLock) {
+            CellPixelData data = pixelCache.get(key);
+            if (data != null) {
+                data.lastAccessTime = System.nanoTime();
+            }
+            return data;
+        }
+    }
+
+    /**
+     * Evict oldest cache entries if total memory exceeds limit.
+     */
+    private void evictIfNeeded(int additionalBytes) {
+        if (pixelCache == null) return;
+
+        int totalBytes = additionalBytes;
+        for (CellPixelData data : pixelCache.values()) {
+            totalBytes += data.getMemorySize();
+        }
+
+        while (totalBytes > MAX_PIXEL_CACHE_BYTES && !pixelCache.isEmpty()) {
+            // Find oldest entry
+            long oldestKey = -1;
+            long oldestTime = Long.MAX_VALUE;
+
+            for (Map.Entry<Long, CellPixelData> entry : pixelCache.entrySet()) {
+                if (entry.getValue().lastAccessTime < oldestTime) {
+                    oldestTime = entry.getValue().lastAccessTime;
+                    oldestKey = entry.getKey();
+                }
+            }
+
+            if (oldestKey != -1) {
+                CellPixelData removed = pixelCache.remove(oldestKey);
+                if (removed != null) {
+                    totalBytes -= removed.getMemorySize();
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    /**
+     * Convert world coordinates to pixel coordinates within a cell.
+     * @param worldX World X coordinate (already divided by gridsize)
+     * @param worldY World Y coordinate (already divided by gridsize)
+     * @param cellX Cell X index
+     * @param cellY Cell Y index
+     * @return Pixel coordinates [px, py] or null if out of bounds
+     */
+    private int[] worldToPixel(double worldX, double worldY, int cellX, int cellY) {
+        // Position within cell (0 to 1)
+        double localX = worldX - cellX;
+        double localY = worldY - cellY;
+
+        // Convert to pixel coordinates
+        int px = (int) Math.floor(localX * pixelGridSize);
+        int py = (int) Math.floor(localY * pixelGridSize);
+
+        if (px >= 0 && px < pixelGridSize && py >= 0 && py < pixelGridSize) {
+            return new int[] { px, py };
+        }
+        return null;
+    }
+
+    /**
+     * Sample segments into the pixel cache for a cell.
+     * Walks along each segment and marks pixels it crosses.
+     */
+    private void sampleSegmentsToPixelCache(List<Segment3D> segments, CellPixelData cache) {
+        double cellX = cache.cellX;
+        double cellY = cache.cellY;
+
+        for (Segment3D seg : segments) {
+            // Get segment bounds in cell-local coordinates
+            double ax = seg.a.x - cellX;
+            double ay = seg.a.y - cellY;
+            double bx = seg.b.x - cellX;
+            double by = seg.b.y - cellY;
+
+            // Skip if segment is entirely outside the cell
+            if ((ax < 0 && bx < 0) || (ax >= 1 && bx >= 1) ||
+                (ay < 0 && by < 0) || (ay >= 1 && by >= 1)) {
+                continue;
+            }
+
+            // Sample along the segment at pixel resolution
+            double segLength = seg.length();
+            double pixelSize = 1.0 / pixelGridSize;
+            int numSamples = Math.max(2, (int) Math.ceil(segLength / pixelSize * 2));
+
+            for (int i = 0; i <= numSamples; i++) {
+                double t = (double) i / numSamples;
+                Point3D pt = seg.lerp(t);
+
+                double localX = pt.x - cellX;
+                double localY = pt.y - cellY;
+
+                // Check if point is within cell
+                if (localX >= 0 && localX < 1 && localY >= 0 && localY < 1) {
+                    int px = (int) (localX * pixelGridSize);
+                    int py = (int) (localY * pixelGridSize);
+
+                    if (px >= 0 && px < pixelGridSize && py >= 0 && py < pixelGridSize) {
+                        float elevation = (float) pt.z;
+                        byte level = (byte) seg.level;
+                        cache.setPixel(px, py, elevation, level);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Lookup pixel data for a world coordinate.
+     * Returns the elevation or level based on return type.
+     * Returns NaN if no pixel data is available.
+     */
+    private double lookupPixelValue(double worldX, double worldY) {
+        // Get cell coordinates
+        int cellX = MathUtils.floor(worldX);
+        int cellY = MathUtils.floor(worldY);
+
+        CellPixelData cache = getCachedPixelData(cellX, cellY);
+        if (cache == null) {
+            return Double.NaN;
+        }
+
+        int[] pixel = worldToPixel(worldX, worldY, cellX, cellY);
+        if (pixel == null) {
+            return Double.NaN;
+        }
+
+        PixelData data = cache.getPixel(pixel[0], pixel[1]);
+        if (data == null) {
+            return Double.NaN;
+        }
+
+        if (returnType == DendryReturnType.PIXEL_ELEVATION) {
+            // Add slope contribution based on distance to nearest pixel center
+            double pixelCenterX = cellX + (data.xOffset + 0.5) / pixelGridSize;
+            double pixelCenterY = cellY + (data.yOffset + 0.5) / pixelGridSize;
+            double dist = Math.sqrt((worldX - pixelCenterX) * (worldX - pixelCenterX) +
+                                    (worldY - pixelCenterY) * (worldY - pixelCenterY));
+            return data.elevation + dist * slope * gridsize;
+        } else {
+            // PIXEL_LEVEL
+            return data.level;
+        }
+    }
+
+    /**
+     * Evaluate using pixel cache - checks cache first, computes if needed.
+     */
+    private double evaluateWithPixelCache(long seed, double x, double y) {
+        // x, y are already in normalized coordinates (divided by gridsize)
+        int cellX = MathUtils.floor(x);
+        int cellY = MathUtils.floor(y);
+
+        // Check if cell is already cached
+        CellPixelData cache = getCachedPixelData(cellX, cellY);
+        if (cache != null) {
+            double value = lookupPixelValue(x, y);
+            if (!Double.isNaN(value)) {
+                return value;
+            }
+        }
+
+        // Need to compute the cell - create cache entry
+        cache = getOrCreatePixelCache(cellX, cellY);
+
+        // Compute all segments for this cell
+        List<Segment3D> allSegments = computeAllSegmentsForCell(seed, cellX, cellY);
+
+        // Sample segments into pixel cache
+        if (cache != null) {
+            sampleSegmentsToPixelCache(allSegments, cache);
+        }
+
+        // Lookup the value
+        double value = lookupPixelValue(x, y);
+        if (!Double.isNaN(value)) {
+            return value;
+        }
+
+        // Fallback: no pixel data at this location
+        return evaluateControlFunction(x, y);
+    }
+
+    /**
+     * Compute all segments for a specific cell (used for pixel cache population).
+     */
+    private List<Segment3D> computeAllSegmentsForCell(long seed, int cellX, int cellY) {
+        // Create a cell object for the target cell
+        Cell cell1 = new Cell(cellX, cellY, 1);
+
+        // Displacement factors
+        double displacementLevel0 = delta * 2.0;
+        double displacementLevel1 = delta;
+        double displacementLevel2 = displacementLevel1 / 4.0;
+        double displacementLevel3 = displacementLevel2 / 4.0;
+
+        // Minimum slope constraints
+        double minSlopeLevel1 = 0.5;
+        double minSlopeLevel2 = 0.9;
+        double minSlopeLevel3 = 0.18;
+        double minSlopeLevel4 = 0.38;
+        double minSlopeLevel5 = 1.0;
+
+        // Level 0
+        List<Segment3D> segments0Base = generateLevel0Network(cell1);
+        Map<Long, NodeTangentInfo> tangentMap0 = computeNodeTangents(segments0Base);
+        List<Segment3D> segments0Pruned = pruneToQueryRegion(segments0Base, cell1);
+        int level0Subdivisions = Math.max(2, defaultBranches);
+        segments0Pruned = subdivideSegments(segments0Pruned, level0Subdivisions, 0, tangentMap0);
+        segments0Pruned = displaceSegmentsWithSplit(segments0Pruned, displacementLevel0, 0);
+
+        if (resolution == 0) {
+            return segments0Pruned;
+        }
+
+        // Level 1
+        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, segments0Pruned, minSlopeLevel1);
+        Map<Long, NodeTangentInfo> tangentMap1 = computeNodeTangents(segments1Base);
+        int branchCount = getBranchCountForCell(cell1);
+        List<Segment3D> segments1 = subdivideSegments(segments1Base, branchCount, 1, tangentMap1);
+        segments1 = displaceSegmentsWithSplit(segments1, displacementLevel1, 1);
+
+        List<Segment3D> allSegments = new ArrayList<>(segments0Pruned);
+        allSegments.addAll(segments1);
+
+        if (resolution == 1) {
+            return allSegments;
+        }
+
+        // Level 2+
+        Cell cell2 = new Cell(cellX * 2, cellY * 2, 2);
+        Point3D[][] points2 = generateNeighboringPoints3D(cell2, 5);
+        List<Segment3D> segments2 = generateSubSegments(points2, allSegments, minSlopeLevel2, 2);
+        displaceSegments(segments2, displacementLevel2, cell2);
+
+        if (resolution == 2) {
+            allSegments.addAll(segments2);
+            return allSegments;
+        }
+
+        Cell cell3 = new Cell(cellX * 4, cellY * 4, 4);
+        Point3D[][] points3 = generateNeighboringPoints3D(cell3, 5);
+        allSegments.addAll(segments2);
+        List<Segment3D> segments3 = generateSubSegments(points3, allSegments, minSlopeLevel3, 3);
+        displaceSegments(segments3, displacementLevel3, cell3);
+
+        if (resolution == 3) {
+            allSegments.addAll(segments3);
+            return allSegments;
+        }
+
+        Cell cell4 = new Cell(cellX * 8, cellY * 8, 8);
+        Point3D[][] points4 = generateNeighboringPoints3D(cell4, 5);
+        allSegments.addAll(segments3);
+        List<Segment3D> segments4 = generateSubSegments(points4, allSegments, minSlopeLevel4, 4);
+
+        if (resolution == 4) {
+            allSegments.addAll(segments4);
+            return allSegments;
+        }
+
+        Cell cell5 = new Cell(cellX * 16, cellY * 16, 16);
+        Point3D[][] points5 = generateNeighboringPoints3D(cell5, 5);
+        allSegments.addAll(segments4);
+        List<Segment3D> segments5 = generateSubSegments(points5, allSegments, minSlopeLevel5, 5);
+        allSegments.addAll(segments5);
+
+        return allSegments;
     }
 }

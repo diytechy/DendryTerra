@@ -369,6 +369,63 @@ To fulfil a query for a specific point.
         For each level 1 cell that is on the boundary of the level 0 cell, find the cell that has it's key-point at the lowest elevation, and create a segment between it and the adjacent level 1 cell in the other level 0 cell.
 5. Now all adjacent level 1 cells are fully defined around the level 1 cell where the query originated from.  Remove all cells and segments that are not a part of the query cell or it's adjacent cells.
 
+########################################################
+
+I still see occasional discontinuities at cell boundaries.  Can you see anything else that may cause these discontinuities with the updated approach?  It is possible these were occurring before and I did not notice them.  Anything that could cause a segment to change / shift between two cell evaluations?  To me the discontinuities do not appear severe, I still suspect something in spline construction is being evaluated differently between two level 1 cells.
+
+############################################################
+
+The changes work, but why is subdivision and displacement affected by pruning?  Isn't subdivision and displacement per segment?  If some segments are removed, shouldn't the subdivision and displacement of all existing segments occur the same way?  Explain the interaction that is causing subdivision and displacement to be affected by neighboring segments.
+
+###########################################################
+
+I would like to take a different approach.  For each connected node of level 1 cells, we can determine the control points or tangent handles for spline creation separately from segmentation and displacement.  The angle and of any segments splined into the node can be up to 90 degrees from the linear connection, which will allows interesting curvatures around node points, the strength would need to be limited in a way to prevent splines from neighboring splines from overlapping, those could be exposed tuning parameters.
+
+If a node is connected to more than 2 other points, the spline angle into additional paths should be similarly rotated to the main control points so that it's spline does not overlap with other splines entering the node.
+
+This way control points for node connections can be defined first,  pruning can still occur before subdivision and displacement without affecting spline creation off of cell 1 nodes, and can create deterministic creation of splines.
+
+##########################################################
+
+I am seeing discontinuities, I suspect this is because cell level 0 stitching needs to occur when the query cell is both directly by a level 0 cell and at least 1 cell away from the level 0 boundary.  Update the logic for level 0 cell network creation to also trigger if the level 1 query cell is 1 cell away from the boundary (not just on the boundary).
+
+Investigate if there are any other sources of discontinuities or if there is a separate root cause.
+
+After creating segments and defining tangents, prune all cells that are not in the 3x3 level 1 cells centered on the query cell.
+
+######################################################
+
+From Claude:
+
+I see another issue. Level 1 segments are being generated from already-pruned level 0 segments, which varies by query cell. Let me restructure the flow to:
+
+Generate L0 for wider area (5x5 - already done)
+Subdivide/displace L0 (unpruned)
+Generate L1 from unpruned L0
+Subdivide/displace L1
+THEN prune both to 3x3
+
+Continuity has been resolved but the tool is taking a very long time to load, I believe some new inefficiencies have been introduced because of the order of operations which I think are unnecessary.
+
+What I would expect:
+
+1. Determine what L0 cells need to be created to solve query cell (already updated based on level 0 cell interception with the 5x5 level 1 cells surrounding the query cell.)
+2. Determine the level 1 segments to connect those level 1 cells bound within level 0 (Already done today, "generateLevel0Network")
+3. Determine level 1 segments that stitch cells between level 0 cell boundaries. (Also appears to be done in "generateLevel0Network")
+
+Determine the tangent definitions for each node / level 1 cells NOT on the border of the collection of L0 cells, since those nodes can't be solved because we don't know how those border cell nodes be stitched in with other cells in L0 cells that haven't been computed.
+Now prune all segments that are not connected to a point in the 3x3 grid level 1 cell set surrounding the query cell.
+Now perform subdivision and displacement on all segments, which at this point would include any segments both directly from cell level 0 and segments that were stitching at the border.  This way subdivision and displacement is only performed on the segments which must be solved for the query cell.
+
+Please continue, but note we appear to have conflicting semantics which need to be aligned on.  I will restructure some of my definitions:
+
+Level 1 cells are cells of the gridsize provided as an input configuration.
+Level 0 cells are cells that contain fully networked level 1 cells.
+Level 1 segments are those that connect level 1 cells.  Note there is no such thing as level 0 segments.  There are segments that connect the cells bound by the level 0 cell, but those segments are still connecting level 1 cells, and are thus level 1 segments.
+
+With that clarification please proceed:
+
+
 
 1. First, connect all cells in the 5x5 array to their adjacent cell / neighbor with the lowest elevation. (Only directly adjacent - top / bottom / left / right)
 2. If any of the inner 3x3 nodes does not have a connection 
@@ -382,10 +439,40 @@ Verify cell-crossing segments for other levels (level 1/2/ect) is also determini
 
 If a point does not have a segment path back to level 0, it should be removed so it does not create orphaned artifacts.
 
-After segments are split, are their nodes used both to create the spline and to act as nodes for future level segments to connect to?
+After segments are split, are their nodes used both to create the spline and to act as nodes for higher level segments to connect to?
 
-Create two new return types:
-block_elevation
-block_level
+Implement an additional parameter that may improve query speed:
 
-If either is requested, the algorithm can store the entire cell segment solution in an array of structures representing blocks.  So after calculating all the levels, each segment would be evaluated so it's rasterized / pixilated definition could be stored for the cell.  It's x,y position is rounded to the nearest integer offset in the cell, it's elevation is stored in single, and it's level is stored as a uint8.  Then all of this could be stored to a rolling buffer that contains the block data for the last n number of cells, and set of block data (being only 8 bytes per point) should be able to be stored in a few kilobytes of RAM for a gridsize of 1000 blocks.  That way the pixilated definition of a cell would be calculated all at once, and any queries to that cell for block_elevation or block_level would be able to be returned immediately.  If there is no segment for the requested x,z pair, a value of 0 for elevation and -1 for level could be returned.  The amount of cells to allocate and round-robbin would be based on the gridsize, not to exceed 20 MB.
+Create a new parameter:
+cachepixels with a default of 0, scalable from 0 to gridsize.
+
+If gridsize/cachepixels exceeds 65535 (UInt16 max) throw an error.
+
+If cachepixels > gridsize, throw an error.
+
+When enabled (any positive non-zero value) this will force the algorithm to cache the low resolution "pixel state" for each cell segment in "pixel" coordinates in the query cell for the defined resolution so the entire branch structure need be computed only once for a single cell.
+
+A constant 20 MB max would be allocated to this cache.
+This cache would be formed via a 2d array with dimensions of cell index / level 1 cell coordinates (x/z).
+The amount of "pixels" allocated to each cache element would be (gridsize*(n+1)*3 / cachepixels).
+If a single cell allocation exceeds the cache limit (20 MB), an error will be produced.
+Else each "pixel" stores 9 bytes of information:
+ A. An evaluated x,y position rounded to the nearest UInt16 integer offset from the cell origin in uint16, which represents a sample point the spline intersects.
+ B. It's elevation stored in single of the spline.
+ C. It's evaluated level, stored as a uint8. 
+
+Thus, a 1000 size grid with a cachepixel level of 1 and query resolution of 2 would use 81 kb.
+
+This would leave enough space for 250 cells, which would be organized so that the oldest queried cells would be removed to make space if a new cell needed to be queried.
+
+To utilize the information from this cache, create two new return types:
+pixel_elevation
+pixel_level
+
+If either of the new return types is requested, the algorithm can first see if the query cell is already cached before recalculating segment branches.
+
+ If not cached, the "pixel" information would be calculated and stored after each segment is computed so long as cachepixels was enabled.  After calculating all the levels, or each level, or each segment, the segment would be evaluated along each cachepixels distance.  It's x,y position is rounded to the nearest integer offset in the cell according to it's cachepixels resolution, it's elevation is stored in single, and it's level is stored as a uint8.  If the allocated RAM for a segment is consumed, further processing for the cell could just be terminated prematurely, as this is a very rare scenario, and would at the worst just leave gaps / incomplete higher level definitions.
+
+ Once the cell has been fully evaluated, the algorithm now has a cached definition of pixel information for the cell.
+
+ If "pixel_level" is requested, the queries x/z samples just need to be rounded according to the pixel resolution the same the pixel was created from the segment, and if that pixel exists in the cell element in the cache, it's respective value (level or elevation) can be returned.

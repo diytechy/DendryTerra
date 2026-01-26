@@ -19,5 +19,19 @@ public enum DendryReturnType {
     /**
      * Returns the elevation difference from the root branch.
      */
-    ELEVATION
+    ELEVATION,
+
+    /**
+     * Returns the elevation from cached pixel data.
+     * Requires cachepixels > 0 to be set.
+     * Uses pre-computed pixel grid for faster lookups after initial cell computation.
+     */
+    PIXEL_ELEVATION,
+
+    /**
+     * Returns the resolution level from cached pixel data.
+     * Requires cachepixels > 0 to be set.
+     * Uses pre-computed pixel grid for faster lookups after initial cell computation.
+     */
+    PIXEL_LEVEL
 }
