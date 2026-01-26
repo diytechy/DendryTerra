@@ -196,11 +196,15 @@ public class DendrySampler implements Sampler {
         Cell cell1 = getCell(x, y, 1);
         List<Segment3D> segments0 = generateLevel0Network(cell1);
 
-        // Subdivide and displace level 0 for curvature
+        // Subdivide and displace level 0 for curvature BEFORE pruning
+        // This ensures spline control points are consistent regardless of query position
         double displacementLevel0 = delta * 2.0;
         int level0Subdivisions = Math.max(2, defaultBranches);
         segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
         segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, 0);
+
+        // NOW prune level 0 segments after subdivision
+        segments0 = pruneToQueryRegion(segments0, cell1);
 
         if (resolution == 0) {
             return computeResult(x, y, segments0);
@@ -208,11 +212,14 @@ public class DendrySampler implements Sampler {
 
         // Level 1: Process 3x3 cells around query cell
         List<Segment3D> segments1 = generateLevel1Segments(cell1, segments0, minSlopeLevel1);
-        segments1 = pruneAwaySegments(segments1, cell1);
 
+        // Subdivide and displace BEFORE pruning to ensure consistent spline control points
         int branchCount = getBranchCountForCell(cell1);
         segments1 = subdivideSegments(segments1, branchCount, 1);
         displaceSegments(segments1, displacementLevel1, cell1);
+
+        // NOW prune after subdivision
+        segments1 = pruneAwaySegments(segments1, cell1);
 
         List<Segment3D> allSegments = new ArrayList<>(segments0);
         allSegments.addAll(segments1);
@@ -372,15 +379,12 @@ public class DendrySampler implements Sampler {
         // Stitch adjacent level 0 cells together at their boundaries
         List<Segment3D> stitchSegments = stitchLevel0Cells(requiredL0Cells, l0CellPoints);
 
-        // Combine all segments
+        // Combine all segments (no pruning here - prune after spline subdivision in evaluate())
         List<Segment3D> allSegments = new ArrayList<>();
         for (List<Segment3D> segs : l0CellSegments.values()) {
             allSegments.addAll(segs);
         }
         allSegments.addAll(stitchSegments);
-
-        // Prune to only keep segments relevant to query cell and neighbors
-        allSegments = pruneToQueryRegion(allSegments, queryCell1);
 
         return allSegments;
     }
