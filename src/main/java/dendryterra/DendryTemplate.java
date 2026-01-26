@@ -152,6 +152,27 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta int level0Scale = 4;
 
+    /**
+     * Maximum angle deviation for spline tangents at nodes (in degrees).
+     * 0 = tangents point directly at connected nodes (linear-ish curves)
+     * 90 = tangents can be perpendicular to the connection direction (maximum curvature)
+     * Range: 0-90, default 45.
+     */
+    @Value("tangent-angle")
+    @Default
+    private @Meta double tangentAngle = 45.0;
+
+    /**
+     * Strength of spline tangents as a fraction of segment length.
+     * Controls how far the control point is from the node.
+     * 0 = control point at node (linear), 1 = control point at full tangent length.
+     * Higher values create more pronounced curves but risk overlap.
+     * Range: 0-1, default 0.4.
+     */
+    @Value("tangent-strength")
+    @Default
+    private @Meta double tangentStrength = 0.4;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -184,6 +205,12 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (level0Scale < 2 || level0Scale > 10) {
             throw new ValidationException("level0-scale must be between 2 and 10, got: " + level0Scale);
         }
+        if (tangentAngle < 0 || tangentAngle > 90) {
+            throw new ValidationException("tangent-angle must be between 0 and 90, got: " + tangentAngle);
+        }
+        if (tangentStrength < 0 || tangentStrength > 1) {
+            throw new ValidationException("tangent-strength must be between 0 and 1, got: " + tangentStrength);
+        }
         return true;
     }
 
@@ -197,7 +224,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             connectDistance, connectDistanceFactor,
             useCache, useParallel, useSplines,
             debugTiming, parallelThreshold,
-            level0Scale
+            level0Scale,
+            Math.toRadians(tangentAngle), tangentStrength
         );
     }
 }

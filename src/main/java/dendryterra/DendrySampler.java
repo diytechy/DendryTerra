@@ -52,6 +52,10 @@ public class DendrySampler implements Sampler {
     // Level 0 cell scale (how many level 1 cells fit in one level 0 cell per axis)
     private final int level0Scale;
 
+    // Spline tangent parameters
+    private final double tangentAngle;    // Max angle deviation (radians)
+    private final double tangentStrength; // Tangent length as fraction of segment length
+
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
 
@@ -83,7 +87,8 @@ public class DendrySampler implements Sampler {
                          double connectDistance, double connectDistanceFactor,
                          boolean useCache, boolean useParallel, boolean useSplines,
                          boolean debugTiming, int parallelThreshold,
-                         int level0Scale) {
+                         int level0Scale,
+                         double tangentAngle, double tangentStrength) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -104,6 +109,8 @@ public class DendrySampler implements Sampler {
         this.debugTiming = debugTiming;
         this.parallelThreshold = parallelThreshold;
         this.level0Scale = level0Scale;
+        this.tangentAngle = tangentAngle;
+        this.tangentStrength = tangentStrength;
 
         // Initialize cache only if enabled
         if (useCache) {
@@ -193,33 +200,35 @@ public class DendrySampler implements Sampler {
         double minSlopeLevel5 = 1.0;
 
         // Level 0: Cell-based network with guaranteed connectivity
+        // Uses 5x5 L1 cells to ensure proper tangent computation at L0 boundaries
         Cell cell1 = getCell(x, y, 1);
         List<Segment3D> segments0 = generateLevel0Network(cell1);
 
-        // Subdivide and displace level 0 for curvature BEFORE pruning
-        // This ensures spline control points are consistent regardless of query position
+        // Subdivide and displace level 0 (keep unpruned for L1 generation)
         double displacementLevel0 = delta * 2.0;
         int level0Subdivisions = Math.max(2, defaultBranches);
         segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
         segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, 0);
 
-        // NOW prune level 0 segments after subdivision
-        segments0 = pruneToQueryRegion(segments0, cell1);
-
         if (resolution == 0) {
+            // For L0-only output, prune to query region
+            segments0 = pruneToQueryRegion(segments0, cell1);
             return computeResult(x, y, segments0);
         }
 
         // Level 1: Process 3x3 cells around query cell
+        // Use UNPRUNED L0 segments to ensure consistent L1 generation across query cells
         List<Segment3D> segments1 = generateLevel1Segments(cell1, segments0, minSlopeLevel1);
 
-        // Subdivide and displace BEFORE pruning to ensure consistent spline control points
+        // Subdivide and displace L1 (tangents computed internally, deterministically)
         int branchCount = getBranchCountForCell(cell1);
         segments1 = subdivideSegments(segments1, branchCount, 1);
         displaceSegments(segments1, displacementLevel1, cell1);
 
-        // NOW prune after subdivision
-        segments1 = pruneAwaySegments(segments1, cell1);
+        // NOW prune BOTH L0 and L1 to the 3x3 query region after all tangent computation
+        // Use the same pruning strategy for consistency
+        segments0 = pruneToQueryRegion(segments0, cell1);
+        segments1 = pruneToQueryRegion(segments1, cell1);
 
         List<Segment3D> allSegments = new ArrayList<>(segments0);
         allSegments.addAll(segments1);
@@ -391,15 +400,18 @@ public class DendrySampler implements Sampler {
 
     /**
      * Determine which level 0 cells need to be computed for a query.
-     * A query cell needs its level 0 cell plus any adjacent level 0 cells
-     * if the query cell is near a level 0 boundary.
+     * We check a 5x5 grid of level 1 cells around the query cell to ensure:
+     * 1. All level 0 cells containing the 3x3 query region are included
+     * 2. Level 0 cells needed for tangent computation at boundaries are included
+     * 3. Stitching segments are properly computed for adjacent level 0 cells
      */
     private java.util.Set<Long> getRequiredLevel0Cells(Cell queryCell1) {
         java.util.Set<Long> required = new java.util.HashSet<>();
 
-        // Check the query cell and its 8 neighbors
-        for (int di = -1; di <= 1; di++) {
-            for (int dj = -1; dj <= 1; dj++) {
+        // Check a 5x5 grid (-2 to +2) to ensure we capture adjacent L0 cells
+        // needed for proper tangent computation at L0 boundaries
+        for (int di = -2; di <= 2; di++) {
+            for (int dj = -2; dj <= 2; dj++) {
                 int l1x = queryCell1.x + dj;
                 int l1y = queryCell1.y + di;
                 Cell l0Cell = getLevel0Cell(l1x, l1y);
@@ -710,6 +722,167 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Pre-computed tangent information for spline control points at a node.
+     * Stores tangent vectors for each connected neighbor, computed deterministically.
+     */
+    private static class NodeTangentInfo {
+        final Point3D node;
+        final Map<Long, Vec2D> tangents;  // neighborKey -> tangent vector (unit direction)
+
+        NodeTangentInfo(Point3D node) {
+            this.node = node;
+            this.tangents = new HashMap<>();
+        }
+    }
+
+    /**
+     * Compute tangent information for all nodes in a segment list.
+     * Tangents are computed deterministically based on node positions and connections,
+     * independent of segment list order.
+     */
+    private Map<Long, NodeTangentInfo> computeNodeTangents(List<Segment3D> segments) {
+        // Step 1: Build connectivity map: node -> list of connected nodes
+        Map<Long, Point3D> nodePoints = new HashMap<>();
+        Map<Long, List<Point3D>> connectivity = new HashMap<>();
+
+        for (Segment3D seg : segments) {
+            long keyA = pointHash(seg.a);
+            long keyB = pointHash(seg.b);
+
+            nodePoints.putIfAbsent(keyA, seg.a);
+            nodePoints.putIfAbsent(keyB, seg.b);
+
+            connectivity.computeIfAbsent(keyA, k -> new ArrayList<>()).add(seg.b);
+            connectivity.computeIfAbsent(keyB, k -> new ArrayList<>()).add(seg.a);
+        }
+
+        // Step 2: For each node, compute tangent vectors
+        Map<Long, NodeTangentInfo> tangentMap = new HashMap<>();
+
+        for (Map.Entry<Long, List<Point3D>> entry : connectivity.entrySet()) {
+            long nodeKey = entry.getKey();
+            Point3D node = nodePoints.get(nodeKey);
+            List<Point3D> neighbors = entry.getValue();
+
+            NodeTangentInfo info = new NodeTangentInfo(node);
+
+            if (neighbors.size() == 1) {
+                // Single connection - tangent points toward neighbor
+                Point3D neighbor = neighbors.get(0);
+                Vec2D toNeighbor = new Vec2D(node.projectZ(), neighbor.projectZ());
+                if (toNeighbor.lengthSquared() > MathUtils.EPSILON) {
+                    toNeighbor = toNeighbor.normalize();
+                }
+                info.tangents.put(pointHash(neighbor), toNeighbor);
+            } else {
+                // Multiple connections - sort by angle for deterministic ordering
+                neighbors.sort((a, b) -> {
+                    double angleA = Math.atan2(a.y - node.y, a.x - node.x);
+                    double angleB = Math.atan2(b.y - node.y, b.x - node.x);
+                    return Double.compare(angleA, angleB);
+                });
+
+                int n = neighbors.size();
+                for (int i = 0; i < n; i++) {
+                    Point3D neighbor = neighbors.get(i);
+                    long neighborKey = pointHash(neighbor);
+
+                    // Base direction toward neighbor
+                    Vec2D toNeighbor = new Vec2D(node.projectZ(), neighbor.projectZ());
+                    double dist = toNeighbor.length();
+                    if (dist < MathUtils.EPSILON) {
+                        info.tangents.put(neighborKey, new Vec2D(1, 0));
+                        continue;
+                    }
+                    toNeighbor = toNeighbor.normalize();
+
+                    // For 2 connections, tangent is influenced by the opposite direction
+                    // For 3+ connections, rotate tangent to avoid overlap with neighbors
+                    Vec2D tangent;
+                    if (n == 2) {
+                        // Two connections: tangent is rotated toward the "flow" direction
+                        // The tangent for going TO neighbor should come FROM the opposite neighbor
+                        Point3D opposite = neighbors.get(1 - i);
+                        Vec2D fromOpposite = new Vec2D(opposite.projectZ(), node.projectZ());
+                        if (fromOpposite.lengthSquared() > MathUtils.EPSILON) {
+                            fromOpposite = fromOpposite.normalize();
+                            // Blend between direct direction and flow direction
+                            tangent = blendTangent(toNeighbor, fromOpposite, tangentAngle);
+                        } else {
+                            tangent = toNeighbor;
+                        }
+                    } else {
+                        // 3+ connections: rotate tangent to create separation
+                        // Find the angular "gap" between this neighbor and the next
+                        Point3D prevNeighbor = neighbors.get((i - 1 + n) % n);
+                        Point3D nextNeighbor = neighbors.get((i + 1) % n);
+
+                        double angleToPrev = Math.atan2(prevNeighbor.y - node.y, prevNeighbor.x - node.x);
+                        double angleToNext = Math.atan2(nextNeighbor.y - node.y, nextNeighbor.x - node.x);
+                        double angleToCurrent = Math.atan2(neighbor.y - node.y, neighbor.x - node.x);
+
+                        // Calculate angular gaps
+                        double gapToPrev = normalizeAngle(angleToCurrent - angleToPrev);
+                        double gapToNext = normalizeAngle(angleToNext - angleToCurrent);
+
+                        // Rotate slightly toward the larger gap to spread tangents
+                        double rotationAngle = 0;
+                        if (gapToPrev > gapToNext) {
+                            rotationAngle = -Math.min(tangentAngle, gapToPrev * 0.3);
+                        } else {
+                            rotationAngle = Math.min(tangentAngle, gapToNext * 0.3);
+                        }
+
+                        tangent = rotateVec2D(toNeighbor, rotationAngle);
+                    }
+
+                    info.tangents.put(neighborKey, tangent);
+                }
+            }
+
+            tangentMap.put(nodeKey, info);
+        }
+
+        return tangentMap;
+    }
+
+    /**
+     * Blend two directions, rotating 'base' toward 'influence' by up to maxAngle.
+     */
+    private Vec2D blendTangent(Vec2D base, Vec2D influence, double maxAngle) {
+        double baseAngle = Math.atan2(base.y, base.x);
+        double influenceAngle = Math.atan2(influence.y, influence.x);
+
+        double angleDiff = normalizeAngle(influenceAngle - baseAngle);
+
+        // Clamp rotation to maxAngle
+        double rotation = MathUtils.clamp(angleDiff, -maxAngle, maxAngle);
+
+        return rotateVec2D(base, rotation);
+    }
+
+    /**
+     * Rotate a 2D vector by an angle (radians).
+     */
+    private Vec2D rotateVec2D(Vec2D v, double angle) {
+        double cos = Math.cos(angle);
+        double sin = Math.sin(angle);
+        return new Vec2D(
+            v.x * cos - v.y * sin,
+            v.x * sin + v.y * cos
+        );
+    }
+
+    /**
+     * Normalize angle to [-PI, PI].
+     */
+    private double normalizeAngle(double angle) {
+        while (angle > Math.PI) angle -= 2 * Math.PI;
+        while (angle < -Math.PI) angle += 2 * Math.PI;
+        return angle;
+    }
+
+    /**
      * Find root with path compression (Union-Find).
      */
     private int find(int[] parent, int i) {
@@ -755,14 +928,17 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Generate level 1 segments for 3x3 cell region around query cell.
+     * Generate level 1 segments for 5x5 cell region around query cell.
+     * The wider region ensures proper tangent computation at the 3x3 boundary.
+     * Segments will be pruned to 3x3 after tangent computation.
      */
     private List<Segment3D> generateLevel1Segments(Cell queryCell, List<Segment3D> parentSegments, double minSlope) {
         List<Segment3D> allSegments = new ArrayList<>();
 
-        // Process 3x3 grid of level 1 cells
-        for (int di = -1; di <= 1; di++) {
-            for (int dj = -1; dj <= 1; dj++) {
+        // Process 5x5 grid of level 1 cells to ensure proper tangent computation
+        // at the edges of the 3x3 query region
+        for (int di = -2; di <= 2; di++) {
+            for (int dj = -2; dj <= 2; dj++) {
                 Cell cell = new Cell(queryCell.x + dj, queryCell.y + di, 1);
 
                 // Generate points for this cell's neighborhood (5x5 including neighbors)
@@ -891,26 +1067,30 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Catmull-Rom spline subdivision (smoother but slower).
-     * Uses connectivity-based control point lookup to ensure deterministic results
-     * regardless of segment list order (important for MST/tree structures).
+     * Catmull-Rom spline subdivision using pre-computed node tangents.
+     * Tangents are computed deterministically based on node positions and connections,
+     * ensuring consistent results regardless of segment list order or pruning.
      */
     private List<Segment3D> subdivideWithSplines(List<Segment3D> segments, int numDivisions, int level) {
         double levelCurvature = curvature * Math.pow(curvatureFalloff, level - 1);
+        double levelStrength = tangentStrength * Math.pow(curvatureFalloff, level - 1);
         List<Segment3D> subdivided = new ArrayList<>();
 
-        // Build connectivity map: point -> list of segments connected to that point
-        Map<Long, List<Segment3D>> connectivityMap = buildConnectivityMap(segments);
+        // Pre-compute tangent information for all nodes (deterministic)
+        Map<Long, NodeTangentInfo> tangentMap = computeNodeTangents(segments);
 
         for (Segment3D seg : segments) {
             Point3D p1 = seg.a;
             Point3D p2 = seg.b;
+            long key1 = pointHash(p1);
+            long key2 = pointHash(p2);
 
-            // Find control point p0: the "other end" of a segment connected to p1 (not p2)
-            Point3D p0 = findConnectedControlPoint(p1, p2, seg, connectivityMap);
+            // Get segment length for tangent scaling
+            double segLength = p1.projectZ().distanceTo(p2.projectZ());
 
-            // Find control point p3: the "other end" of a segment connected to p2 (not p1)
-            Point3D p3 = findConnectedControlPoint(p2, p1, seg, connectivityMap);
+            // Get control points from pre-computed tangents
+            Point3D p0 = getControlPointFromTangent(p1, p2, tangentMap.get(key1), segLength, levelStrength, true);
+            Point3D p3 = getControlPointFromTangent(p2, p1, tangentMap.get(key2), segLength, levelStrength, false);
 
             Point3D prev = p1;
             for (int j = 1; j <= numDivisions; j++) {
@@ -933,21 +1113,45 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Build a map from point hash to segments connected at that point.
-     * Uses a spatial hash of point coordinates for lookup.
+     * Compute a Catmull-Rom control point from pre-computed tangent info.
+     *
+     * @param node The node point (p1 or p2)
+     * @param other The other end of the segment
+     * @param tangentInfo Pre-computed tangent info for this node (may be null)
+     * @param segLength Length of the segment for scaling
+     * @param strength Tangent strength (0-1)
+     * @param isStart True if this is the start point (p0), false if end (p3)
+     * @return The control point for Catmull-Rom spline
      */
-    private Map<Long, List<Segment3D>> buildConnectivityMap(List<Segment3D> segments) {
-        Map<Long, List<Segment3D>> map = new HashMap<>();
-
-        for (Segment3D seg : segments) {
-            long keyA = pointHash(seg.a);
-            long keyB = pointHash(seg.b);
-
-            map.computeIfAbsent(keyA, k -> new ArrayList<>()).add(seg);
-            map.computeIfAbsent(keyB, k -> new ArrayList<>()).add(seg);
+    private Point3D getControlPointFromTangent(Point3D node, Point3D other, NodeTangentInfo tangentInfo,
+                                                double segLength, double strength, boolean isStart) {
+        if (tangentInfo == null || tangentInfo.tangents.isEmpty()) {
+            // No tangent info - fall back to linear (control point at node)
+            return node;
         }
 
-        return map;
+        long otherKey = pointHash(other);
+        Vec2D tangent = tangentInfo.tangents.get(otherKey);
+
+        if (tangent == null) {
+            // No tangent for this connection - fall back to linear
+            return node;
+        }
+
+        // Control point is offset from node along the tangent direction
+        // For Catmull-Rom, p0 should be "before" p1 and p3 should be "after" p2
+        // We reverse the tangent direction for p0 (isStart=true)
+        double offset = segLength * strength;
+        double sign = isStart ? -1.0 : 1.0;
+
+        // Interpolate elevation based on segment direction
+        double elevOffset = (other.z - node.z) * strength * sign;
+
+        return new Point3D(
+            node.x + tangent.x * offset * sign,
+            node.y + tangent.y * offset * sign,
+            node.z + elevOffset
+        );
     }
 
     /**
@@ -959,52 +1163,6 @@ public class DendrySampler implements Sampler {
         long hx = (long)(p.x * 10000);
         long hy = (long)(p.y * 10000);
         return (hx * 73856093L) ^ (hy * 19349663L);
-    }
-
-    /**
-     * Find a control point for spline interpolation by looking at connectivity.
-     * Given a point 'anchor' and the 'other' end of the current segment,
-     * find another segment connected to 'anchor' and return its far endpoint.
-     *
-     * @param anchor The point we're looking for connections at
-     * @param other The other end of the current segment (to exclude)
-     * @param currentSeg The current segment (to exclude from search)
-     * @param connectivityMap Map of point hash -> connected segments
-     * @return The control point, or 'anchor' itself if no other connection found
-     */
-    private Point3D findConnectedControlPoint(Point3D anchor, Point3D other, Segment3D currentSeg,
-                                               Map<Long, List<Segment3D>> connectivityMap) {
-        long key = pointHash(anchor);
-        List<Segment3D> connected = connectivityMap.get(key);
-
-        if (connected == null || connected.size() <= 1) {
-            // No other segments connected - use anchor as control point (linear at endpoint)
-            return anchor;
-        }
-
-        // Find a segment other than currentSeg connected at anchor
-        for (Segment3D seg : connected) {
-            if (seg == currentSeg) continue;
-
-            // Determine which end of this segment is at 'anchor' and return the other end
-            if (pointsMatch(seg.a, anchor)) {
-                return seg.b;
-            } else if (pointsMatch(seg.b, anchor)) {
-                return seg.a;
-            }
-        }
-
-        // No other connection found
-        return anchor;
-    }
-
-    /**
-     * Check if two points match within epsilon tolerance.
-     */
-    private boolean pointsMatch(Point3D a, Point3D b) {
-        double dx = a.x - b.x;
-        double dy = a.y - b.y;
-        return (dx * dx + dy * dy) < MathUtils.EPSILON * MathUtils.EPSILON * 10000;
     }
 
     /**
