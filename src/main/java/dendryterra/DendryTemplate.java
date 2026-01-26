@@ -143,14 +143,14 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     private @Meta int parallelThreshold = 100;
 
     /**
-     * Duplicate branch suppression level for level 0 network.
-     * Controls how far to look for duplicate paths between nodes.
-     * Level 0 grid size = 5 + 2 * this value (e.g., 1 = 7x7, 2 = 9x9).
-     * Higher values = more thorough duplicate removal but slower.
+     * Scale factor for level 0 cells relative to level 1 cells.
+     * A level 0 cell contains level0Scale x level0Scale level 1 cells.
+     * Higher values = larger regions with guaranteed connectivity, but slower.
+     * Range: 2-10, default 4 (a 4x4 grid of level 1 cells per level 0 cell).
      */
-    @Value("duplicate-branch-suppression")
+    @Value("level0-scale")
     @Default
-    private @Meta int duplicateBranchSuppression = 1;
+    private @Meta int level0Scale = 4;
 
     @Override
     public boolean validate() throws ValidationException {
@@ -181,8 +181,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (connectDistanceFactor <= 0) {
             throw new ValidationException("connect-distance-factor must be positive, got: " + connectDistanceFactor);
         }
-        if (duplicateBranchSuppression < 0 || duplicateBranchSuppression > 4) {
-            throw new ValidationException("duplicate-branch-suppression must be between 0 and 4, got: " + duplicateBranchSuppression);
+        if (level0Scale < 2 || level0Scale > 10) {
+            throw new ValidationException("level0-scale must be between 2 and 10, got: " + level0Scale);
         }
         return true;
     }
@@ -197,7 +197,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             connectDistance, connectDistanceFactor,
             useCache, useParallel, useSplines,
             debugTiming, parallelThreshold,
-            duplicateBranchSuppression
+            level0Scale
         );
     }
 }

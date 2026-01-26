@@ -45,7 +45,7 @@ public class DendryBenchmarkRunner {
         double connectDistance = 0;
         double connectDistanceFactor = 2.0;
         int parallelThreshold = 100;
-        int duplicateBranchSuppression = 1;
+        int level0Scale = 4;  // Level 0 cells contain 4x4 level 1 cells
 
         // Create different configurations to test
         System.out.println("Creating test configurations...");
@@ -63,7 +63,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            duplicateBranchSuppression
+            level0Scale
         );
 
         // 2. No cache
@@ -78,7 +78,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            duplicateBranchSuppression
+            level0Scale
         );
 
         // 3. No parallel
@@ -93,7 +93,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            duplicateBranchSuppression
+            level0Scale
         );
 
         // 4. No splines (linear subdivision)
@@ -108,7 +108,7 @@ public class DendryBenchmarkRunner {
             false,  // useSplines = OFF
             false,  // debugTiming
             parallelThreshold,
-            duplicateBranchSuppression
+            level0Scale
         );
 
         // 5. Minimal (all optimizations OFF)
@@ -123,7 +123,7 @@ public class DendryBenchmarkRunner {
             false,  // useSplines = OFF
             false,  // debugTiming
             parallelThreshold,
-            duplicateBranchSuppression
+            level0Scale
         );
 
         // 6. Higher resolution (n=3)
@@ -135,7 +135,7 @@ public class DendryBenchmarkRunner {
             curvature, curvatureFalloff,
             connectDistance, connectDistanceFactor,
             true, true, true, false, parallelThreshold,
-            duplicateBranchSuppression
+            level0Scale
         );
 
         // Run benchmarks

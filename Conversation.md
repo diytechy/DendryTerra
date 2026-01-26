@@ -307,17 +307,82 @@ Also, please confirm that the point data for each cell (CellData data = getCellD
 
 ###########################################################
 
-Next up:
+I have reverted segment connections back to MST, since the branches are calculated locally, there will always be a risk of branches outside the focus cell to be connected more than once, this is okay as they will be very far apart.
 
-Continue from previous discussion.
+There is still some discontinuity (Discontinuities.png), is there any thing else that would cause segments or their splines to not have the same definition when evaluating from different level 1 cells leading to these boundary discontinuities?  Any other random input that should be tied back to the level 0 segment definition instead of the cell?
 
-At later levels (2/3/ ect) the points and segments should still be generated for surrounding level 1 cells so that their segments can be selected by the center cell level 1 points.
+#########################Hold
+
+1. The fix you implemented around spacial hashes works but couldn't this be as simple as selecting the start point of each segment to spline as being the point with the lowest x/z values?
+
+
+###########################################################
+
+This method helped but there are still some discontinuities.
+
+
+The MST does cause discontinuities as the network changes when the query cell is changed and thus is not tillable.  This problem is inherent using the MST method, but the method you implemented before as an alterative with cell anchors appears to create very unnatural looking connections and leaves some regions unconnected.  To make sure cells are able to tile without discontinuities and ensure all nodes are globally networked, while reducing duplicate branches between nodes, I have the following proposal:
+
+1. At level 0, evaluate a 7x7 cell array instead of the current 5x5 cell array, so that interactions with cells (like duplicate chains) further away from the query cell can be rectified giving consistent influence for the query cell.  This should be tied back to a #define or config constant, called duplicate branch suppression.  For each integer number, the level 0 array should be expanded by 2, so a value of 1 (default) will result in a 7x7 cell array, a value of 2 will result in a 11x11 cell array, ect.
+2. For all points, instead of using MST, connect each point to at least two other points, preferring points with lower or equal elevation via the control function, but if none are available link to the closest 2d point.
+3. Now all nodes / points have been connected, for all nodes, if any 2 nodes are connected through a chain of segments with a length 2 segments or less (1+duplicate branch suppression), prefer the shortest chain.  If both chains are the same length, use a deterministic but pseudo random method to select a chain to keep and remove all others that have a segment length less than the duplicate check level (1+duplicate branch suppression)
+
+###################################################################
+
+1. Cell 1 points should not be random (generateLevel0Points should not use getCellData to place their points), instead it should use a rough approximation to get the lowest point (lowest control value) in the cell (this could be a very rough minimization technique to approximate the global minimum in the cell, ex: taking 25 random points and selecting the lowest)
+
+
+###########################################################################
+
+There should still be a little bit of pseudo randomness in the points queried for the minimum of the cell so there is not a grid formed across cells.  Add a little bit of deterministic jitter, the jitter applied for all query points can be the same for all points since only the minimum will be returned anyways.  (findLowestPointInCell)
+
+############################################################################
+
+Context for below: It's important the network achieves interconnected segments without orphan networks, while also being tillable, this requires each inner cell array (3x3) to guarantee it has a path out to the 5x5, but also that shifted evaluations result in the exact same shape for the query zone (3x3).  This means connections must be resolved to the 5x5 array?  Or how can this guarantee segmentation regardless of focus.  Does this mean every other cell needs an exit path?  How can that be guaranteed while also remaining stable?
+
+New intent: Tile all 
+
+
+Continuity appears to have been achieved. (ContinuityAchieved.png)
+
+However, it appears some closed regions / orphaned regions still exist, as that should not be possible if all nodes require at least 2 connections.  Additionally, some duplicate chains appear to not be getting removed.  Are some duplicate chains getting removed that end up resulting in some nodes being orphaned?  This also should not be possible
+
+#-----
+
+Continuity appears to have been achieved. (ContinuityAchieved.png)
+
+However, it appears some closed regions / orphaned regions still exist.
+
+Rewrite the node / point connection strategy again for level 0 segments.  Remove / clean-up previous implementation.  These changes will exist in a branch to verify which method produces more naturally looking distributions knowing the limitations involved.
+
+In order to both guarantee a global network (no orphaned points / nodes) and to minimize duplicate connections, the algorithm should add a level 0 cell than contains multiple level 1 cells, and defines a segment network for each level 0 cell the defines the segments to level 1 cells within.  The method to connect nodes within a level 0 cell would be as follows:
+A. Connect all cell nodes by their closest distance (using euclidean distance, as the found points are already spaced according to defined minimum).
+B. While any segments do not form a full tree structure to every node in the level 0 cell:
+    i. Starting with the lowest node, if there are adjacent nodes that are not connected to this node, make a segment to that node.
+
+To fulfil a query for a specific point.
+1. Determine a cell level 0 position, where level 0 cells are k times larger than the gridsize, where k is configurable from 1 up to 10.
+2. Determine which level 0 cells need to have their networks computed.  Since the query cell needs to have it's adjacent cells known, if the adjacent cells are located on different level 0 cells, those level 0 cells must also have their cell networks calculated.  This means if a query cell is located at the corner of it's level 0 cell, all 4 surrounding level 0 cells must have their segment networks calculated.
+3. Compute the full level 0 segment network for all required level 0 cells.
+4. Now connect the level 0 cells by stitching their adjacent sides together using the following mechanism:
+    Per each adjacent level 0 cell:
+        For each level 1 cell that is on the boundary of the level 0 cell, find the cell that has it's key-point at the lowest elevation, and create a segment between it and the adjacent level 1 cell in the other level 0 cell.
+5. Now all adjacent level 1 cells are fully defined around the level 1 cell where the query originated from.  Remove all cells and segments that are not a part of the query cell or it's adjacent cells.
+
+
+1. First, connect all cells in the 5x5 array to their adjacent cell / neighbor with the lowest elevation. (Only directly adjacent - top / bottom / left / right)
+2. If any of the inner 3x3 nodes does not have a connection 
+2. Now, perform a looping action to guarantee all points in the inner 3x3 array have a segment path outside the array (as this ensures they are are connected to the global network of points).  While any of the 9 nodes inside the 3x3 array do NOT have a path outside the 3x3 array:
+A. S
+
+
+At later levels (2/3/ ect) the points and segments should still be generated for surrounding level 1 cells so that their segments can be selected by the center cell level 1 points (to ensure points near the border of the center level 1 cell can be jointed / connected via segment to another point in an adjacent cell).  However adjacent cells only need to have points constructed / evaluated within their valid segment zones (don't try to generate / connect points where segments have been pruned)
 
 Verify cell-crossing segments for other levels (level 1/2/ect) is also deterministic when building the spline.
 
-After segments are split, are their used both to create the spline and to act as nodes for future level segments to connect to?
+If a point does not have a segment path back to level 0, it should be removed so it does not create orphaned artifacts.
 
-If a point does not have a segment path back to level 0, it should be removed.
+After segments are split, are their nodes used both to create the spline and to act as nodes for future level segments to connect to?
 
 Create two new return types:
 block_elevation

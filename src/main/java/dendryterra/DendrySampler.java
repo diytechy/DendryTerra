@@ -49,8 +49,8 @@ public class DendrySampler implements Sampler {
     private final boolean debugTiming;
     private final int parallelThreshold;
 
-    // Duplicate branch suppression (controls level 0 grid size and path pruning)
-    private final int duplicateBranchSuppression;
+    // Level 0 cell scale (how many level 1 cells fit in one level 0 cell per axis)
+    private final int level0Scale;
 
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
@@ -83,7 +83,7 @@ public class DendrySampler implements Sampler {
                          double connectDistance, double connectDistanceFactor,
                          boolean useCache, boolean useParallel, boolean useSplines,
                          boolean debugTiming, int parallelThreshold,
-                         int duplicateBranchSuppression) {
+                         int level0Scale) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -103,7 +103,7 @@ public class DendrySampler implements Sampler {
         this.useSplines = useSplines;
         this.debugTiming = debugTiming;
         this.parallelThreshold = parallelThreshold;
-        this.duplicateBranchSuppression = duplicateBranchSuppression;
+        this.level0Scale = level0Scale;
 
         // Initialize cache only if enabled
         if (useCache) {
@@ -192,26 +192,15 @@ public class DendrySampler implements Sampler {
         double minSlopeLevel4 = 0.38;
         double minSlopeLevel5 = 1.0;
 
-        // Level 0: Root network spanning (5 + 2*suppression) level 1 cells
+        // Level 0: Cell-based network with guaranteed connectivity
         Cell cell1 = getCell(x, y, 1);
-        Point3D[][] level0Points = generateLevel0Points(cell1);
-        List<Segment3D> segments0 = generateLevel0Segments(level0Points);
+        List<Segment3D> segments0 = generateLevel0Network(cell1);
 
-        // Subdivide and displace level 0 for curvature (larger displacement than level 1)
+        // Subdivide and displace level 0 for curvature
         double displacementLevel0 = delta * 2.0;
-        int level0Subdivisions = Math.max(2, defaultBranches);  // at least 2 subdivisions
+        int level0Subdivisions = Math.max(2, defaultBranches);
         segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
-        // Use split-based displacement for tree structures (preserves all connections)
-        // Pass level 0 for deterministic seeding based on absolute segment coordinates
         segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, 0);
-
-        // Prune level 0 segments not connected to inner 3x3 region around query cell
-        // The inner region is always 3x3 regardless of outer grid size
-        double innerMinX = cell1.x - 1;
-        double innerMaxX = cell1.x + 2;
-        double innerMinY = cell1.y - 1;
-        double innerMaxY = cell1.y + 2;
-        segments0 = pruneDisconnectedSegments(segments0, innerMinX, innerMinY, innerMaxX, innerMaxY);
 
         if (resolution == 0) {
             return computeResult(x, y, segments0);
@@ -344,64 +333,125 @@ public class DendrySampler implements Sampler {
         return points;
     }
 
+    // ========== Level 0 Cell-Based Network Generation ==========
+
     /**
-     * Get the level 0 grid size based on duplicate branch suppression.
-     * gridSize = 5 + 2 * duplicateBranchSuppression
-     * (e.g., 0 = 5x5, 1 = 7x7, 2 = 9x9)
+     * Get level 0 cell coordinates for a given level 1 cell.
+     * Level 0 cells are level0Scale times larger than level 1 cells.
      */
-    private int getLevel0GridSize() {
-        return 5 + 2 * duplicateBranchSuppression;
+    private Cell getLevel0Cell(int level1CellX, int level1CellY) {
+        int l0x = Math.floorDiv(level1CellX, level0Scale);
+        int l0y = Math.floorDiv(level1CellY, level0Scale);
+        return new Cell(l0x, l0y, 0);
     }
 
     /**
-     * Generate level 0 points: one per level 1 cell.
-     * Grid size is determined by duplicateBranchSuppression config.
-     * Points are placed at the approximate lowest elevation within each cell
-     * (found by sampling multiple points and selecting the minimum).
+     * Generate all level 0 segments for the query region.
+     * This includes computing networks for all required level 0 cells,
+     * stitching them together at boundaries, and pruning to the relevant area.
      */
-    private Point3D[][] generateLevel0Points(Cell cell1) {
-        int size = getLevel0GridSize();
-        int half = size / 2;
-        Point3D[][] points = new Point3D[size][size];
+    private List<Segment3D> generateLevel0Network(Cell queryCell1) {
+        // Determine which level 0 cells we need based on query cell position
+        java.util.Set<Long> requiredL0Cells = getRequiredLevel0Cells(queryCell1);
 
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                int cellX = cell1.x + j - half;
-                int cellY = cell1.y + i - half;
+        // Generate segment network for each level 0 cell
+        Map<Long, List<Segment3D>> l0CellSegments = new HashMap<>();
+        Map<Long, Map<Long, Point3D>> l0CellPoints = new HashMap<>();  // level0Key -> (level1Key -> point)
 
-                // Find approximate lowest point in this cell
-                Point3D lowestPoint = findLowestPointInCell(cellX, cellY);
-                points[i][j] = lowestPoint;
+        for (long l0Key : requiredL0Cells) {
+            int l0x = unpackX(l0Key);
+            int l0y = unpackY(l0Key);
+
+            Map<Long, Point3D> points = generateLevel0CellPoints(l0x, l0y);
+            List<Segment3D> segments = buildTreeWithinLevel0Cell(points, l0x, l0y);
+
+            l0CellPoints.put(l0Key, points);
+            l0CellSegments.put(l0Key, segments);
+        }
+
+        // Stitch adjacent level 0 cells together at their boundaries
+        List<Segment3D> stitchSegments = stitchLevel0Cells(requiredL0Cells, l0CellPoints);
+
+        // Combine all segments
+        List<Segment3D> allSegments = new ArrayList<>();
+        for (List<Segment3D> segs : l0CellSegments.values()) {
+            allSegments.addAll(segs);
+        }
+        allSegments.addAll(stitchSegments);
+
+        // Prune to only keep segments relevant to query cell and neighbors
+        allSegments = pruneToQueryRegion(allSegments, queryCell1);
+
+        return allSegments;
+    }
+
+    /**
+     * Determine which level 0 cells need to be computed for a query.
+     * A query cell needs its level 0 cell plus any adjacent level 0 cells
+     * if the query cell is near a level 0 boundary.
+     */
+    private java.util.Set<Long> getRequiredLevel0Cells(Cell queryCell1) {
+        java.util.Set<Long> required = new java.util.HashSet<>();
+
+        // Check the query cell and its 8 neighbors
+        for (int di = -1; di <= 1; di++) {
+            for (int dj = -1; dj <= 1; dj++) {
+                int l1x = queryCell1.x + dj;
+                int l1y = queryCell1.y + di;
+                Cell l0Cell = getLevel0Cell(l1x, l1y);
+                required.add(packKey(l0Cell.x, l0Cell.y));
             }
         }
+
+        return required;
+    }
+
+    /**
+     * Generate points for all level 1 cells within a level 0 cell.
+     * Returns a map from level 1 cell key to its lowest elevation point.
+     */
+    private Map<Long, Point3D> generateLevel0CellPoints(int l0x, int l0y) {
+        Map<Long, Point3D> points = new HashMap<>();
+
+        // Iterate over all level 1 cells in this level 0 cell
+        int startX = l0x * level0Scale;
+        int startY = l0y * level0Scale;
+
+        for (int i = 0; i < level0Scale; i++) {
+            for (int j = 0; j < level0Scale; j++) {
+                int l1x = startX + j;
+                int l1y = startY + i;
+
+                Point3D point = findLowestPointInCell(l1x, l1y);
+                points.put(packKey(l1x, l1y), point);
+            }
+        }
+
         return points;
     }
 
     /**
-     * Find the approximate lowest elevation point within a cell by sampling.
+     * Find the approximate lowest elevation point within a level 1 cell by sampling.
      * Uses a 5x5 grid of sample points and selects the one with minimum elevation.
      * Adds deterministic jitter to avoid grid-aligned patterns across cells.
      */
     private Point3D findLowestPointInCell(int cellX, int cellY) {
-        final int SAMPLES_PER_AXIS = 5;  // 5x5 = 25 samples
+        final int SAMPLES_PER_AXIS = 5;
 
-        // Generate deterministic jitter for this cell (same offset for all samples)
+        // Generate deterministic jitter for this cell
         Random rng = initRandomGenerator(cellX, cellY, 0);
-        double jitterX = (rng.nextDouble() - 0.5) * 0.15;  // +/- 0.075 cell units
+        double jitterX = (rng.nextDouble() - 0.5) * 0.15;
         double jitterY = (rng.nextDouble() - 0.5) * 0.15;
 
         double lowestElevation = Double.MAX_VALUE;
         double lowestX = cellX + 0.5;
         double lowestY = cellY + 0.5;
 
-        // Sample on a jittered grid within the cell
         for (int si = 0; si < SAMPLES_PER_AXIS; si++) {
             for (int sj = 0; sj < SAMPLES_PER_AXIS; sj++) {
-                // Position within cell [0.1, 0.9] to stay away from edges, plus jitter
                 double tx = 0.1 + 0.8 * (sj + 0.5) / SAMPLES_PER_AXIS + jitterX;
                 double ty = 0.1 + 0.8 * (si + 0.5) / SAMPLES_PER_AXIS + jitterY;
 
-                // Clamp to stay within cell bounds [0.05, 0.95]
                 tx = Math.max(0.05, Math.min(0.95, tx));
                 ty = Math.max(0.05, Math.min(0.95, ty));
 
@@ -422,249 +472,220 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Generate level 0 segments using elevation-based connections.
-     * Each point connects to at least 2 neighbors, preferring lower elevation.
-     * This creates a deterministic, tileable network.
+     * Build a tree structure connecting all points within a level 0 cell.
+     * Algorithm:
+     * A. Connect each node to its closest neighbor (by 2D distance)
+     * B. While not all nodes form a single tree, connect disconnected components
+     *    starting from lowest elevation nodes
      */
-    private List<Segment3D> generateLevel0Segments(Point3D[][] points) {
-        int size = points.length;
+    private List<Segment3D> buildTreeWithinLevel0Cell(Map<Long, Point3D> points, int l0x, int l0y) {
+        if (points.size() <= 1) return new ArrayList<>();
+
+        List<Point3D> pointList = new ArrayList<>(points.values());
+        int n = pointList.size();
+
+        // Build all edges sorted by distance
+        List<Edge> edges = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                Point3D p1 = pointList.get(i);
+                Point3D p2 = pointList.get(j);
+                double dist = p1.projectZ().distanceTo(p2.projectZ());
+                edges.add(new Edge(i, j, dist, p1, p2));
+            }
+        }
+        edges.sort(Comparator.comparingDouble(e -> e.distance));
+
+        // Phase A: Connect each node to its closest neighbor
         List<Segment3D> segments = new ArrayList<>();
+        int[] parent = new int[n];
+        int[] rank = new int[n];
+        for (int i = 0; i < n; i++) {
+            parent[i] = i;
+            rank[i] = 0;
+        }
 
-        // Track unique connections to avoid duplicates (use canonical ordering)
-        java.util.Set<Long> addedConnections = new java.util.HashSet<>();
+        // For each node, find and add its closest neighbor connection
+        boolean[] hasConnection = new boolean[n];
+        for (int i = 0; i < n; i++) {
+            double minDist = Double.MAX_VALUE;
+            int closest = -1;
+            Point3D current = pointList.get(i);
 
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                Point3D current = points[i][j];
-
-                // Collect all neighbors with their properties
-                List<NeighborInfo> neighbors = new ArrayList<>();
-
-                for (int di = -1; di <= 1; di++) {
-                    for (int dj = -1; dj <= 1; dj++) {
-                        if (di == 0 && dj == 0) continue;
-                        int ni = i + di;
-                        int nj = j + dj;
-                        if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
-
-                        Point3D neighbor = points[ni][nj];
-                        double dist2D = current.projectZ().distanceTo(neighbor.projectZ());
-                        double elevDiff = neighbor.z - current.z;  // negative = lower
-
-                        neighbors.add(new NeighborInfo(neighbor, ni, nj, dist2D, elevDiff));
-                    }
+            for (int j = 0; j < n; j++) {
+                if (i == j) continue;
+                Point3D other = pointList.get(j);
+                double dist = current.projectZ().distanceTo(other.projectZ());
+                if (dist < minDist) {
+                    minDist = dist;
+                    closest = j;
                 }
+            }
 
-                // Sort: prefer lower elevation, then by 2D distance
-                neighbors.sort((a, b) -> {
-                    // First: prefer lower or equal elevation
-                    boolean aLowerOrEqual = a.elevDiff <= 0;
-                    boolean bLowerOrEqual = b.elevDiff <= 0;
+            if (closest >= 0) {
+                int rootI = find(parent, i);
+                int rootJ = find(parent, closest);
 
-                    if (aLowerOrEqual && !bLowerOrEqual) return -1;
-                    if (!aLowerOrEqual && bLowerOrEqual) return 1;
-
-                    // Among same category, sort by 2D distance
-                    return Double.compare(a.dist2D, b.dist2D);
-                });
-
-                // Connect to at least 2 neighbors
-                int connectCount = 0;
-                for (NeighborInfo n : neighbors) {
-                    if (connectCount >= 2) break;
-
-                    // Create canonical connection key (smaller index first)
-                    long key = createConnectionKey(i, j, n.gridI, n.gridJ, size);
-                    if (!addedConnections.contains(key)) {
-                        addedConnections.add(key);
-                        segments.add(new Segment3D(current, n.point, 0));
+                // Add segment (avoid exact duplicates)
+                if (rootI != rootJ || !hasConnection[i]) {
+                    segments.add(new Segment3D(current, pointList.get(closest), 0));
+                    hasConnection[i] = true;
+                    hasConnection[closest] = true;
+                    if (rootI != rootJ) {
+                        union(parent, rank, rootI, rootJ);
                     }
-                    connectCount++;
                 }
             }
         }
 
-        // Prune duplicate short paths
-        segments = pruneDuplicatePaths(segments, points);
+        // Phase B: Ensure all nodes are connected (form a single tree)
+        // Sort nodes by elevation for deterministic tie-breaking
+        List<Integer> nodesByElevation = new ArrayList<>();
+        for (int i = 0; i < n; i++) nodesByElevation.add(i);
+        nodesByElevation.sort(Comparator.comparingDouble(i -> pointList.get(i).z));
+
+        // Use Kruskal's to connect any remaining disconnected components
+        for (Edge edge : edges) {
+            int rootA = find(parent, edge.idx1);
+            int rootB = find(parent, edge.idx2);
+
+            if (rootA != rootB) {
+                segments.add(new Segment3D(edge.p1, edge.p2, 0));
+                union(parent, rank, rootA, rootB);
+            }
+        }
 
         return segments;
     }
 
     /**
-     * Neighbor info for sorting during connection selection.
+     * Stitch adjacent level 0 cells together at their boundaries.
+     * For each pair of adjacent level 0 cells, find the boundary level 1 cell
+     * with the lowest elevation on each side and connect them.
      */
-    private static class NeighborInfo {
-        final Point3D point;
-        final int gridI, gridJ;
-        final double dist2D;
-        final double elevDiff;
+    private List<Segment3D> stitchLevel0Cells(java.util.Set<Long> l0Cells,
+                                               Map<Long, Map<Long, Point3D>> l0CellPoints) {
+        List<Segment3D> stitchSegments = new ArrayList<>();
+        java.util.Set<Long> processedPairs = new java.util.HashSet<>();
 
-        NeighborInfo(Point3D point, int gridI, int gridJ, double dist2D, double elevDiff) {
-            this.point = point;
-            this.gridI = gridI;
-            this.gridJ = gridJ;
-            this.dist2D = dist2D;
-            this.elevDiff = elevDiff;
-        }
-    }
+        for (long l0Key : l0Cells) {
+            int l0x = unpackX(l0Key);
+            int l0y = unpackY(l0Key);
 
-    /**
-     * Create a canonical key for a connection between two grid positions.
-     * Ensures (i1,j1)-(i2,j2) and (i2,j2)-(i1,j1) map to the same key.
-     */
-    private long createConnectionKey(int i1, int j1, int i2, int j2, int size) {
-        int idx1 = i1 * size + j1;
-        int idx2 = i2 * size + j2;
-        if (idx1 > idx2) {
-            int tmp = idx1;
-            idx1 = idx2;
-            idx2 = tmp;
-        }
-        return ((long) idx1 << 32) | (idx2 & 0xFFFFFFFFL);
-    }
+            // Check right neighbor (+x direction)
+            long rightKey = packKey(l0x + 1, l0y);
+            if (l0Cells.contains(rightKey) && !processedPairs.contains(packKey(Math.min(l0x, l0x+1), Math.max(l0x, l0x+1) * 10000 + l0y))) {
+                processedPairs.add(packKey(Math.min(l0x, l0x+1), Math.max(l0x, l0x+1) * 10000 + l0y));
+                Segment3D stitch = stitchVerticalBoundary(l0x, l0y, l0CellPoints.get(l0Key), l0CellPoints.get(rightKey));
+                if (stitch != null) stitchSegments.add(stitch);
+            }
 
-    /**
-     * Prune duplicate paths between nodes.
-     * If two nodes are connected by multiple chains of length <= (1 + duplicateBranchSuppression),
-     * keep only the shortest chain. If same length, use deterministic selection.
-     */
-    private List<Segment3D> pruneDuplicatePaths(List<Segment3D> segments, Point3D[][] points) {
-        if (duplicateBranchSuppression == 0) {
-            return segments;  // No pruning for level 0
-        }
-
-        int maxPathLength = 1 + duplicateBranchSuppression;
-
-        // Build adjacency map from segments
-        Map<Long, List<Segment3D>> adjacency = new HashMap<>();
-        for (Segment3D seg : segments) {
-            long keyA = pointHash(seg.a);
-            long keyB = pointHash(seg.b);
-            adjacency.computeIfAbsent(keyA, k -> new ArrayList<>()).add(seg);
-            adjacency.computeIfAbsent(keyB, k -> new ArrayList<>()).add(seg);
-        }
-
-        // Find all pairs of nodes connected by short paths
-        java.util.Set<Segment3D> toRemove = new java.util.HashSet<>();
-
-        for (Segment3D seg : segments) {
-            if (toRemove.contains(seg)) continue;
-
-            // For each segment, look for alternate paths between its endpoints
-            List<List<Segment3D>> alternatePaths = findAlternatePaths(
-                seg.a, seg.b, seg, adjacency, maxPathLength
-            );
-
-            if (!alternatePaths.isEmpty()) {
-                // We have the direct segment (length 1) and alternate paths
-                // Keep the shortest path; if tie, use deterministic selection
-
-                // Direct segment is always length 1
-                List<Segment3D> directPath = List.of(seg);
-                List<List<Segment3D>> allPaths = new ArrayList<>();
-                allPaths.add(directPath);
-                allPaths.addAll(alternatePaths);
-
-                // Sort by length, then by deterministic hash
-                allPaths.sort((a, b) -> {
-                    int lenCompare = Integer.compare(a.size(), b.size());
-                    if (lenCompare != 0) return lenCompare;
-                    // Same length: use deterministic hash
-                    return Long.compare(pathHash(a), pathHash(b));
-                });
-
-                // Keep the first path, mark others for removal
-                List<Segment3D> keepPath = allPaths.get(0);
-                for (int i = 1; i < allPaths.size(); i++) {
-                    for (Segment3D s : allPaths.get(i)) {
-                        // Only remove if it's a short segment and not in keepPath
-                        if (!keepPath.contains(s)) {
-                            toRemove.add(s);
-                        }
-                    }
-                }
+            // Check bottom neighbor (+y direction)
+            long bottomKey = packKey(l0x, l0y + 1);
+            if (l0Cells.contains(bottomKey) && !processedPairs.contains(packKey(l0x, Math.min(l0y, l0y+1) * 10000 + Math.max(l0y, l0y+1)))) {
+                processedPairs.add(packKey(l0x, Math.min(l0y, l0y+1) * 10000 + Math.max(l0y, l0y+1)));
+                Segment3D stitch = stitchHorizontalBoundary(l0x, l0y, l0CellPoints.get(l0Key), l0CellPoints.get(bottomKey));
+                if (stitch != null) stitchSegments.add(stitch);
             }
         }
 
-        // Return filtered list
+        return stitchSegments;
+    }
+
+    /**
+     * Stitch two level 0 cells at a vertical boundary (between l0x and l0x+1).
+     * Finds the lowest elevation cell on each side of the boundary and connects them.
+     */
+    private Segment3D stitchVerticalBoundary(int l0x, int l0y,
+                                              Map<Long, Point3D> leftPoints,
+                                              Map<Long, Point3D> rightPoints) {
+        // Right edge of left cell: x = (l0x + 1) * level0Scale - 1
+        // Left edge of right cell: x = (l0x + 1) * level0Scale
+        int leftEdgeX = (l0x + 1) * level0Scale - 1;
+        int rightEdgeX = (l0x + 1) * level0Scale;
+        int startY = l0y * level0Scale;
+
+        Point3D lowestLeft = null;
+        Point3D lowestRight = null;
+        double lowestLeftElev = Double.MAX_VALUE;
+        double lowestRightElev = Double.MAX_VALUE;
+
+        for (int i = 0; i < level0Scale; i++) {
+            int y = startY + i;
+
+            Point3D leftPoint = leftPoints.get(packKey(leftEdgeX, y));
+            if (leftPoint != null && leftPoint.z < lowestLeftElev) {
+                lowestLeftElev = leftPoint.z;
+                lowestLeft = leftPoint;
+            }
+
+            Point3D rightPoint = rightPoints.get(packKey(rightEdgeX, y));
+            if (rightPoint != null && rightPoint.z < lowestRightElev) {
+                lowestRightElev = rightPoint.z;
+                lowestRight = rightPoint;
+            }
+        }
+
+        if (lowestLeft != null && lowestRight != null) {
+            return new Segment3D(lowestLeft, lowestRight, 0);
+        }
+        return null;
+    }
+
+    /**
+     * Stitch two level 0 cells at a horizontal boundary (between l0y and l0y+1).
+     */
+    private Segment3D stitchHorizontalBoundary(int l0x, int l0y,
+                                                Map<Long, Point3D> topPoints,
+                                                Map<Long, Point3D> bottomPoints) {
+        int topEdgeY = (l0y + 1) * level0Scale - 1;
+        int bottomEdgeY = (l0y + 1) * level0Scale;
+        int startX = l0x * level0Scale;
+
+        Point3D lowestTop = null;
+        Point3D lowestBottom = null;
+        double lowestTopElev = Double.MAX_VALUE;
+        double lowestBottomElev = Double.MAX_VALUE;
+
+        for (int i = 0; i < level0Scale; i++) {
+            int x = startX + i;
+
+            Point3D topPoint = topPoints.get(packKey(x, topEdgeY));
+            if (topPoint != null && topPoint.z < lowestTopElev) {
+                lowestTopElev = topPoint.z;
+                lowestTop = topPoint;
+            }
+
+            Point3D bottomPoint = bottomPoints.get(packKey(x, bottomEdgeY));
+            if (bottomPoint != null && bottomPoint.z < lowestBottomElev) {
+                lowestBottomElev = bottomPoint.z;
+                lowestBottom = bottomPoint;
+            }
+        }
+
+        if (lowestTop != null && lowestBottom != null) {
+            return new Segment3D(lowestTop, lowestBottom, 0);
+        }
+        return null;
+    }
+
+    /**
+     * Prune segments to only keep those relevant to the query cell and its neighbors.
+     * Keeps segments where at least one endpoint is within the 3x3 region around query cell.
+     */
+    private List<Segment3D> pruneToQueryRegion(List<Segment3D> segments, Cell queryCell1) {
+        double minX = queryCell1.x - 1;
+        double maxX = queryCell1.x + 2;
+        double minY = queryCell1.y - 1;
+        double maxY = queryCell1.y + 2;
+
         return segments.stream()
-            .filter(s -> !toRemove.contains(s))
+            .filter(seg -> {
+                boolean aInside = isPointInBounds(seg.a, minX, minY, maxX, maxY);
+                boolean bInside = isPointInBounds(seg.b, minX, minY, maxX, maxY);
+                return aInside || bInside;
+            })
             .collect(Collectors.toList());
-    }
-
-    /**
-     * Find alternate paths between two points, excluding a specific segment.
-     */
-    private List<List<Segment3D>> findAlternatePaths(Point3D start, Point3D end,
-                                                      Segment3D excludeSeg,
-                                                      Map<Long, List<Segment3D>> adjacency,
-                                                      int maxLength) {
-        List<List<Segment3D>> results = new ArrayList<>();
-        long endKey = pointHash(end);
-
-        // BFS to find paths up to maxLength
-        java.util.Queue<PathState> queue = new java.util.LinkedList<>();
-        queue.add(new PathState(start, new ArrayList<>(), new java.util.HashSet<>()));
-
-        while (!queue.isEmpty()) {
-            PathState state = queue.poll();
-
-            if (state.path.size() >= maxLength) continue;
-
-            long currentKey = pointHash(state.current);
-            List<Segment3D> neighbors = adjacency.get(currentKey);
-            if (neighbors == null) continue;
-
-            for (Segment3D seg : neighbors) {
-                if (seg == excludeSeg) continue;
-                if (state.visited.contains(seg)) continue;
-
-                Point3D next = pointsMatch(seg.a, state.current) ? seg.b : seg.a;
-                long nextKey = pointHash(next);
-
-                List<Segment3D> newPath = new ArrayList<>(state.path);
-                newPath.add(seg);
-
-                if (nextKey == endKey || pointsMatch(next, end)) {
-                    // Found a path to end
-                    results.add(newPath);
-                } else if (newPath.size() < maxLength) {
-                    java.util.Set<Segment3D> newVisited = new java.util.HashSet<>(state.visited);
-                    newVisited.add(seg);
-                    queue.add(new PathState(next, newPath, newVisited));
-                }
-            }
-        }
-
-        return results;
-    }
-
-    /**
-     * State for path-finding BFS.
-     */
-    private static class PathState {
-        final Point3D current;
-        final List<Segment3D> path;
-        final java.util.Set<Segment3D> visited;
-
-        PathState(Point3D current, List<Segment3D> path, java.util.Set<Segment3D> visited) {
-            this.current = current;
-            this.path = path;
-            this.visited = visited;
-        }
-    }
-
-    /**
-     * Compute a deterministic hash for a path (for tie-breaking).
-     */
-    private long pathHash(List<Segment3D> path) {
-        long hash = 0;
-        for (Segment3D seg : path) {
-            // Use coordinates to create deterministic hash
-            hash ^= Double.doubleToLongBits(seg.a.x + seg.b.x) * 73856093L;
-            hash ^= Double.doubleToLongBits(seg.a.y + seg.b.y) * 19349663L;
-        }
-        return hash;
     }
 
     /**
