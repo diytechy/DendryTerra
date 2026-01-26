@@ -188,6 +188,7 @@ public class DendrySampler implements Sampler {
 
     private double evaluate(long seed, double x, double y) {
         // Displacement factors decrease exponentially for each level
+        double displacementLevel0 = delta * 2.0;
         double displacementLevel1 = delta;
         double displacementLevel2 = displacementLevel1 / 4.0;
         double displacementLevel3 = displacementLevel2 / 4.0;
@@ -200,43 +201,46 @@ public class DendrySampler implements Sampler {
         double minSlopeLevel5 = 1.0;
 
         // Level 0: Cell-based network with guaranteed connectivity
-        // Uses 5x5 L1 cells to ensure proper tangent computation at L0 boundaries
         Cell cell1 = getCell(x, y, 1);
-        List<Segment3D> segments0 = generateLevel0Network(cell1);
 
-        // Subdivide and displace level 0 (keep unpruned for L1 generation)
-        double displacementLevel0 = delta * 2.0;
+        // Step 1: Generate L0 BASE segments (no subdivision yet)
+        List<Segment3D> segments0Base = generateLevel0Network(cell1);
+
+        // Step 2: Compute L0 tangents on FULL L0 set (before pruning for determinism)
+        Map<Long, NodeTangentInfo> tangentMap0 = computeNodeTangents(segments0Base);
+
+        // Step 3: Prune L0 to 3x3 region
+        List<Segment3D> segments0Pruned = pruneToQueryRegion(segments0Base, cell1);
+
+        // Step 4: Subdivide and displace L0 using pre-computed tangents
         int level0Subdivisions = Math.max(2, defaultBranches);
-        segments0 = subdivideSegments(segments0, level0Subdivisions, 0);
-        segments0 = displaceSegmentsWithSplit(segments0, displacementLevel0, 0);
+        segments0Pruned = subdivideSegments(segments0Pruned, level0Subdivisions, 0, tangentMap0);
+        segments0Pruned = displaceSegmentsWithSplit(segments0Pruned, displacementLevel0, 0);
 
         if (resolution == 0) {
-            // For L0-only output, prune to query region
-            segments0 = pruneToQueryRegion(segments0, cell1);
-            return computeResult(x, y, segments0);
+            return computeResult(x, y, segments0Pruned);
         }
 
-        // Level 1: Process 3x3 cells around query cell
-        // Use UNPRUNED L0 segments to ensure consistent L1 generation across query cells
-        List<Segment3D> segments1 = generateLevel1Segments(cell1, segments0, minSlopeLevel1);
+        // Level 1: Generate L1 from PRUNED+SUBDIVIDED L0 (only 3x3 cells needed now)
+        // Since L0 is already pruned to 3x3, L1 only needs to cover 3x3 cells
+        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, segments0Pruned, minSlopeLevel1);
 
-        // Subdivide and displace L1 (tangents computed internally, deterministically)
+        // Compute L1 tangents
+        Map<Long, NodeTangentInfo> tangentMap1 = computeNodeTangents(segments1Base);
+
+        // Subdivide and displace L1
         int branchCount = getBranchCountForCell(cell1);
-        segments1 = subdivideSegments(segments1, branchCount, 1);
-        displaceSegments(segments1, displacementLevel1, cell1);
+        List<Segment3D> segments1 = subdivideSegments(segments1Base, branchCount, 1, tangentMap1);
+        segments1 = displaceSegmentsWithSplit(segments1, displacementLevel1, 1);
 
-        // NOW prune BOTH L0 and L1 to the 3x3 query region after all tangent computation
-        // Use the same pruning strategy for consistency
-        segments0 = pruneToQueryRegion(segments0, cell1);
-        segments1 = pruneToQueryRegion(segments1, cell1);
-
-        List<Segment3D> allSegments = new ArrayList<>(segments0);
+        List<Segment3D> allSegments = new ArrayList<>(segments0Pruned);
         allSegments.addAll(segments1);
 
         if (resolution == 1) {
             return computeResult(x, y, allSegments);
         }
 
+        // Level 2+: Continue with existing logic
         // Level 2: 2x Resolution
         Cell cell2 = getCell(x, y, 2);
         Point3D[][] points2 = generateNeighboringPoints3D(cell2, 5);
@@ -954,6 +958,31 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Generate level 1 segments for compact 3x3 cell region around query cell.
+     * Used when parent segments (L0) are already pruned to the 3x3 region,
+     * so there's no benefit to generating L1 for a wider area.
+     */
+    private List<Segment3D> generateLevel1SegmentsCompact(Cell queryCell, List<Segment3D> parentSegments, double minSlope) {
+        List<Segment3D> allSegments = new ArrayList<>();
+
+        // Process only 3x3 grid of level 1 cells (9 cells instead of 25)
+        for (int di = -1; di <= 1; di++) {
+            for (int dj = -1; dj <= 1; dj++) {
+                Cell cell = new Cell(queryCell.x + dj, queryCell.y + di, 1);
+
+                // Generate points for this cell's neighborhood (5x5 including neighbors)
+                Point3D[][] points = generateNeighboringPoints3D(cell, 5);
+
+                // Generate segments that connect to parent (level 0) segments
+                List<Segment3D> cellSegments = generateSubSegments(points, parentSegments, minSlope, 1);
+                allSegments.addAll(cellSegments);
+            }
+        }
+
+        return allSegments;
+    }
+
+    /**
      * Prune segments that start outside query cell and move away from it.
      */
     private List<Segment3D> pruneAwaySegments(List<Segment3D> segments, Cell queryCell) {
@@ -1035,6 +1064,7 @@ public class DendrySampler implements Sampler {
 
     /**
      * Subdivide segments - uses splines if enabled, otherwise linear.
+     * Computes tangents internally.
      */
     private List<Segment3D> subdivideSegments(List<Segment3D> segments, int numDivisions, int level) {
         if (segments.isEmpty() || numDivisions <= 1) {
@@ -1042,7 +1072,24 @@ public class DendrySampler implements Sampler {
         }
 
         if (useSplines && curvature > 0) {
-            return subdivideWithSplines(segments, numDivisions, level);
+            return subdivideWithSplines(segments, numDivisions, level, null);
+        } else {
+            return subdivideLinear(segments, numDivisions, level);
+        }
+    }
+
+    /**
+     * Subdivide segments using pre-computed tangent map (for performance optimization).
+     * When tangentMap is provided, uses it instead of computing tangents.
+     */
+    private List<Segment3D> subdivideSegments(List<Segment3D> segments, int numDivisions, int level,
+                                               Map<Long, NodeTangentInfo> tangentMap) {
+        if (segments.isEmpty() || numDivisions <= 1) {
+            return segments;
+        }
+
+        if (useSplines && curvature > 0) {
+            return subdivideWithSplines(segments, numDivisions, level, tangentMap);
         } else {
             return subdivideLinear(segments, numDivisions, level);
         }
@@ -1070,14 +1117,22 @@ public class DendrySampler implements Sampler {
      * Catmull-Rom spline subdivision using pre-computed node tangents.
      * Tangents are computed deterministically based on node positions and connections,
      * ensuring consistent results regardless of segment list order or pruning.
+     *
+     * @param segments The segments to subdivide
+     * @param numDivisions Number of subdivisions per segment
+     * @param level Resolution level (affects curvature falloff)
+     * @param precomputedTangents Optional pre-computed tangent map. If null, tangents are computed internally.
      */
-    private List<Segment3D> subdivideWithSplines(List<Segment3D> segments, int numDivisions, int level) {
+    private List<Segment3D> subdivideWithSplines(List<Segment3D> segments, int numDivisions, int level,
+                                                  Map<Long, NodeTangentInfo> precomputedTangents) {
         double levelCurvature = curvature * Math.pow(curvatureFalloff, level - 1);
         double levelStrength = tangentStrength * Math.pow(curvatureFalloff, level - 1);
         List<Segment3D> subdivided = new ArrayList<>();
 
-        // Pre-compute tangent information for all nodes (deterministic)
-        Map<Long, NodeTangentInfo> tangentMap = computeNodeTangents(segments);
+        // Use pre-computed tangents if provided, otherwise compute them
+        Map<Long, NodeTangentInfo> tangentMap = (precomputedTangents != null)
+            ? precomputedTangents
+            : computeNodeTangents(segments);
 
         for (Segment3D seg : segments) {
             Point3D p1 = seg.a;
