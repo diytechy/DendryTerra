@@ -356,7 +356,8 @@ public class DendrySampler implements Sampler {
     /**
      * Generate level 0 points: one per level 1 cell.
      * Grid size is determined by duplicateBranchSuppression config.
-     * Points have elevation from control function (for flow-based connections).
+     * Points are placed at the approximate lowest elevation within each cell
+     * (found by sampling multiple points and selecting the minimum).
      */
     private Point3D[][] generateLevel0Points(Cell cell1) {
         int size = getLevel0GridSize();
@@ -368,16 +369,56 @@ public class DendrySampler implements Sampler {
                 int cellX = cell1.x + j - half;
                 int cellY = cell1.y + i - half;
 
-                // Get the jittered point for this cell
-                CellData data = getCellData(cellX, cellY);
-                Point2D p2d = data.point;
-
-                // Get elevation from control function for flow-based connections
-                double elevation = evaluateControlFunction(p2d.x, p2d.y);
-                points[i][j] = new Point3D(p2d.x, p2d.y, elevation);
+                // Find approximate lowest point in this cell
+                Point3D lowestPoint = findLowestPointInCell(cellX, cellY);
+                points[i][j] = lowestPoint;
             }
         }
         return points;
+    }
+
+    /**
+     * Find the approximate lowest elevation point within a cell by sampling.
+     * Uses a 5x5 grid of sample points and selects the one with minimum elevation.
+     * Adds deterministic jitter to avoid grid-aligned patterns across cells.
+     */
+    private Point3D findLowestPointInCell(int cellX, int cellY) {
+        final int SAMPLES_PER_AXIS = 5;  // 5x5 = 25 samples
+
+        // Generate deterministic jitter for this cell (same offset for all samples)
+        Random rng = initRandomGenerator(cellX, cellY, 0);
+        double jitterX = (rng.nextDouble() - 0.5) * 0.15;  // +/- 0.075 cell units
+        double jitterY = (rng.nextDouble() - 0.5) * 0.15;
+
+        double lowestElevation = Double.MAX_VALUE;
+        double lowestX = cellX + 0.5;
+        double lowestY = cellY + 0.5;
+
+        // Sample on a jittered grid within the cell
+        for (int si = 0; si < SAMPLES_PER_AXIS; si++) {
+            for (int sj = 0; sj < SAMPLES_PER_AXIS; sj++) {
+                // Position within cell [0.1, 0.9] to stay away from edges, plus jitter
+                double tx = 0.1 + 0.8 * (sj + 0.5) / SAMPLES_PER_AXIS + jitterX;
+                double ty = 0.1 + 0.8 * (si + 0.5) / SAMPLES_PER_AXIS + jitterY;
+
+                // Clamp to stay within cell bounds [0.05, 0.95]
+                tx = Math.max(0.05, Math.min(0.95, tx));
+                ty = Math.max(0.05, Math.min(0.95, ty));
+
+                double sampleX = cellX + tx;
+                double sampleY = cellY + ty;
+
+                double elevation = evaluateControlFunction(sampleX, sampleY);
+
+                if (elevation < lowestElevation) {
+                    lowestElevation = elevation;
+                    lowestX = sampleX;
+                    lowestY = sampleY;
+                }
+            }
+        }
+
+        return new Point3D(lowestX, lowestY, lowestElevation);
     }
 
     /**
