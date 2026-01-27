@@ -149,7 +149,7 @@ public class DendryBenchmarkRunner {
         // 7. CachePixels Enabled (NEW TEST)
         DendrySampler cachePixelsEnabled = new DendrySampler(
             n, epsilon, delta, slope, gridsize,
-            returnType, null, salt,
+            DendryReturnType.PIXEL_LEVEL, null, salt,
             null, defaultBranches,
             curvature, curvatureFalloff,
             connectDistance, connectDistanceFactor,
@@ -214,23 +214,33 @@ public class DendryBenchmarkRunner {
             parallelThreshold, level0Scale, tangentAngle, tangentStrength);
 
         // Run benchmarks
-        double worldScale = 10.0;
+        double worldScale = 1.0;
         int warmupIterations = 1;
         Map<String, DendryBenchmark.BenchmarkResult> results = new HashMap<>();
 
         // Execute all test cases
         for (int i = 0; i < testCases.size(); i++) {
             TestCase testCase = testCases.get(i);
-            
+
             System.out.println("-".repeat(60));
             System.out.printf("TEST %d: %s (%s)%n", i + 1, testCase.name, testCase.description);
             System.out.println("-".repeat(60));
-            
+
+            // Reset cache stats before each test
+            testCase.sampler.resetPixelCacheStats();
+
             DendryBenchmark.BenchmarkResult result = DendryBenchmark.benchmark(testCase.sampler, gridSize, worldScale, warmupIterations);
             results.put(testCase.name, result);
-            
+
             printResult(result);
-            
+
+            // Print pixel cache stats if this test uses pixel caching
+            String cacheStats = testCase.sampler.getPixelCacheStats();
+            if (cacheStats.contains("hits=") && !cacheStats.startsWith("hits=0, misses=0")) {
+                System.out.printf("  Pixel cache:  %s%n", cacheStats);
+                System.out.println();
+            }
+
             // Print comparison if this test case has a comparison target
             if (testCase.compareAgainst != null && results.containsKey(testCase.compareAgainst)) {
                 DendryBenchmark.BenchmarkResult baselineResult = results.get(testCase.compareAgainst);

@@ -74,6 +74,10 @@ public class DendrySampler implements Sampler {
     private volatile long lastLogTime = 0;
     private static final long LOG_INTERVAL_MS = 5000; // Log every 5 seconds
 
+    // Pixel cache statistics (for debugging cache performance)
+    private final AtomicLong pixelCacheHits = new AtomicLong(0);
+    private final AtomicLong pixelCacheMisses = new AtomicLong(0);
+
     private static class CellData {
         final Point2D point;
         final int branchCount;
@@ -112,6 +116,7 @@ public class DendrySampler implements Sampler {
         final int gridSize;
         final PixelData[][] pixels;  // [y][x] indexed
         long lastAccessTime;
+        boolean populated;  // True if segments have been sampled into this cache
 
         CellPixelData(int cellX, int cellY, int gridSize) {
             this.cellX = cellX;
@@ -119,6 +124,7 @@ public class DendrySampler implements Sampler {
             this.gridSize = gridSize;
             this.pixels = new PixelData[gridSize][gridSize];
             this.lastAccessTime = System.nanoTime();
+            this.populated = false;
         }
 
         void setPixel(int px, int py, float elevation, byte level) {
@@ -276,8 +282,11 @@ public class DendrySampler implements Sampler {
                 lastLogTime = now;
                 double avgNs = (double) totalTimeNs.get() / count;
                 double avgMs = avgNs / 1_000_000.0;
-                LOGGER.info("DendrySampler stats: {} samples, avg {:.4f} ms/sample ({:.0f} ns)",
-                    count, avgMs, avgNs);
+                long hits = pixelCacheHits.get();
+                long misses = pixelCacheMisses.get();
+                double hitRate = (hits + misses) > 0 ? (100.0 * hits / (hits + misses)) : 0;
+                LOGGER.info("DendrySampler stats: {} samples, avg {:.4f} ms/sample ({:.0f} ns), pixel cache: {} hits, {} misses ({:.1f}% hit rate)",
+                    count, avgMs, avgNs, hits, misses, hitRate);
             }
         }
 
@@ -1552,6 +1561,28 @@ public class DendrySampler implements Sampler {
     // ========== Pixel Cache Methods ==========
 
     /**
+     * Get pixel cache statistics as a string for debugging.
+     * Returns a summary of cache hits, misses, and hit rate.
+     */
+    public String getPixelCacheStats() {
+        long hits = pixelCacheHits.get();
+        long misses = pixelCacheMisses.get();
+        long total = hits + misses;
+        double hitRate = total > 0 ? (100.0 * hits / total) : 0;
+        int cacheSize = pixelCache != null ? pixelCache.size() : 0;
+        return String.format("hits=%d, misses=%d, hitRate=%.1f%%, cachedCells=%d",
+            hits, misses, hitRate, cacheSize);
+    }
+
+    /**
+     * Reset pixel cache statistics (useful between benchmark runs).
+     */
+    public void resetPixelCacheStats() {
+        pixelCacheHits.set(0);
+        pixelCacheMisses.set(0);
+    }
+
+    /**
      * Check if pixel cache is enabled and the return type uses it.
      */
     private boolean usesPixelCache() {
@@ -1752,16 +1783,19 @@ public class DendrySampler implements Sampler {
         int cellX = MathUtils.floor(x);
         int cellY = MathUtils.floor(y);
 
-        // Check if cell is already cached
+        // Check if cell is already cached and populated
         CellPixelData cache = getCachedPixelData(cellX, cellY);
-        if (cache != null) {
+        if (cache != null && cache.populated) {
+            // CACHE HIT: Cell is already computed - look up pixel value directly
+            pixelCacheHits.incrementAndGet();
             double value = lookupPixelValue(x, y);
-            if (!Double.isNaN(value)) {
-                return value;
-            }
+            // If pixel has data, return it; if empty (NaN), return 0
+            // This is the FIX: we don't recompute just because a pixel is empty
+            return Double.isNaN(value) ? 0 : value;
         }
 
-        // Need to compute the cell - create cache entry
+        // CACHE MISS: Cell not computed yet - create/get cache entry and compute
+        pixelCacheMisses.incrementAndGet();
         cache = getOrCreatePixelCache(cellX, cellY);
 
         // Compute all segments for this cell
@@ -1770,16 +1804,13 @@ public class DendrySampler implements Sampler {
         // Sample segments into pixel cache
         if (cache != null) {
             sampleSegmentsToPixelCache(allSegments, cache);
+            cache.populated = true;  // Mark as populated AFTER sampling
         }
 
         // Lookup the value
         double value = lookupPixelValue(x, y);
-        if (!Double.isNaN(value)) {
-            return value;
-        }
-
-        // Fallback: no pixel data at this location
-        return evaluateControlFunction(x, y);
+        // If pixel has data, return it; if empty (NaN), return 0
+        return Double.isNaN(value) ? 0 : value;
     }
 
     /**

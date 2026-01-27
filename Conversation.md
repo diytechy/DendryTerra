@@ -476,3 +476,21 @@ If either of the new return types is requested, the algorithm can first see if t
  Once the cell has been fully evaluated, the algorithm now has a cached definition of pixel information for the cell.
 
  If "pixel_level" is requested, the queries x/z samples just need to be rounded according to the pixel resolution the same the pixel was created from the segment, and if that pixel exists in the cell element in the cache, it's respective value (level or elevation) can be returned.
+
+ ######################################################################################
+
+ Update "DendryBenchmarkRunner.java" to make it easier to configure test cases and descriptions in a table-like format instead of their current spread form, and add a test case to compare the "cachepixels" flag option compared to baseline.
+
+ ########################################################
+
+I need your help understanding why the most recent updates don't improve performance.
+
+I updated the benchmark with test 7 ("7. CachePixels Enabled (NEW TEST)") to evaluate the pixel cache method with a return type of pixel level.
+
+I expected cache pixels with pixel value to be much faster because the tree is not rebuilt for every sample, and distance to spline does not need to be calculated for every sample.  Instead a single longer first iteration would run to compute the pixels along the segment, afterward subsequent calls should just be looking up values from the pixel map.  Given distance computations should be similar to just populating a pixel, and we are only computing along the segments (not all the empty space around the segment) I would have expected the timing to decrease by about the square root of the previous tests that report distance.
+
+Can you:
+1. Verify I setup the new test case correctly.
+2. If correct, add more debugs to root cause if there is an issue (ex: Set up a counter to see how many times a network is calculated during a test, to understand if something is triggering network / segment rebuild superfluously.
+3. See if any implementation / test methods are obscuring results.  Ex: Is the test scenario being used causing the filter to reinitialize for every sample instead of allowing it to take advantage of cached information.
+
