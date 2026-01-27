@@ -915,18 +915,17 @@ public class DendrySampler implements Sampler {
                     }
                     toNeighbor = toNeighbor.normalize();
 
-                    // For 2 connections, tangent is influenced by the opposite direction
+                    // For 2 connections, use the flow-through direction for smooth curves
                     // For 3+ connections, rotate tangent to avoid overlap with neighbors
                     Vec2D tangent;
                     if (n == 2) {
-                        // Two connections: tangent is rotated toward the "flow" direction
-                        // The tangent for going TO neighbor should come FROM the opposite neighbor
+                        // Two connections: tangent follows flow direction directly
+                        // For smooth curves, the tangent should be along the path from
+                        // opposite → node → neighbor (the "flow" direction)
                         Point3D opposite = neighbors.get(1 - i);
-                        Vec2D fromOpposite = new Vec2D(opposite.projectZ(), node.projectZ());
-                        if (fromOpposite.lengthSquared() > MathUtils.EPSILON) {
-                            fromOpposite = fromOpposite.normalize();
-                            // Blend between direct direction and flow direction
-                            tangent = blendTangent(toNeighbor, fromOpposite, tangentAngle);
+                        Vec2D flowDir = new Vec2D(opposite.projectZ(), neighbor.projectZ());
+                        if (flowDir.lengthSquared() > MathUtils.EPSILON) {
+                            tangent = flowDir.normalize();
                         } else {
                             tangent = toNeighbor;
                         }
