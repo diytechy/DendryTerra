@@ -306,11 +306,11 @@ public class DendrySampler implements Sampler {
         double displacementLevel3 = displacementLevel2 / 4.0;
 
         // Minimum slope constraints for sub-branch connections
-        double minSlopeLevel1 = 0.5;
-        double minSlopeLevel2 = 0.9;
-        double minSlopeLevel3 = 0.18;
-        double minSlopeLevel4 = 0.38;
-        double minSlopeLevel5 = 1.0;
+        double minSlopeLevel1 = 0; //0.5;
+        double minSlopeLevel2 = 0; //0.9;
+        double minSlopeLevel3 = 0; //0.18;
+        double minSlopeLevel4 = 0; //0.38;
+        double minSlopeLevel5 = 0; //1.0;
 
         // Level 0: Cell-based network with guaranteed connectivity
         Cell cell1 = getCell(x, y, 1);
@@ -606,7 +606,7 @@ public class DendrySampler implements Sampler {
     /**
      * Build a tree structure connecting all points within a level 0 cell.
      * Algorithm:
-     * A. Connect each node to its closest neighbor (by 2D distance)
+     * A. Connect each node to its closest neighbor (by 2D distance with grid compensation)
      * B. While not all nodes form a single tree, connect disconnected components
      *    starting from lowest elevation nodes
      */
@@ -616,14 +616,17 @@ public class DendrySampler implements Sampler {
         List<Point3D> pointList = new ArrayList<>(points.values());
         int n = pointList.size();
 
-        // Build all edges sorted by distance
+        // Build all edges sorted by compensated distance
+        // Add deterministic noise to break up grid patterns
         List<Edge> edges = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
                 Point3D p1 = pointList.get(i);
                 Point3D p2 = pointList.get(j);
-                double dist = p1.projectZ().distanceTo(p2.projectZ());
-                edges.add(new Edge(i, j, dist, p1, p2));
+                double baseDist = p1.projectZ().distanceTo(p2.projectZ());
+                // Add grid compensation noise (deterministic based on endpoints)
+                double compensatedDist = addGridCompensation(baseDist, p1, p2, l0x, l0y);
+                edges.add(new Edge(i, j, compensatedDist, p1, p2));
             }
         }
         edges.sort(Comparator.comparingDouble(e -> e.distance));
@@ -928,28 +931,62 @@ public class DendrySampler implements Sampler {
                             tangent = toNeighbor;
                         }
                     } else {
-                        // 3+ connections: rotate tangent to create separation
-                        // Find the angular "gap" between this neighbor and the next
-                        Point3D prevNeighbor = neighbors.get((i - 1 + n) % n);
-                        Point3D nextNeighbor = neighbors.get((i + 1) % n);
+                        // 3+ connections: identify the "flow pair" (most opposite neighbors)
+                        // and give them continuous tangents, spread others
 
-                        double angleToPrev = Math.atan2(prevNeighbor.y - node.y, prevNeighbor.x - node.x);
-                        double angleToNext = Math.atan2(nextNeighbor.y - node.y, nextNeighbor.x - node.x);
-                        double angleToCurrent = Math.atan2(neighbor.y - node.y, neighbor.x - node.x);
-
-                        // Calculate angular gaps
-                        double gapToPrev = normalizeAngle(angleToCurrent - angleToPrev);
-                        double gapToNext = normalizeAngle(angleToNext - angleToCurrent);
-
-                        // Rotate slightly toward the larger gap to spread tangents
-                        double rotationAngle = 0;
-                        if (gapToPrev > gapToNext) {
-                            rotationAngle = -Math.min(tangentAngle, gapToPrev * 0.3);
-                        } else {
-                            rotationAngle = Math.min(tangentAngle, gapToNext * 0.3);
+                        // Find the most opposite pair (closest to 180° apart)
+                        int flowIdx1 = -1, flowIdx2 = -1;
+                        double maxOpposition = 0;
+                        for (int a = 0; a < n; a++) {
+                            for (int b = a + 1; b < n; b++) {
+                                double angleA = Math.atan2(neighbors.get(a).y - node.y, neighbors.get(a).x - node.x);
+                                double angleB = Math.atan2(neighbors.get(b).y - node.y, neighbors.get(b).x - node.x);
+                                double opposition = Math.abs(normalizeAngle(angleA - angleB));
+                                if (opposition > maxOpposition) {
+                                    maxOpposition = opposition;
+                                    flowIdx1 = a;
+                                    flowIdx2 = b;
+                                }
+                            }
                         }
 
-                        tangent = rotateVec2D(toNeighbor, rotationAngle);
+                        // Check if current neighbor is part of the flow pair
+                        boolean isFlowPair = (i == flowIdx1 || i == flowIdx2) && maxOpposition > Math.PI * 0.6;
+
+                        if (isFlowPair) {
+                            // Flow pair: use opposite tangent method (like 2-connection case)
+                            int oppositeIdx = (i == flowIdx1) ? flowIdx2 : flowIdx1;
+                            Point3D opposite = neighbors.get(oppositeIdx);
+                            Vec2D fromOpposite = new Vec2D(opposite.projectZ(), node.projectZ());
+                            if (fromOpposite.lengthSquared() > MathUtils.EPSILON) {
+                                fromOpposite = fromOpposite.normalize();
+                                tangent = blendTangent(toNeighbor, fromOpposite, tangentAngle);
+                            } else {
+                                tangent = toNeighbor;
+                            }
+                        } else {
+                            // Non-flow connection: rotate tangent to create separation
+                            Point3D prevNeighbor = neighbors.get((i - 1 + n) % n);
+                            Point3D nextNeighbor = neighbors.get((i + 1) % n);
+
+                            double angleToPrev = Math.atan2(prevNeighbor.y - node.y, prevNeighbor.x - node.x);
+                            double angleToNext = Math.atan2(nextNeighbor.y - node.y, nextNeighbor.x - node.x);
+                            double angleToCurrent = Math.atan2(neighbor.y - node.y, neighbor.x - node.x);
+
+                            // Calculate angular gaps
+                            double gapToPrev = normalizeAngle(angleToCurrent - angleToPrev);
+                            double gapToNext = normalizeAngle(angleToNext - angleToCurrent);
+
+                            // Rotate slightly toward the larger gap to spread tangents
+                            double rotationAngle = 0;
+                            if (gapToPrev > gapToNext) {
+                                rotationAngle = -Math.min(tangentAngle, gapToPrev * 0.3);
+                            } else {
+                                rotationAngle = Math.min(tangentAngle, gapToNext * 0.3);
+                            }
+
+                            tangent = rotateVec2D(toNeighbor, rotationAngle);
+                        }
                     }
 
                     info.tangents.put(neighborKey, tangent);
