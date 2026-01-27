@@ -15,17 +15,30 @@ Seed: 2,403
 Voxel Res: 3
 
 
-Focussed on break:
 type: DENDRY
 n: 0                    # Resolution levels (1-5)
 epsilon: 0              # Point distribution bias [0, 0.5)
 delta: 0.05             # Segment displacement
+cachepixels: 20.0
 slope: 0.001              # Valley/cliff factor
 gridsize: 1000      # Grid scaling (1000)
-return: distance       # distance, weighted, or elevation
+return: PIXEL_LEVEL       # distance, weighted, or elevation
 curvature: 1.0
+level0Scale: 2
 sampler:                # Optional control function
   type: OPEN_SIMPLEX_2
   frequency: 0.0001
   
-x=275,z=875, to x=650, z=1340
+type: DENDRY
+n: 2                    # Resolution levels (1-5)
+epsilon: 0              # Point distribution bias [0, 0.5)
+delta: 0.05             # Segment displacement
+cachepixels: 20.0
+slope: 0.001              # Valley/cliff factor
+gridsize: 1000      # Grid scaling (1000)
+return: PIXEL_LEVEL       # distance, weighted, or elevation
+curvature: 1.0
+level0Scale: 2
+sampler:                # Optional control function
+  type: OPEN_SIMPLEX_2
+  frequency: 0.0001

@@ -1789,9 +1789,10 @@ public class DendrySampler implements Sampler {
             // CACHE HIT: Cell is already computed - look up pixel value directly
             pixelCacheHits.incrementAndGet();
             double value = lookupPixelValue(x, y);
-            // If pixel has data, return it; if empty (NaN), return 0
+            // If pixel has data, return it; if empty (NaN), return -2
+            // - 1 gives delta from other values.
             // This is the FIX: we don't recompute just because a pixel is empty
-            return Double.isNaN(value) ? 0 : value;
+            return Double.isNaN(value) ? -1 : (value+1);
         }
 
         // CACHE MISS: Cell not computed yet - create/get cache entry and compute
