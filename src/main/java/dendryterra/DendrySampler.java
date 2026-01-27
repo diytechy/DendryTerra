@@ -606,7 +606,7 @@ public class DendrySampler implements Sampler {
     /**
      * Build a tree structure connecting all points within a level 0 cell.
      * Algorithm:
-     * A. Connect each node to its closest neighbor (by 2D distance with grid compensation)
+     * A. Connect each node to its closest neighbor (by 2D distance squared)
      * B. While not all nodes form a single tree, connect disconnected components
      *    starting from lowest elevation nodes
      */
@@ -616,17 +616,14 @@ public class DendrySampler implements Sampler {
         List<Point3D> pointList = new ArrayList<>(points.values());
         int n = pointList.size();
 
-        // Build all edges sorted by compensated distance
-        // Add deterministic noise to break up grid patterns
+        // Build all edges sorted by distance squared (favors shorter connections more strongly)
         List<Edge> edges = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
                 Point3D p1 = pointList.get(i);
                 Point3D p2 = pointList.get(j);
-                double baseDist = p1.projectZ().distanceTo(p2.projectZ());
-                // Add grid compensation noise (deterministic based on endpoints)
-                double compensatedDist = addGridCompensation(baseDist, p1, p2, l0x, l0y);
-                edges.add(new Edge(i, j, compensatedDist, p1, p2));
+                double distSq = p1.projectZ().distanceSquaredTo(p2.projectZ());
+                edges.add(new Edge(i, j, distSq, p1, p2));
             }
         }
         edges.sort(Comparator.comparingDouble(e -> e.distance));
@@ -640,19 +637,19 @@ public class DendrySampler implements Sampler {
             rank[i] = 0;
         }
 
-        // For each node, find and add its closest neighbor connection
+        // For each node, find and add its closest neighbor connection (by distance squared)
         boolean[] hasConnection = new boolean[n];
         for (int i = 0; i < n; i++) {
-            double minDist = Double.MAX_VALUE;
+            double minDistSq = Double.MAX_VALUE;
             int closest = -1;
             Point3D current = pointList.get(i);
 
             for (int j = 0; j < n; j++) {
                 if (i == j) continue;
                 Point3D other = pointList.get(j);
-                double dist = current.projectZ().distanceTo(other.projectZ());
-                if (dist < minDist) {
-                    minDist = dist;
+                double distSq = current.projectZ().distanceSquaredTo(other.projectZ());
+                if (distSq < minDistSq) {
+                    minDistSq = distSq;
                     closest = j;
                 }
             }
