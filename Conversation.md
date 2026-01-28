@@ -494,3 +494,103 @@ Can you:
 2. If correct, add more debugs to root cause if there is an issue (ex: Set up a counter to see how many times a network is calculated during a test, to understand if something is triggering network / segment rebuild superfluously.
 3. See if any implementation / test methods are obscuring results.  Ex: Is the test scenario being used causing the filter to reinitialize for every sample instead of allowing it to take advantage of cached information.
 
+############################################################3
+
+Level 0 segments (created both inside cell level 0 and as stitching segments) have tight / non-continuous joints and repetitive structuring.  To fix this:
+    A.  When segments join at a node, at least two of the joining segments should have tangents that are opposite angles to give continuity along the node.
+    B.  When creating segments between nodes based on distance, the shortest distance should be compensated for the square grid structure (Should already be implemented at higher levels - to break up the grid-line appearance.)
+
+#########################################################################
+
+I have reverted the grid compensation for now due to overlap, try to use distanceSquaredTo for the level 0 segment distance calculation and I will review the results.
+
+I still see severely jagged connections where only two level 0 segments connect.  Is it possible the pixel value is getting allocated to it's position along the linear interpolation between the two points of a subdivided segment instead of what should be a smoother spline?
+
+Check pixel creation
+Check tangent creation
+
+#########################################################################
+
+Apply the following changes to this project:
+
+1. Raname Level0 segments to be called Asterisms
+2. Rename Level 0 cells to be called constellations
+3. Rename Level 0 points / key-points to be called stars
+4. Function "computeAllSegmentsForCell" duplicates much of the logic in "evaluate", can these be merged in such a way that logic trees are not duplicated in different functions?
+
+
+5. The "branchesSampler" parameter can stay as it will still be used in future clarification, but all other references to "branchCount" should instead be called "segmentdivisioncount" or something similar, since "branchCount" is not actually creating branches
+
+Refactor this code to:
+
+Function Cleanup:
+
+
+Code changes:
+
+. Have a hard-coded parameter describing "minimum star spacing" with a value of 2/3 of a cell.
+. Have a hard-coded parameter describing "maximum Asterism distance" with a value of sqrt(8)+1/3, as this is the maximum size two adjacent stars can be located after potential merging.
+
+
+. Have an additional configuration to define the tileable shape for  constellations, including Square / Hexagon / Diamond.
+
+. Constellations scale with the parameter ConstellationScale, where 1 scales the constellation such that the largest possible inscribed square (without tilting) would be 3 gridspaces wide.  (This ensures when the constellation is tiled, only the 4 closest constellations need to be solved to resolved the local network of points around the query cell)
+
+. When a cell is queried, if pixel cache is used and available, return the data from the pixelcache as is done today.
+
+.Else proceed to solve the network to solve the queried cell:
+
+. Determine the four closest constellations to the queried cell based on the query cell position and the constellation locations (derivable assuming a starting constellation position and angle at the origin 0,0 coordinate)
+
+. Iterate through each of the four closest constellations to define the network within the constellation:
+.. Determine all the level 1 cells needed to circumscribe the constellation.
+.. For each level 1 cells circumscribing the network:
+... Perform sampling within each cell via a 9x9 offset grid of potential stars, select the star with the lowest position using the control function, if there is more than one lowest point, randomly select one.
+... Note now all stars have been drafted in the cells circumscribing the constellation.
+... Remove any drafted stars that are outside the boundary of the constellation, or within 1/2 of the minimum star spacing.
+... Now go through all stars while any distance between any star is less than the star spacing, and merge those stars into a single star.
+... Note now all stars have been set in the constellation.
+... Now while any star remain disconnected, continue iterating to connect all stars of the constellation:
+.... Starting with the highest elevation star that is not connected:
+..... Identify the closest neighboring star (point less than 2 grid-size distances away) with the lowest elevation and connect to it.
+
+Ideally: Level 0 cells are configurable tillable shapes that contain what will be called a "constellation".  Ex: ConstellationShape: Square / Hexagon / Diamond / Einstein Tile
+
+"Stars" are located in the constellation by also 
+
+
+
+
+1. 
+
+2. 
+distanceSquaredTo(Point2D other) {
+        double dx = x - other.x;
+        double dy = y - other.y;
+        return dx * dx + dy * dy;
+
+
+. In "getCell" the cell is located by a multiple of the cell resolution.  What is the purpose in multiplying the position by the resolution?  This is then used to generate points (generateNeighboringPoints3D) that appear to just reuse points from other cells, when the resolution level should generate a unique set of points.  This is also appears to then be used to create a perfect grid of points which is fed into generatePoint (with a hard-coded level of 1?)
+
+
+1. Investigate why level 2 segments do not appear to connect back to level 1 segments, note this appears to be an issue with level 2 segments and up.  Are they attempting to connect to the linear interpolation of the point instead of the spline?
+2. Level 0 segments (created both inside cell level 0 and as stitching segments) hive tight /non-continuous joints and repetitive structuring.  To fix this:
+    A.  When segments join at a node, at least two of the joining segments should have tangents that are opposite angles to give continuity along the node.
+    B.  When creating segments between nodes based on distance, the shortest distance should be compensated for the square grid structure (Should already be implemented at higher levels - to break up the grid-line appearance.)
+
+0. Function "computeAllSegmentsForCell" duplicates much of the logic in "evaluate", can these be merged in such a way that logic trees are not duplicated in different functions?
+
+3. Add another input similar to the control function that references a function that controls the probability of a level 1 node getting created (from 0 to 1)
+
+Self checks:
+
+1. Investigate wind / curvature
+2. Investigate unconnected segments - root level not 0?  But should not matter since cell 0 nodes are minimums?
+3. Add in sampler function that affects distribution / point allocation.  Should this just be probability-based?
+    A. The control function should return a number between 0 and 1, where 1 guarantees point creation.  But note points still cannot be connected if there is no downstream adjacent block.
+    B. Segments need to be rejected / removed that don't flow back to level 0.
+    C. Add hard-slope limits that prevents return paths backup the chain?
+    D. Make sure segments have their elevation forced down to accommodate all points on the chain.
+    E. Pixel elevation should be based on the slope along the full length of the spline, and increment linearly within each?  Or should splines be 3d?  That seems way ore complicated...
+4. Allow segments within level 0 to be connected to diagnal cells, and use distance that compensates for the block spacing.
+5. Allow stitching across level 0 cells to be diagonal.  So first find the lowest elevation cell between the boundary, and then connect to the closest cell within the parent 

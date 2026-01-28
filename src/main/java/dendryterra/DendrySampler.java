@@ -1325,17 +1325,23 @@ public class DendrySampler implements Sampler {
      */
     private Point3D getControlPointFromTangent(Point3D node, Point3D other, NodeTangentInfo tangentInfo,
                                                 double segLength, double strength, boolean isStart) {
-        if (tangentInfo == null || tangentInfo.tangents.isEmpty()) {
-            // No tangent info - fall back to linear (control point at node)
-            return node;
+        Vec2D tangent = null;
+
+        // Try to get pre-computed tangent
+        if (tangentInfo != null && !tangentInfo.tangents.isEmpty()) {
+            long otherKey = pointHash(other);
+            tangent = tangentInfo.tangents.get(otherKey);
         }
 
-        long otherKey = pointHash(other);
-        Vec2D tangent = tangentInfo.tangents.get(otherKey);
-
+        // Fallback: use segment direction as tangent if lookup failed
         if (tangent == null) {
-            // No tangent for this connection - fall back to linear
-            return node;
+            Vec2D segDir = new Vec2D(node.projectZ(), other.projectZ());
+            if (segDir.lengthSquared() > MathUtils.EPSILON) {
+                tangent = segDir.normalize();
+            } else {
+                // Degenerate case - return offset point in arbitrary direction
+                return new Point3D(node.x + 0.01, node.y, node.z);
+            }
         }
 
         // Control point is offset from node along the tangent direction
@@ -1359,9 +1365,10 @@ public class DendrySampler implements Sampler {
      * Uses fixed precision to handle floating point comparison.
      */
     private long pointHash(Point3D p) {
-        // Quantize to ~0.0001 precision for reliable matching
-        long hx = (long)(p.x * 10000);
-        long hy = (long)(p.y * 10000);
+        // Quantize to ~0.001 precision with rounding for reliable matching
+        // Use Math.round instead of cast to handle floating point edge cases
+        long hx = Math.round(p.x * 1000);
+        long hy = Math.round(p.y * 1000);
         return (hx * 73856093L) ^ (hy * 19349663L);
     }
 
