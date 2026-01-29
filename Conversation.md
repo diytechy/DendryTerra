@@ -532,13 +532,13 @@ Function Cleanup:
 
 Please make the following changes with the limited information.  Placeholders may be needed until I provide additional information.
 
-Note the definition of a segment changes to contain additional information (defined in NetworkPoints)
+Note the definition of a segment changes to contain additional information (defined in CleanAndNetworkPoints)
 
 Note "level0scale" has been renamed to "ConstellationScale"
 Code changes:
 
-. Have a hard-coded parameter describing "merge point spacing" with a value of 2/3 of a cell (This parameter will be used later at multiple levels with differenct cell sizes).
-. Have a hard-coded parameter describing "maximum point segment distance" with a value of sqrt(8)+1/3, as this is the maximum size two adjacent stars can be located after potential merging (This parameter will be used later at multiple levels with differenct cell sizes).
+* Have a hard-coded parameter describing "merge point spacing" with a value of 2/3 of a cell (This parameter will be used later at multiple levels with differenct cell sizes).
+* Have a hard-coded parameter describing "maximum point segment distance" with a value of sqrt(8)+1/3, as this is the maximum size two adjacent stars can be located after potential merging (This parameter will be used later at multiple levels with differenct cell sizes).
 
 
 * Have an additional configuration parameter to define the tileable shape for  constellations, including Square / Perfect Hexagon / Rhombus, default Square.
@@ -559,9 +559,9 @@ Code changes:
 *** Remove any drafted stars that are outside the boundary of the constellation, or within 1/2 of the merge point spacing from the boundary.
 *** Now go through all stars while any distance between any star is less than the star spacing, and merge those stars into a single star.
 *** Note now all stars have been set in the constellation.
-*** Now perform network creation within the constellation to define the Asterism.  The method to create a network of points (NetworkPoints)  will remain consistent per level, with some special rules for Asterisms (level 0).
+*** Now perform network creation within the constellation to define the Asterism.  The method to create a network of points (CleanAndNetworkPoints)  will remain consistent per level, with some special rules for Asterisms (level 0).
 
-New function: NetworkPoints
+New function: CleanAndNetworkPoints
 Inputs:
 Unique cell location definition (x coordinate, y coordinate, level)
 Outputs:
@@ -570,6 +570,41 @@ Outputs:
 
 Instructions for stitching the asterisms together and the exact method to network points will be described in a future point.
 
+###############################################################################
+
+"CleanAndNetworkPoints" has been renamed to "CleanAndCleanAndNetworkPoints"
+
+CleanAndNetworkPoints:
+Inputs:
+    Unique cell location definition (x coordinate, y coordinate, level)
+    Previous / lower level segments (if applicable, null or similar if called for asterisms, are the lowest level segments)
+Outputs:
+    Segment definitions (to be added into other segments)
+        Each segment has two 3d points (x,y,z), and two tangents describing the end condition in the x,z coordinates.
+
+
+    A. Determine the cell specific merge distance by multiplying "merge point spacing" with the size of the cells being connected.  (Ex: For level 1 points, the merge distance is "merge point spacing" * 1/3, since the level 2 cells that are connected at level 1 are 1/3rd the size of level 1 cells.)
+    B. Determine the maximum segment distance in a similar manner.
+
+Note merge distance is not necessary for astrism.
+
+* Clean any network points: if any points are within the merge distance, merge the points to their average x,z position and resample the control function to determine their y height.
+* Now connect all the points:
+1. While any set of points or segments remain unconnected to the same or lower level segment:
+    A. Loop through each unconnected point from highest elevation to lowest elevation:
+        i. Find the neighboring point (overhead xz distance less than the maximum segment distance) with the lowest slope (difference in y height / overhead distance in xz coordinates).
+        ii. If the identified 
+
+stitchConstellationsNew:
+Inputs:
+    The segment definitions of the two asterisms being joined.
+Outputs:
+    Segment(s) definition describing how two constellations are connected.
+
+Find the two points in the two asterism definitions within the maximum segment distance with the smallest absolute slope between the two points.
+For each point in the new stitching segment:
+    If the point it's connecting to in the asterism is the end of the line, set the tangent equal to the tangent of it's connected line so it's continuous.
+    Else if the point it's connecting to is already a part of a line, set the tangent to a random but deterministic angle between 20 degrees to 80 degrees from the continuous line.
 
 
 Ideally: Level 0 cells are configurable tillable shapes that contain what will be called a "constellation".  Ex: ConstellationShape: Square / Hexagon / Diamond / Einstein Tile

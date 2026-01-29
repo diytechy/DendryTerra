@@ -601,8 +601,8 @@ public class DendrySampler implements Sampler {
             // Generate stars for this constellation (with 9x9 sampling, merging, etc.)
             List<Point3D> stars = generateConstellationStarsNew(constX, constY);
 
-            // Build network within constellation using NetworkPoints (placeholder)
-            List<Segment3D> segments = networkPoints(constX, constY, 0, stars);
+            // Build network within constellation using CleanAndNetworkPoints (placeholder)
+            List<Segment3D> segments = CleanAndNetworkPoints(constX, constY, 0, stars);
 
             constellationStars.put(constKey, stars);
             constellationSegments.put(constKey, segments);
@@ -804,7 +804,7 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * NetworkPoints: Create network of segments from a list of points.
+     * CleanAndNetworkPoints: Create network of segments from a list of points.
      * This is a placeholder - exact networking algorithm TBD.
      *
      * @param cellX X coordinate of cell (constellation index for level 0)
@@ -813,9 +813,9 @@ public class DendrySampler implements Sampler {
      * @param points List of points to connect
      * @return List of segments with tangent information
      */
-    private List<Segment3D> networkPoints(int cellX, int cellY, int level, List<Point3D> points) {
+    private List<Segment3D> CleanAndNetworkPoints(int cellX, int cellY, int level, List<Point3D> points) {
         // Placeholder implementation - uses existing tree building logic
-        // TODO: Implement full NetworkPoints algorithm with tangent computation
+        // TODO: Implement full CleanAndNetworkPoints algorithm with tangent computation
         Map<Long, Point3D> pointMap = new HashMap<>();
         for (int i = 0; i < points.size(); i++) {
             Point3D p = points.get(i);
