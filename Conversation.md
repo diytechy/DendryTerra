@@ -513,13 +513,16 @@ Check tangent creation
 
 Apply the following changes to this project:
 
-1. Raname Level0 segments to be called Asterisms
-2. Rename Level 0 cells to be called constellations
+1. Raname Level 0 segments to be called AsterismSegments
+2. Rename Level 0 cells to be called constellations.
 3. Rename Level 0 points / key-points to be called stars
-4. Function "computeAllSegmentsForCell" duplicates much of the logic in "evaluate", can these be merged in such a way that logic trees are not duplicated in different functions?
+4. Rename Level 0 networks to be called Asterisms.
+5. Function "computeAllSegmentsForCell" duplicates much of the logic in "evaluate", can these be merged in such a way that logic trees are not duplicated in different functions?
+
+6. ConstellationScale should replace level0scale.  This should be a value greater than 1.
 
 
-5. The "branchesSampler" parameter can stay as it will still be used in future clarification, but all other references to "branchCount" should instead be called "segmentdivisioncount" or something similar, since "branchCount" is not actually creating branches
+5. The "branchesSampler" parameter can stay as it will still be used in future clarification, but all other references to "branchCount" should instead be called "segmentdivisioncount" or something similar, since "branchCount" is not actually creating branches, it's just dividing the segment into pieces for spline creation.
 
 Refactor this code to:
 
@@ -529,12 +532,12 @@ Function Cleanup:
 Code changes:
 
 . Have a hard-coded parameter describing "minimum star spacing" with a value of 2/3 of a cell.
-. Have a hard-coded parameter describing "maximum Asterism distance" with a value of sqrt(8)+1/3, as this is the maximum size two adjacent stars can be located after potential merging.
+. Have a hard-coded parameter describing "maximum Asterism segment distance" with a value of sqrt(8)+1/3, as this is the maximum size two adjacent stars can be located after potential merging.
 
 
 . Have an additional configuration to define the tileable shape for  constellations, including Square / Hexagon / Diamond.
 
-. Constellations scale with the parameter ConstellationScale, where 1 scales the constellation such that the largest possible inscribed square (without tilting) would be 3 gridspaces wide.  (This ensures when the constellation is tiled, only the 4 closest constellations need to be solved to resolved the local network of points around the query cell)
+. Constellations scale with the parameter ConstellationScale, where 1 scales the constellation such that the largest possible inscribed square (without tilting) would be 3 gridspaces wide.  (This ensures when the constellation is tiled, only the 4 closest constellations need to be solved to resolve the local network of points around the query cell)
 
 . When a cell is queried, if pixel cache is used and available, return the data from the pixelcache as is done today.
 
@@ -544,15 +547,16 @@ Code changes:
 
 . Iterate through each of the four closest constellations to define the network within the constellation:
 .. Determine all the level 1 cells needed to circumscribe the constellation.
-.. For each level 1 cells circumscribing the network:
-... Perform sampling within each cell via a 9x9 offset grid of potential stars, select the star with the lowest position using the control function, if there is more than one lowest point, randomly select one.
+.. For each level 1 cells circumscribing the constellation:
+... Perform sampling within each cell via a 9x9 offset grid of potential stars (this should be deterministic), select the star with the lowest position using the control function, if there is more than one lowest point, randomly select one.
 ... Note now all stars have been drafted in the cells circumscribing the constellation.
 ... Remove any drafted stars that are outside the boundary of the constellation, or within 1/2 of the minimum star spacing.
 ... Now go through all stars while any distance between any star is less than the star spacing, and merge those stars into a single star.
 ... Note now all stars have been set in the constellation.
-... Now while any star remain disconnected, continue iterating to connect all stars of the constellation:
-.... Starting with the highest elevation star that is not connected:
-..... Identify the closest neighboring star (point less than 2 grid-size distances away) with the lowest elevation and connect to it.
+... Now while any star remain disconnected, continue iterating to connect all stars of the constellation, this logic ensures "downward" flow (where possible) of segments and disjointed attachments where possible:
+.... Starting with the highest elevation star that is not pegged to connect to another star:
+..... Identify the closest neighboring star (point less than 2 grid-size distances away) with the lowest elevation and tag it for connection.
+
 
 Ideally: Level 0 cells are configurable tillable shapes that contain what will be called a "constellation".  Ex: ConstellationShape: Square / Hexagon / Diamond / Einstein Tile
 

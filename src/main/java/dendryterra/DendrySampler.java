@@ -50,7 +50,7 @@ public class DendrySampler implements Sampler {
     private final int parallelThreshold;
 
     // Constellation scale (how many level 1 cells fit in one constellation per axis)
-    private final int level0Scale;
+    private final int ConstellationScale;
 
     // Spline tangent parameters
     private final double tangentAngle;    // Max angle deviation (radians)
@@ -171,7 +171,7 @@ public class DendrySampler implements Sampler {
                          double connectDistance, double connectDistanceFactor,
                          boolean useCache, boolean useParallel, boolean useSplines,
                          boolean debugTiming, int parallelThreshold,
-                         int level0Scale,
+                         int ConstellationScale,
                          double tangentAngle, double tangentStrength,
                          double cachepixels) {
         this.resolution = resolution;
@@ -193,7 +193,7 @@ public class DendrySampler implements Sampler {
         this.useSplines = useSplines;
         this.debugTiming = debugTiming;
         this.parallelThreshold = parallelThreshold;
-        this.level0Scale = level0Scale;
+        this.ConstellationScale = ConstellationScale;
         this.tangentAngle = tangentAngle;
         this.tangentStrength = tangentStrength;
         this.cachepixels = cachepixels;
@@ -475,11 +475,11 @@ public class DendrySampler implements Sampler {
 
     /**
      * Get constellation (level 0 cell) coordinates for a given level 1 cell.
-     * Constellations are level0Scale times larger than level 1 cells.
+     * Constellations are ConstellationScale times larger than level 1 cells.
      */
     private Cell getConstellation(int level1CellX, int level1CellY) {
-        int constX = Math.floorDiv(level1CellX, level0Scale);
-        int constY = Math.floorDiv(level1CellY, level0Scale);
+        int constX = Math.floorDiv(level1CellX, ConstellationScale);
+        int constY = Math.floorDiv(level1CellY, ConstellationScale);
         return new Cell(constX, constY, 0);
     }
 
@@ -552,11 +552,11 @@ public class DendrySampler implements Sampler {
         Map<Long, Point3D> stars = new HashMap<>();
 
         // Iterate over all level 1 cells in this constellation
-        int startX = constX * level0Scale;
-        int startY = constY * level0Scale;
+        int startX = constX * ConstellationScale;
+        int startY = constY * ConstellationScale;
 
-        for (int i = 0; i < level0Scale; i++) {
-            for (int j = 0; j < level0Scale; j++) {
+        for (int i = 0; i < ConstellationScale; i++) {
+            for (int j = 0; j < ConstellationScale; j++) {
                 int l1x = startX + j;
                 int l1y = startY + i;
 
@@ -737,18 +737,18 @@ public class DendrySampler implements Sampler {
     private Segment3D stitchConstellationsVertical(int constX, int constY,
                                                     Map<Long, Point3D> leftStars,
                                                     Map<Long, Point3D> rightStars) {
-        // Right edge of left constellation: x = (constX + 1) * level0Scale - 1
-        // Left edge of right constellation: x = (constX + 1) * level0Scale
-        int leftEdgeX = (constX + 1) * level0Scale - 1;
-        int rightEdgeX = (constX + 1) * level0Scale;
-        int startY = constY * level0Scale;
+        // Right edge of left constellation: x = (constX + 1) * ConstellationScale - 1
+        // Left edge of right constellation: x = (constX + 1) * ConstellationScale
+        int leftEdgeX = (constX + 1) * ConstellationScale - 1;
+        int rightEdgeX = (constX + 1) * ConstellationScale;
+        int startY = constY * ConstellationScale;
 
         Point3D lowestLeftStar = null;
         Point3D lowestRightStar = null;
         double lowestLeftElev = Double.MAX_VALUE;
         double lowestRightElev = Double.MAX_VALUE;
 
-        for (int i = 0; i < level0Scale; i++) {
+        for (int i = 0; i < ConstellationScale; i++) {
             int y = startY + i;
 
             Point3D leftStar = leftStars.get(packKey(leftEdgeX, y));
@@ -776,16 +776,16 @@ public class DendrySampler implements Sampler {
     private Segment3D stitchConstellationsHorizontal(int constX, int constY,
                                                       Map<Long, Point3D> topStars,
                                                       Map<Long, Point3D> bottomStars) {
-        int topEdgeY = (constY + 1) * level0Scale - 1;
-        int bottomEdgeY = (constY + 1) * level0Scale;
-        int startX = constX * level0Scale;
+        int topEdgeY = (constY + 1) * ConstellationScale - 1;
+        int bottomEdgeY = (constY + 1) * ConstellationScale;
+        int startX = constX * ConstellationScale;
 
         Point3D lowestTopStar = null;
         Point3D lowestBottomStar = null;
         double lowestTopElev = Double.MAX_VALUE;
         double lowestBottomElev = Double.MAX_VALUE;
 
-        for (int i = 0; i < level0Scale; i++) {
+        for (int i = 0; i < ConstellationScale; i++) {
             int x = startX + i;
 
             Point3D topStar = topStars.get(packKey(x, topEdgeY));

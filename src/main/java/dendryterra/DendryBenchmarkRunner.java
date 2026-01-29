@@ -36,7 +36,7 @@ public class DendryBenchmarkRunner {
      */
     private static List<TestCase> createTestCases(int n, double epsilon, double delta, double slope, double gridsize,
             DendryReturnType returnType, long salt, int defaultBranches, double curvature, double curvatureFalloff,
-            double connectDistance, double connectDistanceFactor, int parallelThreshold, int level0Scale,
+            double connectDistance, double connectDistanceFactor, int parallelThreshold, int ConstellationScale,
             double tangentAngle, double tangentStrength) {
         
         List<TestCase> cases = new ArrayList<>();
@@ -53,7 +53,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            level0Scale,
+            ConstellationScale,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
@@ -71,7 +71,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            level0Scale,
+            ConstellationScale,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
@@ -89,7 +89,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            level0Scale,
+            ConstellationScale,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
@@ -107,7 +107,7 @@ public class DendryBenchmarkRunner {
             false,  // useSplines = OFF
             false,  // debugTiming
             parallelThreshold,
-            level0Scale,
+            ConstellationScale,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
@@ -125,7 +125,7 @@ public class DendryBenchmarkRunner {
             false,  // useSplines = OFF
             false,  // debugTiming
             parallelThreshold,
-            level0Scale,
+            ConstellationScale,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
@@ -140,7 +140,7 @@ public class DendryBenchmarkRunner {
             curvature, curvatureFalloff,
             connectDistance, connectDistanceFactor,
             true, true, true, false, parallelThreshold,
-            level0Scale,
+            ConstellationScale,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
@@ -158,7 +158,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            level0Scale,
+            ConstellationScale,
             tangentAngle, tangentStrength,
             1.0     // cachepixels enabled
         );
@@ -203,7 +203,7 @@ public class DendryBenchmarkRunner {
         double connectDistance = 0;
         double connectDistanceFactor = 2.0;
         int parallelThreshold = 100;
-        int level0Scale = 4;  // Level 0 cells contain 4x4 level 1 cells
+        int ConstellationScale = 4;  // Level 0 cells contain 4x4 level 1 cells
         double tangentAngle = Math.toRadians(45);  // 45 degrees max deviation
         double tangentStrength = 0.4;  // Tangent length as fraction of segment
         double cachepixels = 0;  // Pixel cache disabled for benchmarks (use 0)
@@ -211,7 +211,7 @@ public class DendryBenchmarkRunner {
         // Create test cases in table-like format
         List<TestCase> testCases = createTestCases(n, epsilon, delta, slope, gridsize, returnType, salt, 
             defaultBranches, curvature, curvatureFalloff, connectDistance, connectDistanceFactor,
-            parallelThreshold, level0Scale, tangentAngle, tangentStrength);
+            parallelThreshold, ConstellationScale, tangentAngle, tangentStrength);
 
         // Run benchmarks
         double worldScale = 1.0;
