@@ -49,7 +49,7 @@ public class DendrySampler implements Sampler {
     private final boolean debugTiming;
     private final int parallelThreshold;
 
-    // Level 0 cell scale (how many level 1 cells fit in one level 0 cell per axis)
+    // Constellation scale (how many level 1 cells fit in one constellation per axis)
     private final int level0Scale;
 
     // Spline tangent parameters
@@ -234,6 +234,7 @@ public class DendrySampler implements Sampler {
         int branches = computeBranchCount(cellX, cellY);
         return new CellData(point, branches);
     }
+    
 
     private static long packKey(int x, int y) {
         return ((long) x << 32) | (y & 0xFFFFFFFFL);
@@ -299,6 +300,21 @@ public class DendrySampler implements Sampler {
     }
 
     private double evaluate(long seed, double x, double y) {
+        Cell cell1 = getCell(x, y, 1);
+        List<Segment3D> allSegments = generateAllSegments(cell1, x, y);
+        return computeResult(x, y, allSegments);
+    }
+
+    /**
+     * Generate all segments up to the configured resolution level.
+     * This is the core segment generation logic shared by evaluate() and computeAllSegmentsForCell().
+     *
+     * @param cell1 The level 1 cell for the query
+     * @param queryX Query X coordinate in normalized space (for higher resolution cell lookup)
+     * @param queryY Query Y coordinate in normalized space (for higher resolution cell lookup)
+     * @return List of all generated segments
+     */
+    private List<Segment3D> generateAllSegments(Cell cell1, double queryX, double queryY) {
         // Displacement factors decrease exponentially for each level
         double displacementLevel0 = delta * 2.0;
         double displacementLevel1 = delta;
@@ -306,66 +322,52 @@ public class DendrySampler implements Sampler {
         double displacementLevel3 = displacementLevel2 / 4.0;
 
         // Minimum slope constraints for sub-branch connections
-        double minSlopeLevel1 = 0; //0.5;
-        double minSlopeLevel2 = 0; //0.9;
-        double minSlopeLevel3 = 0; //0.18;
-        double minSlopeLevel4 = 0; //0.38;
-        double minSlopeLevel5 = 0; //1.0;
+        double minSlopeLevel1 = 0;
+        double minSlopeLevel2 = 0;
+        double minSlopeLevel3 = 0;
+        double minSlopeLevel4 = 0;
+        double minSlopeLevel5 = 0;
 
-        // Level 0: Cell-based network with guaranteed connectivity
-        Cell cell1 = getCell(x, y, 1);
+        // Asterism (Level 0): Generate and process
+        List<Segment3D> asterismBase = generateAsterism(cell1);
+        Map<Long, NodeTangentInfo> asterismTangents = computeNodeTangents(asterismBase);
+        List<Segment3D> asterismPruned = pruneToQueryRegion(asterismBase, cell1);
 
-        // Step 1: Generate L0 BASE segments (no subdivision yet)
-        List<Segment3D> segments0Base = generateLevel0Network(cell1);
-
-        // Step 2: Compute L0 tangents on FULL L0 set (before pruning for determinism)
-        Map<Long, NodeTangentInfo> tangentMap0 = computeNodeTangents(segments0Base);
-
-        // Step 3: Prune L0 to 3x3 region
-        List<Segment3D> segments0Pruned = pruneToQueryRegion(segments0Base, cell1);
-
-        // Step 4: Subdivide and displace L0 using pre-computed tangents
-        int level0Subdivisions = Math.max(2, defaultBranches);
-        segments0Pruned = subdivideSegments(segments0Pruned, level0Subdivisions, 0, tangentMap0);
-        segments0Pruned = displaceSegmentsWithSplit(segments0Pruned, displacementLevel0, 0);
+        int asterismSubdivisions = Math.max(2, defaultBranches);
+        asterismPruned = subdivideSegments(asterismPruned, asterismSubdivisions, 0, asterismTangents);
+        asterismPruned = displaceSegmentsWithSplit(asterismPruned, displacementLevel0, 0);
 
         if (resolution == 0) {
-            return computeResult(x, y, segments0Pruned);
+            return asterismPruned;
         }
 
-        // Level 1: Generate L1 from PRUNED+SUBDIVIDED L0 (only 3x3 cells needed now)
-        // Since L0 is already pruned to 3x3, L1 only needs to cover 3x3 cells
-        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, segments0Pruned, minSlopeLevel1);
-
-        // Compute L1 tangents
+        // Level 1: Generate from asterism
+        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, asterismPruned, minSlopeLevel1);
         Map<Long, NodeTangentInfo> tangentMap1 = computeNodeTangents(segments1Base);
 
-        // Subdivide and displace L1
         int branchCount = getBranchCountForCell(cell1);
         List<Segment3D> segments1 = subdivideSegments(segments1Base, branchCount, 1, tangentMap1);
         segments1 = displaceSegmentsWithSplit(segments1, displacementLevel1, 1);
 
-        List<Segment3D> allSegments = new ArrayList<>(segments0Pruned);
+        List<Segment3D> allSegments = new ArrayList<>(asterismPruned);
         allSegments.addAll(segments1);
 
         if (resolution == 1) {
-            return computeResult(x, y, allSegments);
+            return allSegments;
         }
 
-        // Level 2+: Continue with existing logic
-        // Level 2: 2x Resolution
-        Cell cell2 = getCell(x, y, 2);
+        // Level 2+: Higher resolution refinement
+        Cell cell2 = getCell(queryX, queryY, 2);
         Point3D[][] points2 = generateNeighboringPoints3D(cell2, 5);
         List<Segment3D> segments2 = generateSubSegments(points2, allSegments, minSlopeLevel2, 2);
         displaceSegments(segments2, displacementLevel2, cell2);
 
         if (resolution == 2) {
             allSegments.addAll(segments2);
-            return computeResult(x, y, allSegments);
+            return allSegments;
         }
 
-        // Level 3: 4x Resolution
-        Cell cell3 = getCell(x, y, 4);
+        Cell cell3 = getCell(queryX, queryY, 4);
         Point3D[][] points3 = generateNeighboringPoints3D(cell3, 5);
         allSegments.addAll(segments2);
         List<Segment3D> segments3 = generateSubSegments(points3, allSegments, minSlopeLevel3, 3);
@@ -373,28 +375,26 @@ public class DendrySampler implements Sampler {
 
         if (resolution == 3) {
             allSegments.addAll(segments3);
-            return computeResult(x, y, allSegments);
+            return allSegments;
         }
 
-        // Level 4: 8x Resolution
-        Cell cell4 = getCell(x, y, 8);
+        Cell cell4 = getCell(queryX, queryY, 8);
         Point3D[][] points4 = generateNeighboringPoints3D(cell4, 5);
         allSegments.addAll(segments3);
         List<Segment3D> segments4 = generateSubSegments(points4, allSegments, minSlopeLevel4, 4);
 
         if (resolution == 4) {
             allSegments.addAll(segments4);
-            return computeResult(x, y, allSegments);
+            return allSegments;
         }
 
-        // Level 5: 16x Resolution
-        Cell cell5 = getCell(x, y, 16);
+        Cell cell5 = getCell(queryX, queryY, 16);
         Point3D[][] points5 = generateNeighboringPoints3D(cell5, 5);
         allSegments.addAll(segments4);
         List<Segment3D> segments5 = generateSubSegments(points5, allSegments, minSlopeLevel5, 5);
         allSegments.addAll(segments5);
 
-        return computeResult(x, y, allSegments);
+        return allSegments;
     }
 
     private static class Cell {
@@ -465,48 +465,54 @@ public class DendrySampler implements Sampler {
         return points;
     }
 
-    // ========== Level 0 Cell-Based Network Generation ==========
+    // ========== Asterism (Level 0) Network Generation ==========
+    //
+    // Terminology:
+    // - Constellation: A level 0 cell containing multiple level 1 cells
+    // - Star: A key point within a constellation (one per level 1 cell, at lowest elevation)
+    // - Asterism: The network of segments connecting stars across constellations
+    // - AsterismSegment: A segment in the asterism network (level 0 segment)
 
     /**
-     * Get level 0 cell coordinates for a given level 1 cell.
-     * Level 0 cells are level0Scale times larger than level 1 cells.
+     * Get constellation (level 0 cell) coordinates for a given level 1 cell.
+     * Constellations are level0Scale times larger than level 1 cells.
      */
-    private Cell getLevel0Cell(int level1CellX, int level1CellY) {
-        int l0x = Math.floorDiv(level1CellX, level0Scale);
-        int l0y = Math.floorDiv(level1CellY, level0Scale);
-        return new Cell(l0x, l0y, 0);
+    private Cell getConstellation(int level1CellX, int level1CellY) {
+        int constX = Math.floorDiv(level1CellX, level0Scale);
+        int constY = Math.floorDiv(level1CellY, level0Scale);
+        return new Cell(constX, constY, 0);
     }
 
     /**
-     * Generate all level 0 segments for the query region.
-     * This includes computing networks for all required level 0 cells,
+     * Generate the asterism (level 0 network) for the query region.
+     * This includes computing star networks for all required constellations,
      * stitching them together at boundaries, and pruning to the relevant area.
      */
-    private List<Segment3D> generateLevel0Network(Cell queryCell1) {
-        // Determine which level 0 cells we need based on query cell position
-        java.util.Set<Long> requiredL0Cells = getRequiredLevel0Cells(queryCell1);
+    private List<Segment3D> generateAsterism(Cell queryCell1) {
+        // Determine which constellations we need based on query cell position
+        java.util.Set<Long> requiredConstellations = getRequiredConstellations(queryCell1);
 
-        // Generate segment network for each level 0 cell
-        Map<Long, List<Segment3D>> l0CellSegments = new HashMap<>();
-        Map<Long, Map<Long, Point3D>> l0CellPoints = new HashMap<>();  // level0Key -> (level1Key -> point)
+        // Generate asterism segments for each constellation
+        Map<Long, List<Segment3D>> constellationSegments = new HashMap<>();
+        Map<Long, Map<Long, Point3D>> constellationStars = new HashMap<>();  // constellationKey -> (level1Key -> star)
 
-        for (long l0Key : requiredL0Cells) {
-            int l0x = unpackX(l0Key);
-            int l0y = unpackY(l0Key);
+        for (long constKey : requiredConstellations) {
+            int constX = unpackX(constKey);
+            int constY = unpackY(constKey);
 
-            Map<Long, Point3D> points = generateLevel0CellPoints(l0x, l0y);
-            List<Segment3D> segments = buildTreeWithinLevel0Cell(points, l0x, l0y);
+            Map<Long, Point3D> stars = generateConstellationStars(constX, constY);
+            List<Segment3D> segments = buildTreeWithinConstellation(stars, constX, constY);
 
-            l0CellPoints.put(l0Key, points);
-            l0CellSegments.put(l0Key, segments);
+            constellationStars.put(constKey, stars);
+            constellationSegments.put(constKey, segments);
         }
 
-        // Stitch adjacent level 0 cells together at their boundaries
-        List<Segment3D> stitchSegments = stitchLevel0Cells(requiredL0Cells, l0CellPoints);
+        // Stitch adjacent constellations together at their boundaries
+        List<Segment3D> stitchSegments = stitchConstellations(requiredConstellations, constellationStars);
 
-        // Combine all segments (no pruning here - prune after spline subdivision in evaluate())
+        // Combine all asterism segments (no pruning here - prune after spline subdivision in evaluate())
         List<Segment3D> allSegments = new ArrayList<>();
-        for (List<Segment3D> segs : l0CellSegments.values()) {
+        for (List<Segment3D> segs : constellationSegments.values()) {
             allSegments.addAll(segs);
         }
         allSegments.addAll(stitchSegments);
@@ -515,23 +521,23 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Determine which level 0 cells need to be computed for a query.
+     * Determine which constellations need to be computed for a query.
      * We check a 5x5 grid of level 1 cells around the query cell to ensure:
-     * 1. All level 0 cells containing the 3x3 query region are included
-     * 2. Level 0 cells needed for tangent computation at boundaries are included
-     * 3. Stitching segments are properly computed for adjacent level 0 cells
+     * 1. All constellations containing the 3x3 query region are included
+     * 2. Constellations needed for tangent computation at boundaries are included
+     * 3. Stitching segments are properly computed for adjacent constellations
      */
-    private java.util.Set<Long> getRequiredLevel0Cells(Cell queryCell1) {
+    private java.util.Set<Long> getRequiredConstellations(Cell queryCell1) {
         java.util.Set<Long> required = new java.util.HashSet<>();
 
-        // Check a 5x5 grid (-2 to +2) to ensure we capture adjacent L0 cells
-        // needed for proper tangent computation at L0 boundaries
+        // Check a 5x5 grid (-2 to +2) to ensure we capture adjacent constellations
+        // needed for proper tangent computation at constellation boundaries
         for (int di = -2; di <= 2; di++) {
             for (int dj = -2; dj <= 2; dj++) {
                 int l1x = queryCell1.x + dj;
                 int l1y = queryCell1.y + di;
-                Cell l0Cell = getLevel0Cell(l1x, l1y);
-                required.add(packKey(l0Cell.x, l0Cell.y));
+                Cell constellation = getConstellation(l1x, l1y);
+                required.add(packKey(constellation.x, constellation.y));
             }
         }
 
@@ -539,35 +545,35 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Generate points for all level 1 cells within a level 0 cell.
-     * Returns a map from level 1 cell key to its lowest elevation point.
+     * Generate stars for all level 1 cells within a constellation.
+     * Returns a map from level 1 cell key to its star (lowest elevation point).
      */
-    private Map<Long, Point3D> generateLevel0CellPoints(int l0x, int l0y) {
-        Map<Long, Point3D> points = new HashMap<>();
+    private Map<Long, Point3D> generateConstellationStars(int constX, int constY) {
+        Map<Long, Point3D> stars = new HashMap<>();
 
-        // Iterate over all level 1 cells in this level 0 cell
-        int startX = l0x * level0Scale;
-        int startY = l0y * level0Scale;
+        // Iterate over all level 1 cells in this constellation
+        int startX = constX * level0Scale;
+        int startY = constY * level0Scale;
 
         for (int i = 0; i < level0Scale; i++) {
             for (int j = 0; j < level0Scale; j++) {
                 int l1x = startX + j;
                 int l1y = startY + i;
 
-                Point3D point = findLowestPointInCell(l1x, l1y);
-                points.put(packKey(l1x, l1y), point);
+                Point3D star = findStarInCell(l1x, l1y);
+                stars.put(packKey(l1x, l1y), star);
             }
         }
 
-        return points;
+        return stars;
     }
 
     /**
-     * Find the approximate lowest elevation point within a level 1 cell by sampling.
+     * Find the star (lowest elevation point) within a level 1 cell by sampling.
      * Uses a 5x5 grid of sample points and selects the one with minimum elevation.
      * Adds deterministic jitter to avoid grid-aligned patterns across cells.
      */
-    private Point3D findLowestPointInCell(int cellX, int cellY) {
+    private Point3D findStarInCell(int cellX, int cellY) {
         final int SAMPLES_PER_AXIS = 5;
 
         // Generate deterministic jitter for this cell
@@ -604,32 +610,32 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Build a tree structure connecting all points within a level 0 cell.
+     * Build a tree structure (asterism) connecting all stars within a constellation.
      * Algorithm:
-     * A. Connect each node to its closest neighbor (by 2D distance squared)
-     * B. While not all nodes form a single tree, connect disconnected components
-     *    starting from lowest elevation nodes
+     * A. Connect each star to its closest neighbor (by 2D distance squared)
+     * B. While not all stars form a single tree, connect disconnected components
+     *    starting from lowest elevation stars
      */
-    private List<Segment3D> buildTreeWithinLevel0Cell(Map<Long, Point3D> points, int l0x, int l0y) {
-        if (points.size() <= 1) return new ArrayList<>();
+    private List<Segment3D> buildTreeWithinConstellation(Map<Long, Point3D> stars, int constX, int constY) {
+        if (stars.size() <= 1) return new ArrayList<>();
 
-        List<Point3D> pointList = new ArrayList<>(points.values());
-        int n = pointList.size();
+        List<Point3D> starList = new ArrayList<>(stars.values());
+        int n = starList.size();
 
         // Build all edges sorted by distance squared (favors shorter connections more strongly)
         List<Edge> edges = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
-                Point3D p1 = pointList.get(i);
-                Point3D p2 = pointList.get(j);
-                double distSq = p1.projectZ().distanceSquaredTo(p2.projectZ());
-                edges.add(new Edge(i, j, distSq, p1, p2));
+                Point3D star1 = starList.get(i);
+                Point3D star2 = starList.get(j);
+                double distSq = star1.projectZ().distanceSquaredTo(star2.projectZ());
+                edges.add(new Edge(i, j, distSq, star1, star2));
             }
         }
         edges.sort(Comparator.comparingDouble(e -> e.distance));
 
-        // Phase A: Connect each node to its closest neighbor
-        List<Segment3D> segments = new ArrayList<>();
+        // Phase A: Connect each star to its closest neighbor
+        List<Segment3D> asterismSegments = new ArrayList<>();
         int[] parent = new int[n];
         int[] rank = new int[n];
         for (int i = 0; i < n; i++) {
@@ -637,16 +643,16 @@ public class DendrySampler implements Sampler {
             rank[i] = 0;
         }
 
-        // For each node, find and add its closest neighbor connection (by distance squared)
+        // For each star, find and add its closest neighbor connection (by distance squared)
         boolean[] hasConnection = new boolean[n];
         for (int i = 0; i < n; i++) {
             double minDistSq = Double.MAX_VALUE;
             int closest = -1;
-            Point3D current = pointList.get(i);
+            Point3D current = starList.get(i);
 
             for (int j = 0; j < n; j++) {
                 if (i == j) continue;
-                Point3D other = pointList.get(j);
+                Point3D other = starList.get(j);
                 double distSq = current.projectZ().distanceSquaredTo(other.projectZ());
                 if (distSq < minDistSq) {
                     minDistSq = distSq;
@@ -658,9 +664,9 @@ public class DendrySampler implements Sampler {
                 int rootI = find(parent, i);
                 int rootJ = find(parent, closest);
 
-                // Add segment (avoid exact duplicates)
+                // Add asterism segment (avoid exact duplicates)
                 if (rootI != rootJ || !hasConnection[i]) {
-                    segments.add(new Segment3D(current, pointList.get(closest), 0));
+                    asterismSegments.add(new Segment3D(current, starList.get(closest), 0));
                     hasConnection[i] = true;
                     hasConnection[closest] = true;
                     if (rootI != rootJ) {
@@ -670,53 +676,53 @@ public class DendrySampler implements Sampler {
             }
         }
 
-        // Phase B: Ensure all nodes are connected (form a single tree)
-        // Sort nodes by elevation for deterministic tie-breaking
-        List<Integer> nodesByElevation = new ArrayList<>();
-        for (int i = 0; i < n; i++) nodesByElevation.add(i);
-        nodesByElevation.sort(Comparator.comparingDouble(i -> pointList.get(i).z));
+        // Phase B: Ensure all stars are connected (form a single tree)
+        // Sort stars by elevation for deterministic tie-breaking
+        List<Integer> starsByElevation = new ArrayList<>();
+        for (int i = 0; i < n; i++) starsByElevation.add(i);
+        starsByElevation.sort(Comparator.comparingDouble(i -> starList.get(i).z));
 
-        // Use Kruskal's to connect any remaining disconnected components
+        // Use Kruskal's to connect any remaining disconnected star components
         for (Edge edge : edges) {
             int rootA = find(parent, edge.idx1);
             int rootB = find(parent, edge.idx2);
 
             if (rootA != rootB) {
-                segments.add(new Segment3D(edge.p1, edge.p2, 0));
+                asterismSegments.add(new Segment3D(edge.p1, edge.p2, 0));
                 union(parent, rank, rootA, rootB);
             }
         }
 
-        return segments;
+        return asterismSegments;
     }
 
     /**
-     * Stitch adjacent level 0 cells together at their boundaries.
-     * For each pair of adjacent level 0 cells, find the boundary level 1 cell
+     * Stitch adjacent constellations together at their boundaries.
+     * For each pair of adjacent constellations, find the boundary star
      * with the lowest elevation on each side and connect them.
      */
-    private List<Segment3D> stitchLevel0Cells(java.util.Set<Long> l0Cells,
-                                               Map<Long, Map<Long, Point3D>> l0CellPoints) {
+    private List<Segment3D> stitchConstellations(java.util.Set<Long> constellations,
+                                                  Map<Long, Map<Long, Point3D>> constellationStars) {
         List<Segment3D> stitchSegments = new ArrayList<>();
         java.util.Set<Long> processedPairs = new java.util.HashSet<>();
 
-        for (long l0Key : l0Cells) {
-            int l0x = unpackX(l0Key);
-            int l0y = unpackY(l0Key);
+        for (long constKey : constellations) {
+            int constX = unpackX(constKey);
+            int constY = unpackY(constKey);
 
             // Check right neighbor (+x direction)
-            long rightKey = packKey(l0x + 1, l0y);
-            if (l0Cells.contains(rightKey) && !processedPairs.contains(packKey(Math.min(l0x, l0x+1), Math.max(l0x, l0x+1) * 10000 + l0y))) {
-                processedPairs.add(packKey(Math.min(l0x, l0x+1), Math.max(l0x, l0x+1) * 10000 + l0y));
-                Segment3D stitch = stitchVerticalBoundary(l0x, l0y, l0CellPoints.get(l0Key), l0CellPoints.get(rightKey));
+            long rightKey = packKey(constX + 1, constY);
+            if (constellations.contains(rightKey) && !processedPairs.contains(packKey(Math.min(constX, constX+1), Math.max(constX, constX+1) * 10000 + constY))) {
+                processedPairs.add(packKey(Math.min(constX, constX+1), Math.max(constX, constX+1) * 10000 + constY));
+                Segment3D stitch = stitchConstellationsVertical(constX, constY, constellationStars.get(constKey), constellationStars.get(rightKey));
                 if (stitch != null) stitchSegments.add(stitch);
             }
 
             // Check bottom neighbor (+y direction)
-            long bottomKey = packKey(l0x, l0y + 1);
-            if (l0Cells.contains(bottomKey) && !processedPairs.contains(packKey(l0x, Math.min(l0y, l0y+1) * 10000 + Math.max(l0y, l0y+1)))) {
-                processedPairs.add(packKey(l0x, Math.min(l0y, l0y+1) * 10000 + Math.max(l0y, l0y+1)));
-                Segment3D stitch = stitchHorizontalBoundary(l0x, l0y, l0CellPoints.get(l0Key), l0CellPoints.get(bottomKey));
+            long bottomKey = packKey(constX, constY + 1);
+            if (constellations.contains(bottomKey) && !processedPairs.contains(packKey(constX, Math.min(constY, constY+1) * 10000 + Math.max(constY, constY+1)))) {
+                processedPairs.add(packKey(constX, Math.min(constY, constY+1) * 10000 + Math.max(constY, constY+1)));
+                Segment3D stitch = stitchConstellationsHorizontal(constX, constY, constellationStars.get(constKey), constellationStars.get(bottomKey));
                 if (stitch != null) stitchSegments.add(stitch);
             }
         }
@@ -725,84 +731,84 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Stitch two level 0 cells at a vertical boundary (between l0x and l0x+1).
-     * Finds the lowest elevation cell on each side of the boundary and connects them.
+     * Stitch two constellations at a vertical boundary (between constX and constX+1).
+     * Finds the lowest elevation star on each side of the boundary and connects them.
      */
-    private Segment3D stitchVerticalBoundary(int l0x, int l0y,
-                                              Map<Long, Point3D> leftPoints,
-                                              Map<Long, Point3D> rightPoints) {
-        // Right edge of left cell: x = (l0x + 1) * level0Scale - 1
-        // Left edge of right cell: x = (l0x + 1) * level0Scale
-        int leftEdgeX = (l0x + 1) * level0Scale - 1;
-        int rightEdgeX = (l0x + 1) * level0Scale;
-        int startY = l0y * level0Scale;
+    private Segment3D stitchConstellationsVertical(int constX, int constY,
+                                                    Map<Long, Point3D> leftStars,
+                                                    Map<Long, Point3D> rightStars) {
+        // Right edge of left constellation: x = (constX + 1) * level0Scale - 1
+        // Left edge of right constellation: x = (constX + 1) * level0Scale
+        int leftEdgeX = (constX + 1) * level0Scale - 1;
+        int rightEdgeX = (constX + 1) * level0Scale;
+        int startY = constY * level0Scale;
 
-        Point3D lowestLeft = null;
-        Point3D lowestRight = null;
+        Point3D lowestLeftStar = null;
+        Point3D lowestRightStar = null;
         double lowestLeftElev = Double.MAX_VALUE;
         double lowestRightElev = Double.MAX_VALUE;
 
         for (int i = 0; i < level0Scale; i++) {
             int y = startY + i;
 
-            Point3D leftPoint = leftPoints.get(packKey(leftEdgeX, y));
-            if (leftPoint != null && leftPoint.z < lowestLeftElev) {
-                lowestLeftElev = leftPoint.z;
-                lowestLeft = leftPoint;
+            Point3D leftStar = leftStars.get(packKey(leftEdgeX, y));
+            if (leftStar != null && leftStar.z < lowestLeftElev) {
+                lowestLeftElev = leftStar.z;
+                lowestLeftStar = leftStar;
             }
 
-            Point3D rightPoint = rightPoints.get(packKey(rightEdgeX, y));
-            if (rightPoint != null && rightPoint.z < lowestRightElev) {
-                lowestRightElev = rightPoint.z;
-                lowestRight = rightPoint;
+            Point3D rightStar = rightStars.get(packKey(rightEdgeX, y));
+            if (rightStar != null && rightStar.z < lowestRightElev) {
+                lowestRightElev = rightStar.z;
+                lowestRightStar = rightStar;
             }
         }
 
-        if (lowestLeft != null && lowestRight != null) {
-            return new Segment3D(lowestLeft, lowestRight, 0);
+        if (lowestLeftStar != null && lowestRightStar != null) {
+            return new Segment3D(lowestLeftStar, lowestRightStar, 0);
         }
         return null;
     }
 
     /**
-     * Stitch two level 0 cells at a horizontal boundary (between l0y and l0y+1).
+     * Stitch two constellations at a horizontal boundary (between constY and constY+1).
      */
-    private Segment3D stitchHorizontalBoundary(int l0x, int l0y,
-                                                Map<Long, Point3D> topPoints,
-                                                Map<Long, Point3D> bottomPoints) {
-        int topEdgeY = (l0y + 1) * level0Scale - 1;
-        int bottomEdgeY = (l0y + 1) * level0Scale;
-        int startX = l0x * level0Scale;
+    private Segment3D stitchConstellationsHorizontal(int constX, int constY,
+                                                      Map<Long, Point3D> topStars,
+                                                      Map<Long, Point3D> bottomStars) {
+        int topEdgeY = (constY + 1) * level0Scale - 1;
+        int bottomEdgeY = (constY + 1) * level0Scale;
+        int startX = constX * level0Scale;
 
-        Point3D lowestTop = null;
-        Point3D lowestBottom = null;
+        Point3D lowestTopStar = null;
+        Point3D lowestBottomStar = null;
         double lowestTopElev = Double.MAX_VALUE;
         double lowestBottomElev = Double.MAX_VALUE;
 
         for (int i = 0; i < level0Scale; i++) {
             int x = startX + i;
 
-            Point3D topPoint = topPoints.get(packKey(x, topEdgeY));
-            if (topPoint != null && topPoint.z < lowestTopElev) {
-                lowestTopElev = topPoint.z;
-                lowestTop = topPoint;
+            Point3D topStar = topStars.get(packKey(x, topEdgeY));
+            if (topStar != null && topStar.z < lowestTopElev) {
+                lowestTopElev = topStar.z;
+                lowestTopStar = topStar;
             }
 
-            Point3D bottomPoint = bottomPoints.get(packKey(x, bottomEdgeY));
-            if (bottomPoint != null && bottomPoint.z < lowestBottomElev) {
-                lowestBottomElev = bottomPoint.z;
-                lowestBottom = bottomPoint;
+            Point3D bottomStar = bottomStars.get(packKey(x, bottomEdgeY));
+            if (bottomStar != null && bottomStar.z < lowestBottomElev) {
+                lowestBottomElev = bottomStar.z;
+                lowestBottomStar = bottomStar;
             }
         }
 
-        if (lowestTop != null && lowestBottom != null) {
-            return new Segment3D(lowestTop, lowestBottom, 0);
+        if (lowestTopStar != null && lowestBottomStar != null) {
+            return new Segment3D(lowestTopStar, lowestBottomStar, 0);
         }
         return null;
     }
 
     /**
-     * Prune segments to only keep those relevant to the query cell and its neighbors.
+     * Prune asterism segments to only keep those relevant to the query cell and its neighbors.
      * Keeps segments where at least one endpoint is within the 3x3 region around query cell.
      */
     private List<Segment3D> pruneToQueryRegion(List<Segment3D> segments, Cell queryCell1) {
@@ -838,8 +844,9 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Pre-computed tangent information for spline control points at a node.
+     * Pre-computed tangent information for spline control points at a star/node.
      * Stores tangent vectors for each connected neighbor, computed deterministically.
+     * Used for smooth asterism segment curves at star junctions.
      */
     private static class NodeTangentInfo {
         final Point3D node;
@@ -852,9 +859,9 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Compute tangent information for all nodes in a segment list.
-     * Tangents are computed deterministically based on node positions and connections,
-     * independent of segment list order.
+     * Compute tangent information for all stars/nodes in a segment list.
+     * Tangents are computed deterministically based on star positions and connections,
+     * independent of segment list order. Used for smooth asterism curves.
      */
     private Map<Long, NodeTangentInfo> computeNodeTangents(List<Segment3D> segments) {
         // Step 1: Build connectivity map: node -> list of connected nodes
@@ -1056,7 +1063,7 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Remove segments that don't connect to the inner 3x3 cell region.
+     * Remove asterism segments that don't connect to the inner 3x3 cell region.
      */
     private List<Segment3D> pruneDisconnectedSegments(List<Segment3D> segments,
                                                        double minX, double minY,
@@ -1856,88 +1863,13 @@ public class DendrySampler implements Sampler {
 
     /**
      * Compute all segments for a specific cell (used for pixel cache population).
+     * Uses cell center coordinates for higher resolution cell lookup.
      */
     private List<Segment3D> computeAllSegmentsForCell(long seed, int cellX, int cellY) {
-        // Create a cell object for the target cell
         Cell cell1 = new Cell(cellX, cellY, 1);
-
-        // Displacement factors
-        double displacementLevel0 = delta * 2.0;
-        double displacementLevel1 = delta;
-        double displacementLevel2 = displacementLevel1 / 4.0;
-        double displacementLevel3 = displacementLevel2 / 4.0;
-
-        // Minimum slope constraints
-        double minSlopeLevel1 = 0.5;
-        double minSlopeLevel2 = 0.9;
-        double minSlopeLevel3 = 0.18;
-        double minSlopeLevel4 = 0.38;
-        double minSlopeLevel5 = 1.0;
-
-        // Level 0
-        List<Segment3D> segments0Base = generateLevel0Network(cell1);
-        Map<Long, NodeTangentInfo> tangentMap0 = computeNodeTangents(segments0Base);
-        List<Segment3D> segments0Pruned = pruneToQueryRegion(segments0Base, cell1);
-        int level0Subdivisions = Math.max(2, defaultBranches);
-        segments0Pruned = subdivideSegments(segments0Pruned, level0Subdivisions, 0, tangentMap0);
-        segments0Pruned = displaceSegmentsWithSplit(segments0Pruned, displacementLevel0, 0);
-
-        if (resolution == 0) {
-            return segments0Pruned;
-        }
-
-        // Level 1
-        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, segments0Pruned, minSlopeLevel1);
-        Map<Long, NodeTangentInfo> tangentMap1 = computeNodeTangents(segments1Base);
-        int branchCount = getBranchCountForCell(cell1);
-        List<Segment3D> segments1 = subdivideSegments(segments1Base, branchCount, 1, tangentMap1);
-        segments1 = displaceSegmentsWithSplit(segments1, displacementLevel1, 1);
-
-        List<Segment3D> allSegments = new ArrayList<>(segments0Pruned);
-        allSegments.addAll(segments1);
-
-        if (resolution == 1) {
-            return allSegments;
-        }
-
-        // Level 2+
-        Cell cell2 = new Cell(cellX * 2, cellY * 2, 2);
-        Point3D[][] points2 = generateNeighboringPoints3D(cell2, 5);
-        List<Segment3D> segments2 = generateSubSegments(points2, allSegments, minSlopeLevel2, 2);
-        displaceSegments(segments2, displacementLevel2, cell2);
-
-        if (resolution == 2) {
-            allSegments.addAll(segments2);
-            return allSegments;
-        }
-
-        Cell cell3 = new Cell(cellX * 4, cellY * 4, 4);
-        Point3D[][] points3 = generateNeighboringPoints3D(cell3, 5);
-        allSegments.addAll(segments2);
-        List<Segment3D> segments3 = generateSubSegments(points3, allSegments, minSlopeLevel3, 3);
-        displaceSegments(segments3, displacementLevel3, cell3);
-
-        if (resolution == 3) {
-            allSegments.addAll(segments3);
-            return allSegments;
-        }
-
-        Cell cell4 = new Cell(cellX * 8, cellY * 8, 8);
-        Point3D[][] points4 = generateNeighboringPoints3D(cell4, 5);
-        allSegments.addAll(segments3);
-        List<Segment3D> segments4 = generateSubSegments(points4, allSegments, minSlopeLevel4, 4);
-
-        if (resolution == 4) {
-            allSegments.addAll(segments4);
-            return allSegments;
-        }
-
-        Cell cell5 = new Cell(cellX * 16, cellY * 16, 16);
-        Point3D[][] points5 = generateNeighboringPoints3D(cell5, 5);
-        allSegments.addAll(segments4);
-        List<Segment3D> segments5 = generateSubSegments(points5, allSegments, minSlopeLevel5, 5);
-        allSegments.addAll(segments5);
-
-        return allSegments;
+        // Use cell center for consistent higher resolution cell lookup
+        double queryCenterX = cellX + 0.5;
+        double queryCenterY = cellY + 0.5;
+        return generateAllSegments(cell1, queryCenterX, queryCenterY);
     }
 }
