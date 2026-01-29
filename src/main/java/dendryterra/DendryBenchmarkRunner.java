@@ -37,10 +37,10 @@ public class DendryBenchmarkRunner {
     private static List<TestCase> createTestCases(int n, double epsilon, double delta, double slope, double gridsize,
             DendryReturnType returnType, long salt, int defaultBranches, double curvature, double curvatureFalloff,
             double connectDistance, double connectDistanceFactor, int parallelThreshold, int ConstellationScale,
-            double tangentAngle, double tangentStrength) {
-        
+            ConstellationShape constellationShape, double tangentAngle, double tangentStrength) {
+
         List<TestCase> cases = new ArrayList<>();
-        
+
         // 1. Baseline (all optimizations ON)
         DendrySampler baseline = new DendrySampler(
             n, epsilon, delta, slope, gridsize,
@@ -53,12 +53,12 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
         cases.add(new TestCase("Baseline", "cache=ON, parallel=ON, splines=ON, n=2", baseline, null));
-        
+
         // 2. No Cache
         DendrySampler noCache = new DendrySampler(
             n, epsilon, delta, slope, gridsize,
@@ -71,7 +71,7 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
@@ -89,12 +89,12 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
         cases.add(new TestCase("No Parallel", "cache=ON, parallel=OFF, splines=ON", noParallel, "Baseline"));
-        
+
         // 4. No Splines
         DendrySampler noSplines = new DendrySampler(
             n, epsilon, delta, slope, gridsize,
@@ -107,12 +107,12 @@ public class DendryBenchmarkRunner {
             false,  // useSplines = OFF
             false,  // debugTiming
             parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
         cases.add(new TestCase("No Splines", "cache=ON, parallel=ON, splines=OFF", noSplines, "Baseline"));
-        
+
         // 5. Minimal (all optimizations OFF)
         DendrySampler minimal = new DendrySampler(
             n, epsilon, delta, slope, gridsize,
@@ -125,12 +125,12 @@ public class DendryBenchmarkRunner {
             false,  // useSplines = OFF
             false,  // debugTiming
             parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
         cases.add(new TestCase("Minimal", "cache=OFF, parallel=OFF, splines=OFF", minimal, "Baseline"));
-        
+
         // 6. High Resolution
         DendrySampler highRes = new DendrySampler(
             3,      // n = 3 (more detail)
@@ -140,12 +140,12 @@ public class DendryBenchmarkRunner {
             curvature, curvatureFalloff,
             connectDistance, connectDistanceFactor,
             true, true, true, false, parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0     // cachepixels disabled
         );
         cases.add(new TestCase("High Resolution", "n=3, all optimizations ON", highRes, "Baseline"));
-        
+
         // 7. CachePixels Enabled (NEW TEST)
         DendrySampler cachePixelsEnabled = new DendrySampler(
             n, epsilon, delta, slope, gridsize,
@@ -158,12 +158,12 @@ public class DendryBenchmarkRunner {
             true,   // useSplines
             false,  // debugTiming
             parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             1.0     // cachepixels enabled
         );
         cases.add(new TestCase("CachePixels Enabled", "cache=ON, parallel=ON, splines=ON, cachepixels=1.0", cachePixelsEnabled, "Baseline"));
-        
+
         return cases;
     }
 
@@ -203,15 +203,16 @@ public class DendryBenchmarkRunner {
         double connectDistance = 0;
         double connectDistanceFactor = 2.0;
         int parallelThreshold = 100;
-        int ConstellationScale = 4;  // Level 0 cells contain 4x4 level 1 cells
+        int ConstellationScale = 1;  // Scale 1 = inscribed square is 3 gridspaces wide
+        ConstellationShape constellationShape = ConstellationShape.SQUARE;
         double tangentAngle = Math.toRadians(45);  // 45 degrees max deviation
         double tangentStrength = 0.4;  // Tangent length as fraction of segment
         double cachepixels = 0;  // Pixel cache disabled for benchmarks (use 0)
 
         // Create test cases in table-like format
-        List<TestCase> testCases = createTestCases(n, epsilon, delta, slope, gridsize, returnType, salt, 
+        List<TestCase> testCases = createTestCases(n, epsilon, delta, slope, gridsize, returnType, salt,
             defaultBranches, curvature, curvatureFalloff, connectDistance, connectDistanceFactor,
-            parallelThreshold, ConstellationScale, tangentAngle, tangentStrength);
+            parallelThreshold, ConstellationScale, constellationShape, tangentAngle, tangentStrength);
 
         // Run benchmarks
         double worldScale = 1.0;

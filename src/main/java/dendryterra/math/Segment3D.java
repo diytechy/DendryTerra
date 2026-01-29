@@ -1,27 +1,56 @@
 package dendryterra.math;
 
 /**
- * Immutable 3D line segment with elevation and resolution level.
+ * Immutable 3D line segment with elevation, resolution level, and endpoint tangents.
+ * Tangents describe the curve direction at each endpoint for spline interpolation.
  */
 public final class Segment3D {
     public final Point3D a;
     public final Point3D b;
-    public final int level;  // Resolution level that created this segment (1-5)
+    public final int level;  // Resolution level that created this segment (0-5)
+
+    // Tangent vectors at endpoints (for spline interpolation)
+    // These are 2D direction vectors in the x,y plane
+    public final Vec2D tangentA;  // Tangent direction at point a (may be null)
+    public final Vec2D tangentB;  // Tangent direction at point b (may be null)
 
     /**
-     * Create a segment with specified resolution level.
+     * Create a segment with specified resolution level and tangents.
      */
-    public Segment3D(Point3D a, Point3D b, int level) {
+    public Segment3D(Point3D a, Point3D b, int level, Vec2D tangentA, Vec2D tangentB) {
         this.a = a;
         this.b = b;
         this.level = level;
+        this.tangentA = tangentA;
+        this.tangentB = tangentB;
+    }
+
+    /**
+     * Create a segment with specified resolution level (no tangents).
+     */
+    public Segment3D(Point3D a, Point3D b, int level) {
+        this(a, b, level, null, null);
     }
 
     /**
      * Create a segment with default level 1 (backward compatible).
      */
     public Segment3D(Point3D a, Point3D b) {
-        this(a, b, 1);
+        this(a, b, 1, null, null);
+    }
+
+    /**
+     * Create a new segment with the same endpoints and level but different tangents.
+     */
+    public Segment3D withTangents(Vec2D tangentA, Vec2D tangentB) {
+        return new Segment3D(this.a, this.b, this.level, tangentA, tangentB);
+    }
+
+    /**
+     * Check if this segment has tangent information.
+     */
+    public boolean hasTangents() {
+        return tangentA != null || tangentB != null;
     }
 
     public double lengthSquared() {
@@ -88,6 +117,10 @@ public final class Segment3D {
 
     @Override
     public String toString() {
+        if (hasTangents()) {
+            return "Segment3D(" + a + " -> " + b + ", level=" + level +
+                   ", tangentA=" + tangentA + ", tangentB=" + tangentB + ")";
+        }
         return "Segment3D(" + a + " -> " + b + ", level=" + level + ")";
     }
 }

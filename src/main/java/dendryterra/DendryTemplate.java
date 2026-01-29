@@ -143,14 +143,24 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     private @Meta int parallelThreshold = 100;
 
     /**
-     * Scale factor for level 0 cells relative to level 1 cells.
-     * A level 0 cell contains ConstellationScale x ConstellationScale level 1 cells.
-     * Higher values = larger regions with guaranteed connectivity, but slower.
-     * Range: 2-10, default 4 (a 4x4 grid of level 1 cells per level 0 cell).
+     * Scale factor for constellations.
+     * ConstellationScale of 1 means the largest inscribed square (without tilting) is 3 gridspaces wide.
+     * This ensures when tiled, only the 4 closest constellations need to be solved.
+     * Range: 1-10, default 1.
      */
-    @Value("level0-scale")
+    @Value("constellation-scale")
     @Default
-    private @Meta int ConstellationScale = 4;
+    private @Meta int ConstellationScale = 1;
+
+    /**
+     * Shape of constellation tiling pattern.
+     * SQUARE: Standard square grid tiling
+     * HEXAGON: Hexagonal tiling for more uniform neighbor distances
+     * RHOMBUS: Diamond/rotated square tiling
+     */
+    @Value("constellation-shape")
+    @Default
+    private @Meta ConstellationShape constellationShape = ConstellationShape.SQUARE;
 
     /**
      * Maximum angle deviation for spline tangents at nodes (in degrees).
@@ -213,8 +223,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (connectDistanceFactor <= 0) {
             throw new ValidationException("connect-distance-factor must be positive, got: " + connectDistanceFactor);
         }
-        if (ConstellationScale < 2 || ConstellationScale > 10) {
-            throw new ValidationException("level0-scale must be between 2 and 10, got: " + ConstellationScale);
+        if (ConstellationScale < 1 || ConstellationScale > 10) {
+            throw new ValidationException("constellation-scale must be between 1 and 10, got: " + ConstellationScale);
         }
         if (tangentAngle < 0 || tangentAngle > 90) {
             throw new ValidationException("tangent-angle must be between 0 and 90, got: " + tangentAngle);
@@ -244,7 +254,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             connectDistance, connectDistanceFactor,
             useCache, useParallel, useSplines,
             debugTiming, parallelThreshold,
-            ConstellationScale,
+            ConstellationScale, constellationShape,
             Math.toRadians(tangentAngle), tangentStrength,
             cachepixels
         );

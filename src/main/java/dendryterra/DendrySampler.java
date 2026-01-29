@@ -49,8 +49,17 @@ public class DendrySampler implements Sampler {
     private final boolean debugTiming;
     private final int parallelThreshold;
 
-    // Constellation scale (how many level 1 cells fit in one constellation per axis)
+    // Constellation parameters
     private final int ConstellationScale;
+    private final ConstellationShape constellationShape;
+
+    // Hard-coded star/point spacing parameters (in cell units)
+    // These are used at multiple levels with different cell sizes
+    private static final double MERGE_POINT_SPACING = 2.0 / 3.0;  // Stars closer than this get merged
+    private static final double MAX_POINT_SEGMENT_DISTANCE = Math.sqrt(8) + 1.0 / 3.0;  // Max distance between adjacent stars after merging
+
+    // Star sampling grid size (9x9 grid per cell)
+    private static final int STAR_SAMPLE_GRID_SIZE = 9;
 
     // Spline tangent parameters
     private final double tangentAngle;    // Max angle deviation (radians)
@@ -171,7 +180,7 @@ public class DendrySampler implements Sampler {
                          double connectDistance, double connectDistanceFactor,
                          boolean useCache, boolean useParallel, boolean useSplines,
                          boolean debugTiming, int parallelThreshold,
-                         int ConstellationScale,
+                         int ConstellationScale, ConstellationShape constellationShape,
                          double tangentAngle, double tangentStrength,
                          double cachepixels) {
         this.resolution = resolution;
@@ -194,6 +203,7 @@ public class DendrySampler implements Sampler {
         this.debugTiming = debugTiming;
         this.parallelThreshold = parallelThreshold;
         this.ConstellationScale = ConstellationScale;
+        this.constellationShape = constellationShape;
         this.tangentAngle = tangentAngle;
         this.tangentStrength = tangentStrength;
         this.cachepixels = cachepixels;
@@ -468,49 +478,141 @@ public class DendrySampler implements Sampler {
     // ========== Asterism (Level 0) Network Generation ==========
     //
     // Terminology:
-    // - Constellation: A level 0 cell containing multiple level 1 cells
-    // - Star: A key point within a constellation (one per level 1 cell, at lowest elevation)
+    // - Constellation: A tileable region (square/hexagon/rhombus) containing stars
+    // - Star: A key point within a constellation, found by sampling lowest elevation
     // - Asterism: The network of segments connecting stars across constellations
     // - AsterismSegment: A segment in the asterism network (level 0 segment)
+    //
+    // Constellation scaling:
+    // - ConstellationScale=1 means the largest inscribed square is 3 gridspaces wide
+    // - This ensures only 4 closest constellations need to be solved for any query
 
     /**
-     * Get constellation (level 0 cell) coordinates for a given level 1 cell.
-     * Constellations are ConstellationScale times larger than level 1 cells.
+     * Get the size of a constellation in grid units.
+     * ConstellationScale=1 gives an inscribed square of 3 gridspaces.
      */
-    private Cell getConstellation(int level1CellX, int level1CellY) {
-        int constX = Math.floorDiv(level1CellX, ConstellationScale);
-        int constY = Math.floorDiv(level1CellY, ConstellationScale);
-        return new Cell(constX, constY, 0);
+    private double getConstellationSize() {
+        // For SQUARE shape: constellation size = 3 * ConstellationScale
+        // This ensures inscribed square (without tilting) is 3 * ConstellationScale wide
+        return 3.0 * ConstellationScale;
+    }
+
+    /**
+     * Get constellation center position for given constellation indices.
+     * Constellations are centered at 0,0 and tile outward.
+     */
+    private Point2D getConstellationCenter(int constX, int constY) {
+        double size = getConstellationSize();
+        switch (constellationShape) {
+            case HEXAGON:
+                // Hexagonal offset pattern
+                double hexOffsetX = (constY % 2 == 0) ? 0 : size * 0.5;
+                return new Point2D(constX * size + hexOffsetX, constY * size * 0.866); // 0.866 = sqrt(3)/2
+            case RHOMBUS:
+                // Rhombus (diamond) offset pattern
+                double rhombOffsetX = constY * size * 0.5;
+                return new Point2D(constX * size + rhombOffsetX, constY * size * 0.707); // 0.707 = sqrt(2)/2
+            case SQUARE:
+            default:
+                return new Point2D(constX * size, constY * size);
+        }
+    }
+
+    /**
+     * Get constellation indices for a given world position.
+     */
+    private int[] getConstellationIndices(double worldX, double worldY) {
+        double size = getConstellationSize();
+        switch (constellationShape) {
+            case HEXAGON:
+                // Approximate - may need refinement for exact hex boundaries
+                int hexY = (int) Math.floor(worldY / (size * 0.866));
+                double hexOffsetX = (hexY % 2 == 0) ? 0 : size * 0.5;
+                int hexX = (int) Math.floor((worldX - hexOffsetX) / size);
+                return new int[] { hexX, hexY };
+            case RHOMBUS:
+                // Approximate rhombus mapping
+                int rhombY = (int) Math.floor(worldY / (size * 0.707));
+                double rhombOffsetX = rhombY * size * 0.5;
+                int rhombX = (int) Math.floor((worldX - rhombOffsetX) / size);
+                return new int[] { rhombX, rhombY };
+            case SQUARE:
+            default:
+                return new int[] { (int) Math.floor(worldX / size), (int) Math.floor(worldY / size) };
+        }
+    }
+
+    /**
+     * Find the 4 closest constellations to the query cell.
+     * For SQUARE shape, these are the constellation containing the query and its 3 nearest neighbors.
+     */
+    private List<long[]> findFourClosestConstellations(Cell queryCell1) {
+        // Query cell center in world coordinates
+        double queryCenterX = queryCell1.x + 0.5;
+        double queryCenterY = queryCell1.y + 0.5;
+
+        // Get constellation containing the query point
+        int[] baseIndices = getConstellationIndices(queryCenterX, queryCenterY);
+        int baseConstX = baseIndices[0];
+        int baseConstY = baseIndices[1];
+
+        // Collect candidate constellations (3x3 grid around base)
+        List<long[]> candidates = new ArrayList<>();
+        for (int di = -1; di <= 1; di++) {
+            for (int dj = -1; dj <= 1; dj++) {
+                int cx = baseConstX + dj;
+                int cy = baseConstY + di;
+                Point2D center = getConstellationCenter(cx, cy);
+                double dist = Math.sqrt(
+                    (center.x - queryCenterX) * (center.x - queryCenterX) +
+                    (center.y - queryCenterY) * (center.y - queryCenterY)
+                );
+                candidates.add(new long[] { cx, cy, Double.doubleToLongBits(dist) });
+            }
+        }
+
+        // Sort by distance and take 4 closest
+        candidates.sort((a, b) -> Double.compare(
+            Double.longBitsToDouble(a[2]),
+            Double.longBitsToDouble(b[2])
+        ));
+
+        return candidates.subList(0, Math.min(4, candidates.size()));
     }
 
     /**
      * Generate the asterism (level 0 network) for the query region.
-     * This includes computing star networks for all required constellations,
-     * stitching them together at boundaries, and pruning to the relevant area.
+     * Computes the 4 closest constellations, generates stars within each,
+     * merges close stars, builds networks, and stitches them together.
      */
     private List<Segment3D> generateAsterism(Cell queryCell1) {
-        // Determine which constellations we need based on query cell position
-        java.util.Set<Long> requiredConstellations = getRequiredConstellations(queryCell1);
+        // Find the 4 closest constellations to the query cell
+        List<long[]> closestConstellations = findFourClosestConstellations(queryCell1);
 
         // Generate asterism segments for each constellation
         Map<Long, List<Segment3D>> constellationSegments = new HashMap<>();
-        Map<Long, Map<Long, Point3D>> constellationStars = new HashMap<>();  // constellationKey -> (level1Key -> star)
+        Map<Long, List<Point3D>> constellationStars = new HashMap<>();
 
-        for (long constKey : requiredConstellations) {
-            int constX = unpackX(constKey);
-            int constY = unpackY(constKey);
+        for (long[] constInfo : closestConstellations) {
+            int constX = (int) constInfo[0];
+            int constY = (int) constInfo[1];
+            long constKey = packKey(constX, constY);
 
-            Map<Long, Point3D> stars = generateConstellationStars(constX, constY);
-            List<Segment3D> segments = buildTreeWithinConstellation(stars, constX, constY);
+            // Generate stars for this constellation (with 9x9 sampling, merging, etc.)
+            List<Point3D> stars = generateConstellationStarsNew(constX, constY);
+
+            // Build network within constellation using NetworkPoints (placeholder)
+            List<Segment3D> segments = networkPoints(constX, constY, 0, stars);
 
             constellationStars.put(constKey, stars);
             constellationSegments.put(constKey, segments);
         }
 
         // Stitch adjacent constellations together at their boundaries
-        List<Segment3D> stitchSegments = stitchConstellations(requiredConstellations, constellationStars);
+        // (Placeholder - exact stitching method TBD)
+        List<Segment3D> stitchSegments = stitchConstellationsNew(closestConstellations, constellationStars);
 
-        // Combine all asterism segments (no pruning here - prune after spline subdivision in evaluate())
+        // Combine all asterism segments
         List<Segment3D> allSegments = new ArrayList<>();
         for (List<Segment3D> segs : constellationSegments.values()) {
             allSegments.addAll(segs);
@@ -521,92 +623,259 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Determine which constellations need to be computed for a query.
-     * We check a 5x5 grid of level 1 cells around the query cell to ensure:
-     * 1. All constellations containing the 3x3 query region are included
-     * 2. Constellations needed for tangent computation at boundaries are included
-     * 3. Stitching segments are properly computed for adjacent constellations
+     * Generate stars for a constellation using the new algorithm:
+     * 1. Find all level 1 cells that circumscribe the constellation
+     * 2. Sample 9x9 grid in each cell to find candidate stars
+     * 3. Remove stars outside constellation boundary (or within 1/2 merge spacing from boundary)
+     * 4. Merge stars that are closer than MERGE_POINT_SPACING
      */
-    private java.util.Set<Long> getRequiredConstellations(Cell queryCell1) {
-        java.util.Set<Long> required = new java.util.HashSet<>();
+    private List<Point3D> generateConstellationStarsNew(int constX, int constY) {
+        Point2D center = getConstellationCenter(constX, constY);
+        double size = getConstellationSize();
+        double halfMergeSpacing = MERGE_POINT_SPACING / 2.0;
 
-        // Check a 5x5 grid (-2 to +2) to ensure we capture adjacent constellations
-        // needed for proper tangent computation at constellation boundaries
-        for (int di = -2; di <= 2; di++) {
-            for (int dj = -2; dj <= 2; dj++) {
-                int l1x = queryCell1.x + dj;
-                int l1y = queryCell1.y + di;
-                Cell constellation = getConstellation(l1x, l1y);
-                required.add(packKey(constellation.x, constellation.y));
+        // Step 1: Find level 1 cells that circumscribe the constellation
+        List<int[]> circumscribingCells = getCircumscribingCells(constX, constY);
+
+        // Step 2: Sample 9x9 grid in each cell to find candidate stars
+        List<Point3D> draftedStars = new ArrayList<>();
+        for (int[] cell : circumscribingCells) {
+            Point3D star = findStarInCell9x9(cell[0], cell[1]);
+            if (star != null) {
+                draftedStars.add(star);
             }
         }
 
-        return required;
-    }
+        // Step 3: Remove stars outside constellation boundary or within half merge spacing from boundary
+        List<Point3D> boundedStars = new ArrayList<>();
+        for (Point3D star : draftedStars) {
+            double distFromCenter = star.projectZ().distanceTo(center);
+            double boundaryDist = getConstellationBoundaryDistance(star.projectZ(), center, size);
 
-    /**
-     * Generate stars for all level 1 cells within a constellation.
-     * Returns a map from level 1 cell key to its star (lowest elevation point).
-     */
-    private Map<Long, Point3D> generateConstellationStars(int constX, int constY) {
-        Map<Long, Point3D> stars = new HashMap<>();
-
-        // Iterate over all level 1 cells in this constellation
-        int startX = constX * ConstellationScale;
-        int startY = constY * ConstellationScale;
-
-        for (int i = 0; i < ConstellationScale; i++) {
-            for (int j = 0; j < ConstellationScale; j++) {
-                int l1x = startX + j;
-                int l1y = startY + i;
-
-                Point3D star = findStarInCell(l1x, l1y);
-                stars.put(packKey(l1x, l1y), star);
+            // Keep star if it's inside and not too close to boundary
+            if (distFromCenter < boundaryDist - halfMergeSpacing) {
+                boundedStars.add(star);
             }
         }
 
-        return stars;
+        // Step 4: Merge stars that are closer than MERGE_POINT_SPACING
+        List<Point3D> mergedStars = mergeCloseStars(boundedStars);
+
+        return mergedStars;
     }
 
     /**
-     * Find the star (lowest elevation point) within a level 1 cell by sampling.
-     * Uses a 5x5 grid of sample points and selects the one with minimum elevation.
-     * Adds deterministic jitter to avoid grid-aligned patterns across cells.
+     * Get level 1 cells that circumscribe a constellation.
      */
-    private Point3D findStarInCell(int cellX, int cellY) {
-        final int SAMPLES_PER_AXIS = 5;
+    private List<int[]> getCircumscribingCells(int constX, int constY) {
+        Point2D center = getConstellationCenter(constX, constY);
+        double size = getConstellationSize();
 
+        // Calculate bounding box in cell coordinates
+        int minCellX = (int) Math.floor(center.x - size / 2.0 - 1);
+        int maxCellX = (int) Math.ceil(center.x + size / 2.0 + 1);
+        int minCellY = (int) Math.floor(center.y - size / 2.0 - 1);
+        int maxCellY = (int) Math.ceil(center.y + size / 2.0 + 1);
+
+        List<int[]> cells = new ArrayList<>();
+        for (int y = minCellY; y <= maxCellY; y++) {
+            for (int x = minCellX; x <= maxCellX; x++) {
+                // Check if cell overlaps with constellation
+                Point2D cellCenter = new Point2D(x + 0.5, y + 0.5);
+                if (cellOverlapsConstellation(cellCenter, center, size)) {
+                    cells.add(new int[] { x, y });
+                }
+            }
+        }
+        return cells;
+    }
+
+    /**
+     * Check if a cell overlaps with a constellation.
+     */
+    private boolean cellOverlapsConstellation(Point2D cellCenter, Point2D constCenter, double constSize) {
+        // For SQUARE, simple bounding box check
+        double halfSize = constSize / 2.0 + 0.5; // Add half cell for overlap margin
+        return Math.abs(cellCenter.x - constCenter.x) <= halfSize &&
+               Math.abs(cellCenter.y - constCenter.y) <= halfSize;
+    }
+
+    /**
+     * Get distance from constellation center to boundary in direction of point.
+     */
+    private double getConstellationBoundaryDistance(Point2D point, Point2D center, double size) {
+        switch (constellationShape) {
+            case HEXAGON:
+                // Hexagon boundary distance (approximate)
+                return size * 0.5; // Simplified
+            case RHOMBUS:
+                // Rhombus boundary distance
+                double dx = Math.abs(point.x - center.x);
+                double dy = Math.abs(point.y - center.y);
+                return size * 0.5 / Math.max(dx + dy, 0.001) * size * 0.5;
+            case SQUARE:
+            default:
+                return size / 2.0;
+        }
+    }
+
+    /**
+     * Find the star (lowest elevation point) within a level 1 cell using 9x9 sampling.
+     * If there are multiple points with the same lowest elevation, randomly select one.
+     */
+    private Point3D findStarInCell9x9(int cellX, int cellY) {
         // Generate deterministic jitter for this cell
         Random rng = initRandomGenerator(cellX, cellY, 0);
-        double jitterX = (rng.nextDouble() - 0.5) * 0.15;
-        double jitterY = (rng.nextDouble() - 0.5) * 0.15;
+        double jitterX = (rng.nextDouble() - 0.5) * 0.08;
+        double jitterY = (rng.nextDouble() - 0.5) * 0.08;
 
         double lowestElevation = Double.MAX_VALUE;
-        double lowestX = cellX + 0.5;
-        double lowestY = cellY + 0.5;
+        List<double[]> lowestPoints = new ArrayList<>();
 
-        for (int si = 0; si < SAMPLES_PER_AXIS; si++) {
-            for (int sj = 0; sj < SAMPLES_PER_AXIS; sj++) {
-                double tx = 0.1 + 0.8 * (sj + 0.5) / SAMPLES_PER_AXIS + jitterX;
-                double ty = 0.1 + 0.8 * (si + 0.5) / SAMPLES_PER_AXIS + jitterY;
+        for (int si = 0; si < STAR_SAMPLE_GRID_SIZE; si++) {
+            for (int sj = 0; sj < STAR_SAMPLE_GRID_SIZE; sj++) {
+                double tx = 0.05 + 0.9 * (sj + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterX;
+                double ty = 0.05 + 0.9 * (si + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterY;
 
-                tx = Math.max(0.05, Math.min(0.95, tx));
-                ty = Math.max(0.05, Math.min(0.95, ty));
+                tx = Math.max(0.02, Math.min(0.98, tx));
+                ty = Math.max(0.02, Math.min(0.98, ty));
 
                 double sampleX = cellX + tx;
                 double sampleY = cellY + ty;
 
                 double elevation = evaluateControlFunction(sampleX, sampleY);
 
-                if (elevation < lowestElevation) {
+                if (elevation < lowestElevation - MathUtils.EPSILON) {
                     lowestElevation = elevation;
-                    lowestX = sampleX;
-                    lowestY = sampleY;
+                    lowestPoints.clear();
+                    lowestPoints.add(new double[] { sampleX, sampleY, elevation });
+                } else if (Math.abs(elevation - lowestElevation) < MathUtils.EPSILON) {
+                    lowestPoints.add(new double[] { sampleX, sampleY, elevation });
                 }
             }
         }
 
-        return new Point3D(lowestX, lowestY, lowestElevation);
+        if (lowestPoints.isEmpty()) {
+            return new Point3D(cellX + 0.5, cellY + 0.5, evaluateControlFunction(cellX + 0.5, cellY + 0.5));
+        }
+
+        // If multiple points have same lowest elevation, randomly select one
+        double[] selected;
+        if (lowestPoints.size() > 1) {
+            int idx = rng.nextInt(lowestPoints.size());
+            selected = lowestPoints.get(idx);
+        } else {
+            selected = lowestPoints.get(0);
+        }
+
+        return new Point3D(selected[0], selected[1], selected[2]);
+    }
+
+    /**
+     * Merge stars that are closer than MERGE_POINT_SPACING.
+     * When merging, keeps the star with lowest elevation.
+     */
+    private List<Point3D> mergeCloseStars(List<Point3D> stars) {
+        if (stars.size() <= 1) return new ArrayList<>(stars);
+
+        List<Point3D> result = new ArrayList<>(stars);
+        boolean merged;
+
+        do {
+            merged = false;
+            for (int i = 0; i < result.size() && !merged; i++) {
+                for (int j = i + 1; j < result.size() && !merged; j++) {
+                    Point3D s1 = result.get(i);
+                    Point3D s2 = result.get(j);
+
+                    double dist = s1.projectZ().distanceTo(s2.projectZ());
+                    if (dist < MERGE_POINT_SPACING) {
+                        // Keep the star with lower elevation
+                        Point3D keeper = (s1.z <= s2.z) ? s1 : s2;
+                        result.remove(j);
+                        result.set(i, keeper);
+                        merged = true;
+                    }
+                }
+            }
+        } while (merged);
+
+        return result;
+    }
+
+    /**
+     * NetworkPoints: Create network of segments from a list of points.
+     * This is a placeholder - exact networking algorithm TBD.
+     *
+     * @param cellX X coordinate of cell (constellation index for level 0)
+     * @param cellY Y coordinate of cell
+     * @param level Resolution level (0 for asterisms)
+     * @param points List of points to connect
+     * @return List of segments with tangent information
+     */
+    private List<Segment3D> networkPoints(int cellX, int cellY, int level, List<Point3D> points) {
+        // Placeholder implementation - uses existing tree building logic
+        // TODO: Implement full NetworkPoints algorithm with tangent computation
+        Map<Long, Point3D> pointMap = new HashMap<>();
+        for (int i = 0; i < points.size(); i++) {
+            Point3D p = points.get(i);
+            // Use a unique key based on position
+            long key = packKey((int)(p.x * 1000), (int)(p.y * 1000));
+            pointMap.put(key, p);
+        }
+        return buildTreeWithinConstellation(pointMap, cellX, cellY);
+    }
+
+    /**
+     * Stitch constellations together (placeholder - TBD).
+     */
+    private List<Segment3D> stitchConstellationsNew(List<long[]> constellations,
+                                                     Map<Long, List<Point3D>> constellationStars) {
+        // Placeholder - return empty list for now
+        // TODO: Implement proper stitching between adjacent constellations
+        return new ArrayList<>();
+    }
+
+    // ========== Legacy constellation methods (kept for compatibility) ==========
+
+    /**
+     * @deprecated Use getConstellationIndices instead
+     */
+    private Cell getConstellation(int level1CellX, int level1CellY) {
+        int[] indices = getConstellationIndices(level1CellX, level1CellY);
+        return new Cell(indices[0], indices[1], 0);
+    }
+
+    /**
+     * @deprecated Use findFourClosestConstellations instead
+     */
+    private java.util.Set<Long> getRequiredConstellations(Cell queryCell1) {
+        List<long[]> closest = findFourClosestConstellations(queryCell1);
+        java.util.Set<Long> result = new java.util.HashSet<>();
+        for (long[] c : closest) {
+            result.add(packKey((int) c[0], (int) c[1]));
+        }
+        return result;
+    }
+
+    /**
+     * @deprecated Use generateConstellationStarsNew instead
+     */
+    private Map<Long, Point3D> generateConstellationStars(int constX, int constY) {
+        List<Point3D> stars = generateConstellationStarsNew(constX, constY);
+        Map<Long, Point3D> result = new HashMap<>();
+        for (int i = 0; i < stars.size(); i++) {
+            Point3D star = stars.get(i);
+            result.put(packKey((int)(star.x * 100), (int)(star.y * 100)), star);
+        }
+        return result;
+    }
+
+    /**
+     * @deprecated Use findStarInCell9x9 instead
+     */
+    private Point3D findStarInCell(int cellX, int cellY) {
+        return findStarInCell9x9(cellX, cellY);
     }
 
     /**

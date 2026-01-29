@@ -521,6 +521,7 @@ Apply the following changes to this project:
 
 6. ConstellationScale should replace level0scale.  This should be a value greater than 1.
 
+#####################################################################
 
 5. The "branchesSampler" parameter can stay as it will still be used in future clarification, but all other references to "branchCount" should instead be called "segmentdivisioncount" or something similar, since "branchCount" is not actually creating branches, it's just dividing the segment into pieces for spline creation.
 
@@ -529,33 +530,46 @@ Refactor this code to:
 Function Cleanup:
 
 
+Please make the following changes with the limited information.  Placeholders may be needed until I provide additional information.
+
+Note the definition of a segment changes to contain additional information (defined in NetworkPoints)
+
+Note "level0scale" has been renamed to "ConstellationScale"
 Code changes:
 
-. Have a hard-coded parameter describing "minimum star spacing" with a value of 2/3 of a cell.
-. Have a hard-coded parameter describing "maximum Asterism segment distance" with a value of sqrt(8)+1/3, as this is the maximum size two adjacent stars can be located after potential merging.
+. Have a hard-coded parameter describing "merge point spacing" with a value of 2/3 of a cell (This parameter will be used later at multiple levels with differenct cell sizes).
+. Have a hard-coded parameter describing "maximum point segment distance" with a value of sqrt(8)+1/3, as this is the maximum size two adjacent stars can be located after potential merging (This parameter will be used later at multiple levels with differenct cell sizes).
 
 
-. Have an additional configuration to define the tileable shape for  constellations, including Square / Hexagon / Diamond.
+* Have an additional configuration parameter to define the tileable shape for  constellations, including Square / Perfect Hexagon / Rhombus, default Square.
 
-. Constellations scale with the parameter ConstellationScale, where 1 scales the constellation such that the largest possible inscribed square (without tilting) would be 3 gridspaces wide.  (This ensures when the constellation is tiled, only the 4 closest constellations need to be solved to resolve the local network of points around the query cell)
+* Constellations scale with the parameter ConstellationScale, where 1 scales the constellation such that the largest possible inscribed square (without tilting) would be 3 gridspaces wide.  (This ensures when the constellation is tiled, only the 4 closest constellations need to be solved to resolve the local network of points around the query cell)
 
-. When a cell is queried, if pixel cache is used and available, return the data from the pixelcache as is done today.
+* When a cell is queried, if pixel cache is used and available, return the data from the pixelcache as is done today.
 
-.Else proceed to solve the network to solve the queried cell:
+* Else proceed to solve the network to solve the queried cell:
 
-. Determine the four closest constellations to the queried cell based on the query cell position and the constellation locations (derivable assuming a starting constellation position and angle at the origin 0,0 coordinate)
+* Determine the four closest constellations to the queried cell based on the query cell position and the constellation locations (derivable assuming a starting constellation position centered at 0,0 coordinate)
 
-. Iterate through each of the four closest constellations to define the network within the constellation:
-.. Determine all the level 1 cells needed to circumscribe the constellation.
-.. For each level 1 cells circumscribing the constellation:
-... Perform sampling within each cell via a 9x9 offset grid of potential stars (this should be deterministic), select the star with the lowest position using the control function, if there is more than one lowest point, randomly select one.
-... Note now all stars have been drafted in the cells circumscribing the constellation.
-... Remove any drafted stars that are outside the boundary of the constellation, or within 1/2 of the minimum star spacing.
-... Now go through all stars while any distance between any star is less than the star spacing, and merge those stars into a single star.
-... Note now all stars have been set in the constellation.
-... Now while any star remain disconnected, continue iterating to connect all stars of the constellation, this logic ensures "downward" flow (where possible) of segments and disjointed attachments where possible:
-.... Starting with the highest elevation star that is not pegged to connect to another star:
-..... Identify the closest neighboring star (point less than 2 grid-size distances away) with the lowest elevation and tag it for connection.
+* Iterate through each of the four closest constellations to define the network within the constellation:
+** Determine all the level 1 cells needed to circumscribe the constellation.
+** For each level 1 cells circumscribing the constellation:
+*** Perform sampling within each cell via a 9x9 offset grid of potential stars (this should be deterministic), select the star with the lowest position using the control function, if there is more than one lowest point, randomly select one.
+*** Note now all stars have been drafted in the cells circumscribing the constellation.
+*** Remove any drafted stars that are outside the boundary of the constellation, or within 1/2 of the merge point spacing from the boundary.
+*** Now go through all stars while any distance between any star is less than the star spacing, and merge those stars into a single star.
+*** Note now all stars have been set in the constellation.
+*** Now perform network creation within the constellation to define the Asterism.  The method to create a network of points (NetworkPoints)  will remain consistent per level, with some special rules for Asterisms (level 0).
+
+New function: NetworkPoints
+Inputs:
+Unique cell location definition (x coordinate, y coordinate, level)
+Outputs:
+    Segment definitions (to be added into other segments)
+    Each segment has two 3d points (x,y,z), and two tangents describing the end condition in the x,z coordinates.
+
+Instructions for stitching the asterisms together and the exact method to network points will be described in a future point.
+
 
 
 Ideally: Level 0 cells are configurable tillable shapes that contain what will be called a "constellation".  Ex: ConstellationShape: Square / Hexagon / Diamond / Einstein Tile
