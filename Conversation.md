@@ -622,3 +622,35 @@ There are multiple discontinuities in the new implementation as well as crossed 
 
 Review "NetworkingRules.md" and refactor steps 4 through 8 in "CleanAndNetworkPoints" to perform functionality on a per segment creation basis.
 
+#############################################################################
+
+When subdivisions are created, I would expect the new node to break the parent segment and become the connection point for two new nodes.  That would have also prevented infinite looping.  Please ensure when subdivisions are created they are also replacing the devided segment with two new segments, such that unconnected points are not left "floating"
+
+###########################################################################
+
+A few notes, currently only looking at level 0 / asterisms:
+
+1. Some segments still appear to overlap, is there something else in the implementation that may allow segments to overlap?  Or are there some non-deterministic randomness being used which is causing segments to change paths depending on which x/z point is being evaluated?
+2. Some segments still appear to be orphans (they don't connect with the rest of the group), this may have been due to some ambiguity in NetworkingRules.md, which I've tried to clarify on line 23.  I've also removed the maxIterations for level 0 because all level 0 points should connect.
+
+########################################################
+
+I am still seeing many crossing and orphaned segments.  Please implement some additional functionality so I can more easily debug, though suggestions are welcome.
+
+1. Add a new return type "PIXEL_DEBUG" that returns 3 when the sampled point is within 2 pixel spaces (cachepixels) of an original star / point segment.  Returns 2 when the sampled point is within 2 pixel spaces of a point that was created as a part of segmentation.  Else returns 1 when the sampled point is on a segment (similar to level, but always 1).  Else if none of those conditions match return the same value for level as is done today when there is nothing (I believe -2 or -1).  This will help me visualize where different points are getting created.
+
+Also ensure setPixel is not able to set a pixel value more than once, as that may be consuming the cache with duplicate points if protection does not already exist.
+
+#######################################################################
+
+I am seeing multiple segments that don't appear to end with an original point segment and I don't see any points from segmentation.  It should not be possible to have a segment that does NOT have end-points that are either a star / point or from segmentation.
+
+Implement a hard-coded parameter that returns segments at different levels before they undergo further processing so I can change the parameter, recompile, and verify at what step where some of these issues start to appear at?
+
+Something like "SegmentDebugging" where:
+0 - Normal operation
+10 - Return the segments for the first constellations before stitching, tied to their closest neighbor.
+20 - Return the segments for all the constellations before stitching, tied to their closest neighbor.
+30 - Return the segments for all the constellations including stitching, tied to their closest neighbor.
+40 - Return the segments up to the first call of phase A in CleanAndNetworkPoints
+50 - Return the segments up to the first call of phase B in CleanAndNetworkPoints

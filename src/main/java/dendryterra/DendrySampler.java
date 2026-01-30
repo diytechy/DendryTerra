@@ -24,6 +24,20 @@ import java.util.stream.Stream;
 public class DendrySampler implements Sampler {
     private static final Logger LOGGER = LoggerFactory.getLogger(DendrySampler.class);
 
+    /**
+     * Debug parameter to return segments at different processing stages.
+     * Change this value and recompile to debug segment generation.
+     *
+     * Values:
+     *   0  - Normal operation (default)
+     *  10  - Return segments for FIRST constellation only, before stitching
+     *  20  - Return segments for ALL constellations, before stitching
+     *  30  - Return segments for all constellations INCLUDING stitching
+     *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
+     *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
+     */
+    private static final int SEGMENT_DEBUGGING = 10;
+
     // Configuration parameters
     private final int resolution;
     private final double epsilon;
@@ -729,6 +743,7 @@ public class DendrySampler implements Sampler {
         Map<Long, List<Segment3D>> constellationSegments = new HashMap<>();
         Map<Long, List<Point3D>> constellationStars = new HashMap<>();
 
+        boolean firstConstellation = true;
         for (long[] constInfo : closestConstellations) {
             int constX = (int) constInfo[0];
             int constY = (int) constInfo[1];
@@ -742,11 +757,39 @@ public class DendrySampler implements Sampler {
 
             constellationStars.put(constKey, stars);
             constellationSegments.put(constKey, segments);
+
+            // DEBUG: Return after first constellation only
+            if (SEGMENT_DEBUGGING == 10 && firstConstellation) {
+                LOGGER.info("SEGMENT_DEBUGGING=10: Returning first constellation segments only ({} segments)", segments.size());
+                return segments;
+            }
+            firstConstellation = false;
+        }
+
+        // DEBUG: Return all constellation segments before stitching
+        if (SEGMENT_DEBUGGING == 20) {
+            List<Segment3D> allSegments = new ArrayList<>();
+            for (List<Segment3D> segs : constellationSegments.values()) {
+                allSegments.addAll(segs);
+            }
+            LOGGER.info("SEGMENT_DEBUGGING=20: Returning all constellation segments before stitching ({} segments)", allSegments.size());
+            return allSegments;
         }
 
         // Stitch adjacent constellations together at their boundaries
         // (Placeholder - exact stitching method TBD)
         List<Segment3D> stitchSegments = stitchConstellationsNew(closestConstellations, constellationStars);
+
+        // DEBUG: Return all segments including stitching
+        if (SEGMENT_DEBUGGING == 30) {
+            List<Segment3D> allSegments = new ArrayList<>();
+            for (List<Segment3D> segs : constellationSegments.values()) {
+                allSegments.addAll(segs);
+            }
+            allSegments.addAll(stitchSegments);
+            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", allSegments.size(), stitchSegments.size());
+            return allSegments;
+        }
 
         // Combine all asterism segments
         List<Segment3D> allSegments = new ArrayList<>();
@@ -1117,9 +1160,20 @@ public class DendrySampler implements Sampler {
             LOGGER.warn("CleanAndNetworkPoints Phase A reached max iterations ({})", maxIterations);
         }
 
+        // DEBUG: Return after Phase A (initial connections only)
+        if (SEGMENT_DEBUGGING == 40) {
+            LOGGER.info("SEGMENT_DEBUGGING=40: Returning after Phase A ({} segments, {} nodes)", allSegments.size(), nodes.size());
+            return;
+        }
+
         // Phase B: Connect chains to form single connected network
         // Find chains that aren't connected to the root chain and connect them
         connectChainsToRoot(nodes, allSegments, maxDistSq, level, cellX, cellY, parent, rank, previousLevelSegments);
+
+        // DEBUG: Return after Phase B (chain connections)
+        if (SEGMENT_DEBUGGING == 50) {
+            LOGGER.info("SEGMENT_DEBUGGING=50: Returning after Phase B ({} segments, {} nodes)", allSegments.size(), nodes.size());
+        }
     }
 
     /**
