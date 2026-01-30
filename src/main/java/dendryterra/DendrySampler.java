@@ -903,18 +903,23 @@ public class DendrySampler implements Sampler {
     }
 
     // ========== CleanAndNetworkPoints Implementation ==========
+    // Refactored to process segments one at a time, fully defining each before moving to next
 
     /**
      * Internal class to track network node state during CleanAndNetworkPoints.
+     * Mutable to allow adding subdivision points and updating tangents.
      */
     private static class NetworkNode {
-        final Point3D point;
-        final int index;
-        final List<Integer> connections;  // Indices of connected nodes
+        Point3D point;                     // Mutable to allow elevation adjustments
+        int index;                         // Index in the node list
+        final List<Integer> connections;   // Indices of connected nodes
         Vec2D tangent;                     // Computed tangent direction (null until set)
         boolean isBranchPoint;             // True if this node branches into another path
         int branchIntoNode;                // Index of node this branches into (-1 if not branching)
         boolean removed;                   // True if node was removed during cleaning
+        int chainId;                       // Chain identifier for connectivity tracking
+        boolean isSubdivisionPoint;        // True if this node was created by subdivision
+        int sourceLevel;                   // Level of segment that created this point (for subdivision points)
 
         NetworkNode(Point3D point, int index) {
             this.point = point;
@@ -924,19 +929,48 @@ public class DendrySampler implements Sampler {
             this.isBranchPoint = false;
             this.branchIntoNode = -1;
             this.removed = false;
+            this.chainId = index;  // Initially each node is its own chain
+            this.isSubdivisionPoint = false;
+            this.sourceLevel = -1;
+        }
+    }
+
+    /**
+     * Represents a fully-defined segment in the network.
+     */
+    private static class NetworkSegment {
+        final int srtNodeIdx;
+        final int endNodeIdx;
+        Point3D srtPoint;
+        Point3D endPoint;
+        Vec2D tangentSrt;
+        Vec2D tangentEnd;
+        int level;
+        boolean isBranch;  // True if this segment branches into the end node
+
+        NetworkSegment(int srtIdx, int endIdx, Point3D srt, Point3D end, int level) {
+            this.srtNodeIdx = srtIdx;
+            this.endNodeIdx = endIdx;
+            this.srtPoint = srt;
+            this.endPoint = end;
+            this.level = level;
+            this.isBranch = false;
         }
     }
 
     /**
      * CleanAndNetworkPoints: Create network of segments from a list of points.
      *
-     * Algorithm:
+     * REFACTORED Algorithm (per-segment approach):
      * 1. Clean points: merge close points, remove points near lower-level segments
      * 2. Probabilistically remove points based on branchesSampler (if not level 0)
-     * 3. Connect points from highest to lowest elevation
-     * 4. Compute tangents with deterministic twist
-     * 5. Handle branch tangents
-     * 6. Subdivide and displace segments
+     * 3. For each point (highest to lowest), create connection and FULLY DEFINE segment:
+     *    - Connect to best neighbor
+     *    - Compute tangents immediately
+     *    - Subdivide segment
+     *    - Displace subdivision points
+     *    - Add subdivision points back to available nodes
+     * 4. Connect remaining chains to root path
      *
      * @param cellX X coordinate of cell (constellation index for level 0)
      * @param cellY Y coordinate of cell
@@ -978,28 +1012,642 @@ public class DendrySampler implements Sampler {
             return new ArrayList<>();
         }
 
-        // Create network nodes
+        // Create network nodes - these are mutable and will grow as subdivisions are added
         List<NetworkNode> nodes = new ArrayList<>();
         for (int i = 0; i < cleanedPoints.size(); i++) {
             nodes.add(new NetworkNode(cleanedPoints.get(i), i));
         }
 
-        // Step 4: Connect points using connection algorithm
-        connectNetworkNodes(nodes, maxSegmentDistance, level, previousLevelSegments);
+        // Track all fully-defined segments
+        List<Segment3D> allSegments = new ArrayList<>();
 
-        // Step 5: Compute tangents for all nodes
-        computeNetworkTangents(nodes, cellX, cellY);
+        // Step 4: Connect points using per-segment approach
+        // Each segment is fully defined (tangents, subdivision, displacement) before next connection
+        connectAndDefineSegments(nodes, allSegments, maxSegmentDistance, level, cellX, cellY, previousLevelSegments);
 
-        // Step 6: Handle branch tangents
-        computeBranchTangents(nodes, cellX, cellY);
+        // For level 0 (asterisms), shift all elevations down to 0
+        if (level == 0) {
+            allSegments = shiftElevationsToZero(allSegments);
+        }
 
-        // Step 7: Build segments with tangents
-        List<Segment3D> segments = buildSegmentsFromNetwork(nodes, level);
+        return allSegments;
+    }
 
-        // Step 8: Subdivide and displace segments
-        segments = subdivideAndDisplaceSegments(segments, level, cellX, cellY);
+    /**
+     * Connect nodes and fully define each segment before moving to next.
+     * This prevents overlapping connections by making subdivision points available.
+     */
+    private void connectAndDefineSegments(List<NetworkNode> nodes, List<Segment3D> allSegments,
+                                           double maxSegmentDistance, int level, int cellX, int cellY,
+                                           List<Segment3D> previousLevelSegments) {
+        double maxDistSq = maxSegmentDistance * maxSegmentDistance;
 
-        return segments;
+        // Union-Find for tracking chain connectivity
+        int[] parent = new int[nodes.size() * 10];  // Extra space for subdivision points
+        int[] rank = new int[nodes.size() * 10];
+        for (int i = 0; i < parent.length; i++) {
+            parent[i] = i;
+            rank[i] = 0;
+        }
+
+        // Phase A: Create initial downstream flows from highest to lowest elevation
+        // Process points without connections, from highest to next-to-lowest
+        boolean connectionMade;
+        do {
+            connectionMade = false;
+
+            // Find highest elevation node without any connections
+            int highestUnconnected = findHighestUnconnectedNode(nodes);
+            if (highestUnconnected < 0) break;
+
+            // Attempt to create and fully define a segment
+            boolean success = createAndDefineSegment(nodes, allSegments, highestUnconnected,
+                                                      maxDistSq, level, cellX, cellY,
+                                                      parent, rank, previousLevelSegments);
+            if (success) {
+                connectionMade = true;
+            } else {
+                // No valid connection found - check if should remove node
+                NetworkNode node = nodes.get(highestUnconnected);
+                if (level > 0) {
+                    // At higher levels, remove nodes that can't connect
+                    node.removed = true;
+                }
+            }
+        } while (connectionMade);
+
+        // Phase B: Connect chains to form single connected network
+        // Find chains that aren't connected to the root chain and connect them
+        connectChainsToRoot(nodes, allSegments, maxDistSq, level, cellX, cellY, parent, rank, previousLevelSegments);
+    }
+
+    /**
+     * Find the highest elevation node that has no connections yet.
+     */
+    private int findHighestUnconnectedNode(List<NetworkNode> nodes) {
+        int bestIdx = -1;
+        double bestZ = Double.NEGATIVE_INFINITY;
+
+        for (int i = 0; i < nodes.size(); i++) {
+            NetworkNode node = nodes.get(i);
+            if (node.removed) continue;
+            if (!node.connections.isEmpty()) continue;
+
+            if (node.point.z > bestZ) {
+                bestZ = node.point.z;
+                bestIdx = i;
+            }
+        }
+
+        return bestIdx;
+    }
+
+    /**
+     * Create a connection and fully define the resulting segment.
+     * This includes: connecting, computing tangents, subdividing, displacing.
+     * Subdivision points are added back to the node list.
+     *
+     * @return true if a segment was created, false if no valid connection found
+     */
+    private boolean createAndDefineSegment(List<NetworkNode> nodes, List<Segment3D> allSegments,
+                                            int sourceIdx, double maxDistSq, int level,
+                                            int cellX, int cellY, int[] parent, int[] rank,
+                                            List<Segment3D> previousLevelSegments) {
+        NetworkNode sourceNode = nodes.get(sourceIdx);
+
+        // Find best neighbor: lowest slope, within distance, not already connected via path
+        int bestNeighbor = findBestNeighborForSegment(nodes, sourceIdx, maxDistSq, level, parent, allSegments);
+        if (bestNeighbor < 0) {
+            return false;
+        }
+
+        NetworkNode targetNode = nodes.get(bestNeighbor);
+        double slopeToNeighbor = calculateSlope(sourceNode.point, targetNode.point);
+
+        // Check slope cutoff for non-asterism levels
+        if (level > 0 && slopeToNeighbor > lowestSlopeCutoff && sourceNode.connections.isEmpty()) {
+            sourceNode.removed = true;
+            return false;
+        }
+
+        // Check if this would create a crossing segment
+        Point2D srcPos = sourceNode.point.projectZ();
+        Point2D tgtPos = targetNode.point.projectZ();
+        if (wouldCrossExistingSegment(srcPos, tgtPos, allSegments)) {
+            // Find subdivision point on crossed segment instead
+            int subdivisionIdx = createSubdivisionAtCrossing(nodes, allSegments, srcPos, tgtPos, level, parent, rank);
+            if (subdivisionIdx >= 0) {
+                bestNeighbor = subdivisionIdx;
+                targetNode = nodes.get(bestNeighbor);
+            } else {
+                return false;  // Couldn't resolve crossing
+            }
+        }
+
+        // Determine if this is a branch (target already has 2+ connections)
+        boolean isBranch = targetNode.connections.size() >= 2;
+
+        // Add bidirectional connections
+        if (!sourceNode.connections.contains(bestNeighbor)) {
+            sourceNode.connections.add(bestNeighbor);
+        }
+        if (!targetNode.connections.contains(sourceIdx)) {
+            targetNode.connections.add(sourceIdx);
+        }
+
+        // Update Union-Find for chain tracking
+        if (sourceIdx < parent.length && bestNeighbor < parent.length) {
+            int root1 = find(parent, sourceIdx);
+            int root2 = find(parent, bestNeighbor);
+            if (root1 != root2) {
+                union(parent, rank, root1, root2);
+            }
+        }
+
+        // Reduce elevation if flow would be upward
+        if (slopeToNeighbor > 0) {
+            adjustElevationForDownwardFlow(sourceNode, targetNode);
+        }
+
+        // Determine flow direction (srt is higher elevation)
+        Point3D srtPoint, endPoint;
+        Vec2D tangentSrt, tangentEnd;
+        int srtIdx, endIdx;
+
+        if (sourceNode.point.z >= targetNode.point.z) {
+            srtPoint = sourceNode.point;
+            endPoint = targetNode.point;
+            srtIdx = sourceIdx;
+            endIdx = bestNeighbor;
+        } else {
+            srtPoint = targetNode.point;
+            endPoint = sourceNode.point;
+            srtIdx = bestNeighbor;
+            endIdx = sourceIdx;
+        }
+
+        // Compute tangents for both endpoints
+        tangentSrt = computeNodeTangent(nodes, srtIdx, isBranch && srtIdx == sourceIdx, cellX, cellY);
+        tangentEnd = computeNodeTangent(nodes, endIdx, isBranch && endIdx == sourceIdx, cellX, cellY);
+
+        // Store tangents in nodes for future reference
+        nodes.get(srtIdx).tangent = tangentSrt;
+        nodes.get(endIdx).tangent = tangentEnd;
+
+        // Create the segment
+        Segment3D segment = new Segment3D(srtPoint, endPoint, level, tangentSrt, tangentEnd);
+
+        // Subdivide and displace, adding subdivision points back to nodes
+        List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, level, cellX, cellY, parent, rank);
+        allSegments.addAll(subdivided);
+
+        return true;
+    }
+
+    /**
+     * Find best neighbor for segment creation.
+     * Must be within distance, have lowest slope, and not already connected via another path.
+     */
+    private int findBestNeighborForSegment(List<NetworkNode> nodes, int sourceIdx,
+                                            double maxDistSq, int level, int[] parent,
+                                            List<Segment3D> existingSegments) {
+        NetworkNode sourceNode = nodes.get(sourceIdx);
+        Point2D sourcePos = sourceNode.point.projectZ();
+
+        double bestSlope = Double.MAX_VALUE;
+        int bestNeighbor = -1;
+
+        for (int i = 0; i < nodes.size(); i++) {
+            if (i == sourceIdx) continue;
+            NetworkNode candidate = nodes.get(i);
+            if (candidate.removed) continue;
+            if (sourceNode.connections.contains(i)) continue;  // Already directly connected
+
+            // Check if already connected via path (same chain)
+            if (sourceIdx < parent.length && i < parent.length) {
+                if (find(parent, sourceIdx) == find(parent, i)) {
+                    continue;  // Already in same chain
+                }
+            }
+
+            Point2D candidatePos = candidate.point.projectZ();
+            double distSq = sourcePos.distanceSquaredTo(candidatePos);
+
+            if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
+
+            double slope = Math.abs(calculateSlope(sourceNode.point, candidate.point));
+            if (slope < bestSlope) {
+                bestSlope = slope;
+                bestNeighbor = i;
+            }
+        }
+
+        return bestNeighbor;
+    }
+
+    /**
+     * Check if a new segment would cross any existing segment.
+     */
+    private boolean wouldCrossExistingSegment(Point2D srt, Point2D end, List<Segment3D> segments) {
+        for (Segment3D seg : segments) {
+            Point2D segSrt = seg.srt.projectZ();
+            Point2D segEnd = seg.end.projectZ();
+
+            if (segmentsIntersect(srt, end, segSrt, segEnd)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Check if two 2D line segments intersect (excluding shared endpoints).
+     */
+    private boolean segmentsIntersect(Point2D a1, Point2D a2, Point2D b1, Point2D b2) {
+        // Skip if they share an endpoint
+        if (a1.distanceSquaredTo(b1) < MathUtils.EPSILON ||
+            a1.distanceSquaredTo(b2) < MathUtils.EPSILON ||
+            a2.distanceSquaredTo(b1) < MathUtils.EPSILON ||
+            a2.distanceSquaredTo(b2) < MathUtils.EPSILON) {
+            return false;
+        }
+
+        double d1 = crossProduct(b2.x - b1.x, b2.y - b1.y, a1.x - b1.x, a1.y - b1.y);
+        double d2 = crossProduct(b2.x - b1.x, b2.y - b1.y, a2.x - b1.x, a2.y - b1.y);
+        double d3 = crossProduct(a2.x - a1.x, a2.y - a1.y, b1.x - a1.x, b1.y - a1.y);
+        double d4 = crossProduct(a2.x - a1.x, a2.y - a1.y, b2.x - a1.x, b2.y - a1.y);
+
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+            ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private double crossProduct(double ax, double ay, double bx, double by) {
+        return ax * by - ay * bx;
+    }
+
+    /**
+     * Create a subdivision point on the crossed segment and add it to nodes.
+     */
+    private int createSubdivisionAtCrossing(List<NetworkNode> nodes, List<Segment3D> segments,
+                                             Point2D newSrt, Point2D newEnd, int level,
+                                             int[] parent, int[] rank) {
+        // Find the segment being crossed and the intersection point
+        for (int i = 0; i < segments.size(); i++) {
+            Segment3D seg = segments.get(i);
+            Point2D segSrt = seg.srt.projectZ();
+            Point2D segEnd = seg.end.projectZ();
+
+            if (segmentsIntersect(newSrt, newEnd, segSrt, segEnd)) {
+                // Calculate intersection point
+                Point2D intersection = lineIntersection(newSrt, newEnd, segSrt, segEnd);
+                if (intersection == null) continue;
+
+                // Create 3D point at intersection (interpolate elevation)
+                double t = segSrt.distanceTo(intersection) / segSrt.distanceTo(segEnd);
+                double z = MathUtils.lerp(seg.srt.z, seg.end.z, t);
+                Point3D newPoint = new Point3D(intersection.x, intersection.y, z);
+
+                // Add as new node
+                int newIdx = nodes.size();
+                NetworkNode newNode = new NetworkNode(newPoint, newIdx);
+                newNode.isSubdivisionPoint = true;
+                newNode.sourceLevel = seg.level;
+
+                // Inherit tangent from the segment at this point
+                if (seg.tangentSrt != null && seg.tangentEnd != null) {
+                    newNode.tangent = new Vec2D(
+                        MathUtils.lerp(seg.tangentSrt.x, seg.tangentEnd.x, t),
+                        MathUtils.lerp(seg.tangentSrt.y, seg.tangentEnd.y, t)
+                    ).normalize();
+                }
+
+                nodes.add(newNode);
+
+                // Initialize Union-Find for new node
+                if (newIdx < parent.length) {
+                    parent[newIdx] = newIdx;
+                    rank[newIdx] = 0;
+                }
+
+                return newIdx;
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * Calculate intersection point of two line segments.
+     */
+    private Point2D lineIntersection(Point2D a1, Point2D a2, Point2D b1, Point2D b2) {
+        double x1 = a1.x, y1 = a1.y, x2 = a2.x, y2 = a2.y;
+        double x3 = b1.x, y3 = b1.y, x4 = b2.x, y4 = b2.y;
+
+        double denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+        if (Math.abs(denom) < MathUtils.EPSILON) return null;
+
+        double t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+        return new Point2D(x1 + t * (x2 - x1), y1 + t * (y2 - y1));
+    }
+
+    /**
+     * Compute tangent for a node based on its connections.
+     */
+    private Vec2D computeNodeTangent(List<NetworkNode> nodes, int nodeIdx, boolean isBranchEnd,
+                                      int cellX, int cellY) {
+        NetworkNode node = nodes.get(nodeIdx);
+
+        // If node already has a tangent, use it
+        if (node.tangent != null) {
+            return node.tangent;
+        }
+
+        // Determine twist: random ±70° * max((1 - slope/SlopeWhenStraight), 0)
+        double nodeSlope = node.point.hasSlope() ? node.point.getSlope() : 0;
+        double twistFactor = Math.max(0, 1.0 - nodeSlope / slopeWhenStraight);
+        Random rng = initRandomGenerator((int)(node.point.x * 1000), (int)(node.point.y * 1000), 73);
+        double twistAngle = (rng.nextDouble() * 2 - 1) * Math.toRadians(70) * twistFactor;
+
+        Vec2D nominalTangent;
+
+        if (isBranchEnd) {
+            // Branch tangent: will be computed later based on main flow
+            // For now, use point's own tangent
+            nominalTangent = getTangentFromPoint(node.point);
+        } else if (node.connections.size() >= 2) {
+            // Two or more connections: tangent is direction between first two
+            Point3D p1 = nodes.get(node.connections.get(0)).point;
+            Point3D p2 = nodes.get(node.connections.get(1)).point;
+            nominalTangent = new Vec2D(p1.projectZ(), p2.projectZ());
+            if (nominalTangent.lengthSquared() > MathUtils.EPSILON) {
+                nominalTangent = nominalTangent.normalize();
+            } else {
+                nominalTangent = getTangentFromPoint(node.point);
+            }
+        } else if (node.connections.size() == 1) {
+            // Single connection: tangent points toward/away from connected node
+            Point3D connected = nodes.get(node.connections.get(0)).point;
+            nominalTangent = new Vec2D(node.point.projectZ(), connected.projectZ());
+            if (nominalTangent.lengthSquared() > MathUtils.EPSILON) {
+                nominalTangent = nominalTangent.normalize();
+            } else {
+                nominalTangent = getTangentFromPoint(node.point);
+            }
+        } else {
+            // No connections yet: use point's own tangent from slope
+            nominalTangent = getTangentFromPoint(node.point);
+        }
+
+        // Apply twist rotation
+        return rotateTangent(nominalTangent, twistAngle);
+    }
+
+    /**
+     * Adjust elevation of source node to ensure downward flow.
+     */
+    private void adjustElevationForDownwardFlow(NetworkNode sourceNode, NetworkNode targetNode) {
+        if (sourceNode.point.z > targetNode.point.z) {
+            // Flow would be upward - reduce source elevation
+            double newZ = targetNode.point.z - MathUtils.EPSILON;
+            sourceNode.point = new Point3D(sourceNode.point.x, sourceNode.point.y, newZ,
+                                            sourceNode.point.slopeX, sourceNode.point.slopeY);
+        }
+    }
+
+    /**
+     * Subdivide segment and add subdivision points back to nodes list.
+     */
+    private List<Segment3D> subdivideAndAddPoints(Segment3D segment, List<NetworkNode> nodes,
+                                                   int level, int cellX, int cellY,
+                                                   int[] parent, int[] rank) {
+        // Subdivision count per level
+        int[] subdivisionsPerLevel = {2, 3, 4, 5, 6};
+        int subdivisions = level < subdivisionsPerLevel.length ? subdivisionsPerLevel[level] : 6;
+
+        if (subdivisions <= 1) {
+            return List.of(segment);
+        }
+
+        List<Segment3D> result = new ArrayList<>();
+        List<Point3D> subdivisionPoints = new ArrayList<>();
+
+        // Generate subdivision points using spline if tangents available
+        Point3D prev = segment.srt;
+        for (int i = 1; i <= subdivisions; i++) {
+            double t = (double) i / subdivisions;
+            Point3D next;
+
+            if (i == subdivisions) {
+                next = segment.end;
+            } else if (segment.hasTangents()) {
+                // Cubic Hermite spline interpolation
+                double t2 = t * t;
+                double t3 = t2 * t;
+                double h00 = 2 * t3 - 3 * t2 + 1;
+                double h10 = t3 - 2 * t2 + t;
+                double h01 = -2 * t3 + 3 * t2;
+                double h11 = t3 - t2;
+
+                double segLength = segment.srt.projectZ().distanceTo(segment.end.projectZ());
+                double tangentScale = segLength * tangentStrength;
+
+                double x = h00 * segment.srt.x + h10 * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
+                         + h01 * segment.end.x + h11 * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
+                double y = h00 * segment.srt.y + h10 * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
+                         + h01 * segment.end.y + h11 * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
+                double z = MathUtils.lerp(segment.srt.z, segment.end.z, t);
+
+                next = new Point3D(x, y, z);
+            } else {
+                next = Point3D.lerp(segment.srt, segment.end, t);
+            }
+
+            // Apply small displacement
+            if (i < subdivisions) {
+                Random rng = initRandomGenerator((int)(prev.x * 1000 + next.x * 500), (int)(prev.y * 1000), level + i);
+                double displaceMag = 0.02 / Math.pow(2, level);
+                double dx = (rng.nextDouble() * 2 - 1) * displaceMag;
+                double dy = (rng.nextDouble() * 2 - 1) * displaceMag;
+                next = new Point3D(next.x + dx, next.y + dy, next.z);
+
+                // Track subdivision point for adding to nodes
+                subdivisionPoints.add(next);
+            }
+
+            result.add(new Segment3D(prev, next, segment.level));
+            prev = next;
+        }
+
+        // Add subdivision points to the node list for future connections
+        for (Point3D subPoint : subdivisionPoints) {
+            int newIdx = nodes.size();
+            NetworkNode newNode = new NetworkNode(subPoint, newIdx);
+            newNode.isSubdivisionPoint = true;
+            newNode.sourceLevel = level;
+
+            // Interpolate tangent
+            if (segment.tangentSrt != null && segment.tangentEnd != null) {
+                double t = segment.srt.projectZ().distanceTo(subPoint.projectZ()) /
+                           segment.srt.projectZ().distanceTo(segment.end.projectZ());
+                newNode.tangent = new Vec2D(
+                    MathUtils.lerp(segment.tangentSrt.x, segment.tangentEnd.x, t),
+                    MathUtils.lerp(segment.tangentSrt.y, segment.tangentEnd.y, t)
+                ).normalize();
+            }
+
+            nodes.add(newNode);
+
+            // Initialize Union-Find for new node
+            if (newIdx < parent.length) {
+                parent[newIdx] = newIdx;
+                rank[newIdx] = 0;
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Connect separate chains to form a single connected network.
+     */
+    private void connectChainsToRoot(List<NetworkNode> nodes, List<Segment3D> allSegments,
+                                      double maxDistSq, int level, int cellX, int cellY,
+                                      int[] parent, int[] rank, List<Segment3D> previousLevelSegments) {
+        // Find the root chain (largest chain or chain with lowest elevation point)
+        int rootChain = findRootChain(nodes, parent);
+
+        // Keep connecting until all nodes are in the same chain or no more connections possible
+        boolean connectionMade;
+        int maxIterations = nodes.size() * 2;
+        int iterations = 0;
+
+        do {
+            connectionMade = false;
+            iterations++;
+
+            // Find smallest non-root chain
+            int smallestChain = findSmallestNonRootChain(nodes, parent, rootChain);
+            if (smallestChain < 0) break;
+
+            // Try to connect this chain to another chain
+            List<Integer> chainNodes = getNodesInChain(nodes, parent, smallestChain);
+
+            // Sort chain nodes by elevation (lowest first for escape path)
+            chainNodes.sort((a, b) -> Double.compare(nodes.get(a).point.z, nodes.get(b).point.z));
+
+            for (int nodeIdx : chainNodes) {
+                boolean success = createAndDefineSegment(nodes, allSegments, nodeIdx,
+                                                          maxDistSq, level, cellX, cellY,
+                                                          parent, rank, previousLevelSegments);
+                if (success) {
+                    connectionMade = true;
+                    // Update root chain
+                    rootChain = findRootChain(nodes, parent);
+                    break;
+                }
+            }
+
+            // If chain couldn't connect, remove it
+            if (!connectionMade) {
+                for (int nodeIdx : chainNodes) {
+                    nodes.get(nodeIdx).removed = true;
+                }
+            }
+
+        } while (connectionMade && iterations < maxIterations);
+    }
+
+    /**
+     * Find the root chain (chain with most nodes or lowest elevation).
+     */
+    private int findRootChain(List<NetworkNode> nodes, int[] parent) {
+        Map<Integer, Integer> chainSizes = new HashMap<>();
+
+        for (int i = 0; i < nodes.size(); i++) {
+            if (nodes.get(i).removed) continue;
+            if (i >= parent.length) continue;
+            int root = find(parent, i);
+            chainSizes.merge(root, 1, Integer::sum);
+        }
+
+        int largestChain = -1;
+        int largestSize = 0;
+        for (Map.Entry<Integer, Integer> entry : chainSizes.entrySet()) {
+            if (entry.getValue() > largestSize) {
+                largestSize = entry.getValue();
+                largestChain = entry.getKey();
+            }
+        }
+
+        return largestChain;
+    }
+
+    /**
+     * Find smallest chain that isn't the root chain.
+     */
+    private int findSmallestNonRootChain(List<NetworkNode> nodes, int[] parent, int rootChain) {
+        Map<Integer, Integer> chainSizes = new HashMap<>();
+
+        for (int i = 0; i < nodes.size(); i++) {
+            if (nodes.get(i).removed) continue;
+            if (i >= parent.length) continue;
+            int root = find(parent, i);
+            if (root == rootChain) continue;
+            chainSizes.merge(root, 1, Integer::sum);
+        }
+
+        int smallestChain = -1;
+        int smallestSize = Integer.MAX_VALUE;
+        for (Map.Entry<Integer, Integer> entry : chainSizes.entrySet()) {
+            if (entry.getValue() < smallestSize) {
+                smallestSize = entry.getValue();
+                smallestChain = entry.getKey();
+            }
+        }
+
+        return smallestChain;
+    }
+
+    /**
+     * Get all node indices in a given chain.
+     */
+    private List<Integer> getNodesInChain(List<NetworkNode> nodes, int[] parent, int chainRoot) {
+        List<Integer> result = new ArrayList<>();
+        for (int i = 0; i < nodes.size(); i++) {
+            if (nodes.get(i).removed) continue;
+            if (i >= parent.length) continue;
+            if (find(parent, i) == chainRoot) {
+                result.add(i);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Shift all segment elevations down so minimum is at 0 (for level 0 asterisms).
+     */
+    private List<Segment3D> shiftElevationsToZero(List<Segment3D> segments) {
+        if (segments.isEmpty()) return segments;
+
+        // Find minimum elevation
+        double minZ = Double.MAX_VALUE;
+        for (Segment3D seg : segments) {
+            minZ = Math.min(minZ, Math.min(seg.srt.z, seg.end.z));
+        }
+
+        // Shift all elevations
+        List<Segment3D> result = new ArrayList<>();
+        for (Segment3D seg : segments) {
+            Point3D newSrt = new Point3D(seg.srt.x, seg.srt.y, seg.srt.z - minZ);
+            Point3D newEnd = new Point3D(seg.end.x, seg.end.y, seg.end.z - minZ);
+            result.add(new Segment3D(newSrt, newEnd, seg.level, seg.tangentSrt, seg.tangentEnd));
+        }
+
+        return result;
     }
 
     /**
