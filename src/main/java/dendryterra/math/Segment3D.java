@@ -15,15 +15,31 @@ public final class Segment3D {
     public final Vec2D tangentSrt;  // Tangent direction at start point (may be null)
     public final Vec2D tangentEnd;  // Tangent direction at end point (may be null)
 
+    // Endpoint type flags for debug visualization
+    // false = subdivision point, true = original point
+    public final boolean srtIsOriginal;
+    public final boolean endIsOriginal;
+
     /**
-     * Create a segment with specified resolution level and tangents.
+     * Create a segment with specified resolution level, tangents, and endpoint types.
      */
-    public Segment3D(Point3D srt, Point3D end, int level, Vec2D tangentSrt, Vec2D tangentEnd) {
+    public Segment3D(Point3D srt, Point3D end, int level, Vec2D tangentSrt, Vec2D tangentEnd,
+                     boolean srtIsOriginal, boolean endIsOriginal) {
         this.srt = srt;
         this.end = end;
         this.level = level;
         this.tangentSrt = tangentSrt;
         this.tangentEnd = tangentEnd;
+        this.srtIsOriginal = srtIsOriginal;
+        this.endIsOriginal = endIsOriginal;
+    }
+
+    /**
+     * Create a segment with specified resolution level and tangents.
+     * Defaults to both endpoints being original points (backward compatible).
+     */
+    public Segment3D(Point3D srt, Point3D end, int level, Vec2D tangentSrt, Vec2D tangentEnd) {
+        this(srt, end, level, tangentSrt, tangentEnd, true, true);
     }
 
     /**
@@ -44,7 +60,16 @@ public final class Segment3D {
      * Create a new segment with the same endpoints and level but different tangents.
      */
     public Segment3D withTangents(Vec2D tangentSrt, Vec2D tangentEnd) {
-        return new Segment3D(this.srt, this.end, this.level, tangentSrt, tangentEnd);
+        return new Segment3D(this.srt, this.end, this.level, tangentSrt, tangentEnd,
+                             this.srtIsOriginal, this.endIsOriginal);
+    }
+
+    /**
+     * Create a new segment with specified endpoint types.
+     */
+    public Segment3D withEndpointTypes(boolean srtIsOriginal, boolean endIsOriginal) {
+        return new Segment3D(this.srt, this.end, this.level, this.tangentSrt, this.tangentEnd,
+                             srtIsOriginal, endIsOriginal);
     }
 
     /**
@@ -87,6 +112,8 @@ public final class Segment3D {
 
     /**
      * Subdivide this segment into n equal segments, preserving the level.
+     * Properly marks endpoint types: original endpoints keep their type,
+     * interior subdivision points are marked as non-original.
      */
     public Segment3D[] subdivide(int n) {
         if (n <= 0) throw new IllegalArgumentException("n must be positive");
@@ -97,7 +124,14 @@ public final class Segment3D {
         for (int i = 0; i < n; i++) {
             double t = (double)(i + 1) / n;
             Point3D next = (i == n - 1) ? end : Point3D.lerp(srt, end, t);
-            segments[i] = new Segment3D(prev, next, this.level);
+
+            // First segment: srt keeps original type, end is subdivision (unless n=1)
+            // Last segment: srt is subdivision (unless n=1), end keeps original type
+            // Middle segments: both are subdivision
+            boolean prevIsOriginal = (i == 0) ? this.srtIsOriginal : false;
+            boolean nextIsOriginal = (i == n - 1) ? this.endIsOriginal : false;
+
+            segments[i] = new Segment3D(prev, next, this.level, null, null, prevIsOriginal, nextIsOriginal);
             prev = next;
         }
 

@@ -110,12 +110,18 @@ public class DendrySampler implements Sampler {
         final int yOffset;     // Y offset from cell origin (0 to pixelGridSize-1)
         final float elevation; // Elevation at this point
         final byte level;      // Resolution level (0-5)
+        final byte pointType;  // 0 = segment, 1 = subdivision point, 2 = original point
 
         PixelData(int xOffset, int yOffset, float elevation, byte level) {
+            this(xOffset, yOffset, elevation, level, (byte) 0);
+        }
+
+        PixelData(int xOffset, int yOffset, float elevation, byte level, byte pointType) {
             this.xOffset = xOffset;
             this.yOffset = yOffset;
             this.elevation = elevation;
             this.level = level;
+            this.pointType = pointType;
         }
     }
 
@@ -141,11 +147,42 @@ public class DendrySampler implements Sampler {
         }
 
         void setPixel(int px, int py, float elevation, byte level) {
+            setPixel(px, py, elevation, level, (byte) 0);
+        }
+
+        void setPixel(int px, int py, float elevation, byte level, byte pointType) {
             if (px >= 0 && px < gridSize && py >= 0 && py < gridSize) {
-                // Only set if empty or if new level is lower (more significant)
                 PixelData existing = pixels[py][px];
-                if (existing == null || level < existing.level) {
-                    pixels[py][px] = new PixelData(px, py, elevation, level);
+                if (existing == null) {
+                    // Empty pixel - set it
+                    pixels[py][px] = new PixelData(px, py, elevation, level, pointType);
+                } else if (pointType > existing.pointType) {
+                    // Higher priority point type (original > subdivision > segment)
+                    pixels[py][px] = new PixelData(px, py, elevation, level, pointType);
+                } else if (pointType == existing.pointType && level < existing.level) {
+                    // Same point type but lower (more significant) level
+                    pixels[py][px] = new PixelData(px, py, elevation, level, pointType);
+                }
+                // Otherwise, don't overwrite - existing data takes priority
+            }
+        }
+
+        /**
+         * Mark a point (original or subdivision) in the cache with a radius.
+         * This marks a circle of pixels around the point for debug visualization.
+         * @param px center pixel X
+         * @param py center pixel Y
+         * @param elevation elevation value
+         * @param level resolution level
+         * @param pointType 1=subdivision, 2=original
+         * @param radius number of pixels around center to mark
+         */
+        void markPointWithRadius(int px, int py, float elevation, byte level, byte pointType, int radius) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    if (dx * dx + dy * dy <= radius * radius) {  // Circle, not square
+                        setPixel(px + dx, py + dy, elevation, level, pointType);
+                    }
                 }
             }
         }
@@ -348,8 +385,8 @@ public class DendrySampler implements Sampler {
         // Asterism (Level 0): Generate and process
         List<Segment3D> asterismBase = generateAsterism(cell1);
         //Map<Long, NodeTangentInfo> asterismTangents = computeNodeTangents(asterismBase);
-        List<Segment3D> asterismPruned = pruneToQueryRegion(asterismBase, cell1);
-        //List<Segment3D> asterismPruned = asterismBase;
+        //List<Segment3D> asterismPruned = pruneToQueryRegion(asterismBase, cell1);
+        List<Segment3D> asterismPruned = asterismBase;
 
         //int asterismSubdivisions = Math.max(2, defaultBranches);
         //asterismPruned = subdivideSegments(asterismPruned, asterismSubdivisions, 0, asterismTangents);
@@ -1591,7 +1628,13 @@ public class DendrySampler implements Sampler {
                 // Note: We'll set up Union-Find connections after all nodes are created
             }
 
-            result.add(new Segment3D(prev, next, segment.level));
+            // Determine endpoint types for this sub-segment
+            // First segment's srt is original (from srtIdx node), subsequent are subdivision
+            // Last segment's end is original (from endIdx node), others are subdivision
+            boolean prevIsOriginal = (result.isEmpty());  // First segment starts at original node
+            boolean nextIsOriginal = (i == subdivisions);  // Last segment ends at original node
+
+            result.add(new Segment3D(prev, next, segment.level, null, null, prevIsOriginal, nextIsOriginal));
             prev = next;
         }
 
@@ -3583,7 +3626,9 @@ public class DendrySampler implements Sampler {
      */
     private boolean usesPixelCache() {
         return cachepixels > 0 && pixelCache != null &&
-               (returnType == DendryReturnType.PIXEL_ELEVATION || returnType == DendryReturnType.PIXEL_LEVEL);
+               (returnType == DendryReturnType.PIXEL_ELEVATION ||
+                returnType == DendryReturnType.PIXEL_LEVEL ||
+                returnType == DendryReturnType.PIXEL_DEBUG);
     }
 
     /**
@@ -3688,10 +3733,12 @@ public class DendrySampler implements Sampler {
     /**
      * Sample segments into the pixel cache for a cell.
      * Walks along each segment and marks pixels it crosses.
+     * For PIXEL_DEBUG mode, also marks endpoint positions with appropriate point types.
      */
     private void sampleSegmentsToPixelCache(List<Segment3D> segments, CellPixelData cache) {
         double cellX = cache.cellX;
         double cellY = cache.cellY;
+        boolean isDebugMode = (returnType == DendryReturnType.PIXEL_DEBUG);
 
         for (Segment3D seg : segments) {
             // Get segment bounds in cell-local coordinates
@@ -3700,13 +3747,14 @@ public class DendrySampler implements Sampler {
             double bx = seg.end.x - cellX;
             double by = seg.end.y - cellY;
 
-            // Skip if segment is entirely outside the cell
-            if ((ax < 0 && bx < 0) || (ax >= 1 && bx >= 1) ||
-                (ay < 0 && by < 0) || (ay >= 1 && by >= 1)) {
+            // Skip if segment is entirely outside the cell (with margin for point radius)
+            double margin = isDebugMode ? 3.0 / pixelGridSize : 0;
+            if ((ax < -margin && bx < -margin) || (ax >= 1 + margin && bx >= 1 + margin) ||
+                (ay < -margin && by < -margin) || (ay >= 1 + margin && by >= 1 + margin)) {
                 continue;
             }
 
-            // Sample along the segment at pixel resolution
+            // Sample along the segment at pixel resolution (for segment line)
             double segLength = seg.length();
             double pixelSize = 1.0 / pixelGridSize;
             int numSamples = Math.max(2, (int) Math.ceil(segLength / pixelSize * 2));
@@ -3726,8 +3774,34 @@ public class DendrySampler implements Sampler {
                     if (px >= 0 && px < pixelGridSize && py >= 0 && py < pixelGridSize) {
                         float elevation = (float) pt.z;
                         byte level = (byte) seg.level;
-                        cache.setPixel(px, py, elevation, level);
+                        // pointType 0 = segment (not a special point)
+                        cache.setPixel(px, py, elevation, level, (byte) 0);
                     }
+                }
+            }
+
+            // In debug mode, mark endpoints with their point types and radius
+            if (isDebugMode) {
+                // Mark start point
+                if (ax >= -0.1 && ax < 1.1 && ay >= -0.1 && ay < 1.1) {
+                    int px = (int) (ax * pixelGridSize);
+                    int py = (int) (ay * pixelGridSize);
+                    float elevation = (float) seg.srt.z;
+                    byte level = (byte) seg.level;
+                    // pointType: 2 = original, 1 = subdivision
+                    byte pointType = seg.srtIsOriginal ? (byte) 2 : (byte) 1;
+                    cache.markPointWithRadius(px, py, elevation, level, pointType, 2);
+                }
+
+                // Mark end point
+                if (bx >= -0.1 && bx < 1.1 && by >= -0.1 && by < 1.1) {
+                    int px = (int) (bx * pixelGridSize);
+                    int py = (int) (by * pixelGridSize);
+                    float elevation = (float) seg.end.z;
+                    byte level = (byte) seg.level;
+                    // pointType: 2 = original, 1 = subdivision
+                    byte pointType = seg.endIsOriginal ? (byte) 2 : (byte) 1;
+                    cache.markPointWithRadius(px, py, elevation, level, pointType, 2);
                 }
             }
         }
@@ -3765,6 +3839,18 @@ public class DendrySampler implements Sampler {
             double dist = Math.sqrt((worldX - pixelCenterX) * (worldX - pixelCenterX) +
                                     (worldY - pixelCenterY) * (worldY - pixelCenterY));
             return data.elevation + dist * slope * gridsize;
+        } else if (returnType == DendryReturnType.PIXEL_DEBUG) {
+            // Debug mode: return point type as value
+            // 3 = original point, 2 = subdivision point, 1 = segment
+            // Note: pointType stores 2=original, 1=subdivision, 0=segment
+            // We map to: original->3, subdivision->2, segment->1
+            if (data.pointType == 2) {
+                return 3;  // Original point
+            } else if (data.pointType == 1) {
+                return 2;  // Subdivision point
+            } else {
+                return 1;  // Segment
+            }
         } else {
             // PIXEL_LEVEL
             return data.level;
