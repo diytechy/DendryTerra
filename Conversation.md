@@ -593,62 +593,13 @@ Note "NetworkPoints" has been renamed to "CleanAndNetworkPoints"
 
 Note: "Flow path" is used below but is effectively synonymous with "tangent", but for consistency the segments should be populated such that point a is the start of flow and point b is the end of flow.
 
-CleanAndNetworkPoints:
-Inputs:
-    - Unique cell location definition (The 3d points, the gridspacing of the cells used to generate the 3d points or similar context giving parameter)
-    - Previous / lower level segments (if applicable, null or similar if called for asterisms, are the lowest level segments)
-Outputs:
-    Updated segment definitions (includes all previous input segments with any changes to elevation + new segments for new level)
-        Each segment has two 3d points (x,y,z), and two tangents describing the end condition in the x,z coordinates.
 
-Function setup:
-    A. Determine the cell specific merge distance by multiplying "merge point spacing" with the gridspacing of the cells used to generate the points.
-    B. Determine the maximum segment distance in a similar manner based on gridspacing.
-
-* Clean any network points: if any points are within the merge distance, merge the points to their average x,z position and resample the control function to determine their y height.
-    Note this won't affect stars, since merging already happened.
-* Then remove all input points that are within the merge point distance of any other segments 1 level below (linear interpolation for segment distance or other alternatives are appropriate)
-    Note this won't affect stars, since they are at the lowest level.
-* Finally, if not at level 0, loop through each point and deterministically remove a point depending on it's percentage chance of removal according to it's probability of removal (1 - branchesSampler(x,z))
-* Now connect all the points:
-1. While any set of points or segments remain unconnected to the same or lower level segment (so stars must all eventually have a path to eachother, since there is no level below them):
-    A. Loop through each point from highest elevation to lowest elevation until all points have at least one connection: 
-        Perform connections using the "Connection rules" below.
-    B. Loop through all remaining points with 2 or fewer connections.
-        ii. Loop through points from lowest elevation to highest elevation:
-            Perform additional connections using the "Connection rules" below.
-
-
-    Connection rules:
-        i. Find the neighboring point (overhead xz distance less than the maximum segment distance) with the lowest slope (difference in y height / overhead distance in xz coordinates).
-            IMPORTANT: If greater than level 0 / asterism, and the lowest slope is greater than LowestSlopeCutoff, this point and any point connected to it shall be removed, since it cannot achieve a path back to the main asterism segment.
-        ii. If neighbor is already connected with 3 nodes, subdivide the closest spline, and pin the new node, continuing with the checks below.
-            NOTE: This should be incredibly rare due to subdivisions / displacement already present on the segment.  Would debugs be useful here?
-        iii. Else if neighbor already has a line passing through, set a property in the segment to indicate it needs to be merged as a branch after that line's tangent has been computed.
-        iv. Else if the neighbor already is connected to one point and the neighbor already has a defined tangent (which would only be the case for lower level points), connect to neighbor matching the tangent for a continuous flow.
-        v. Else if the neighbor already is connected to one point, connect to the neighbor, and set the tangent of the neighbor to be the direction between it's two connected points.
-
-        If a connection is made when a slope is positive (greater than 0) the greater point and all it's downstream connections should be ratiometrically reduced in elevation so that "upward" flow does not occur.
-
-    Now determine the tangents for the networked segments:
-        For each end of the segment that is not defined:
-            Determine a twist to apply to the point:
-                random deterministic value between +/-70 deg * max((1-slope/SlopeWhenStraight ),0)
-            If the point is connected to two other points that aren't coming from segments that are set to branch into the selected point, the nominal tangent is the tangent between those two points.
-            If the point is only connected once, the nominal tangent is the tangent of the point itself.
-            Set the tangent of the point to be the nominal tangent rotated by the twist angle.
-            If the end of a segment is set to branch into another path, wait to solve it until after all other segment tangents are defined.
-    
-    Now for remaining segments with branch ends:
-        The branch tangent will be a random offset of 110 to 170 degrees from the flow path tangent on the same side as the other point of the segment that has already been defined for the same point on two other segments creating the main path.
-
-    Finally, all segments should be subdivided according to the subdivisions per level (can be hard-coded per level), displaced, and assigned small adjustments in their tangents to give more distinct curvatures and to make available points to future calls.
 
 Now the asterism is created using this function.  The pixel level return type can be evaluated by calculating the spline according to it's tangent / point combination, no longer limited to linear interpolation.  Only the pixel return type need be updated, as the other return types would likely be extremely slow given distance computations on splines.  The pixel elevation will be updated later. Higher levels (1+) can be updated later to use "CleanAndNetworkPoints" after initial evaluations and assessment.            
 
 ###########################################################
 
-stitchConstellationsNew:
+For stitchConstellationsNew:
 Inputs:
     The segment definitions of the two asterisms being joined.
 Outputs:
@@ -659,44 +610,15 @@ For each point in the new stitching segment:
     If the point it's connecting to in the asterism is the end of the line, set the tangent equal to the tangent of it's connected line so it's continuous.
     Else if the point it's connecting to is already a part of a line, set the tangent to a random but deterministic angle between 20 degrees to 80 degrees from the continuous line.
 
+########################################################################
 
-Ideally: Level 0 cells are configurable tillable shapes that contain what will be called a "constellation".  Ex: ConstellationShape: Square / Hexagon / Diamond / Einstein Tile
+In Segment3D and Segment2D, rename point "a" to "srt" and "b" to "end" to give context to the flow direction, this will be clarified in the future to drive consistency in "CleanAndNetworkPoints".
 
-"Stars" are located in the constellation by also 
+Note I've commented out computeNodeTangents, subdivideSegments, and displaceSegmentsWithSplit in generateAllSegments, as those steps will be achieved through "CleanAndNetworkPoints", and will be removed completely once new implementation is confirmed.
 
+########################################################################
 
+There are multiple discontinuities in the new implementation as well as crossed segments, it appears this is is due to how "CleanAndNetworkPoints" is implemented from steps 4 through 8.  Right now those steps are implemented as large sequences per point / star group, but the sequence of steps should be performed each time a segment is created (when a point is connected to a neighbor) to prevent overlap and duplicate node connections.
 
+Review "NetworkingRules.md" and refactor steps 4 through 8 in "CleanAndNetworkPoints" to perform functionality on a per segment creation basis.
 
-1. 
-
-2. 
-distanceSquaredTo(Point2D other) {
-        double dx = x - other.x;
-        double dy = y - other.y;
-        return dx * dx + dy * dy;
-
-
-. In "getCell" the cell is located by a multiple of the cell resolution.  What is the purpose in multiplying the position by the resolution?  This is then used to generate points (generateNeighboringPoints3D) that appear to just reuse points from other cells, when the resolution level should generate a unique set of points.  This is also appears to then be used to create a perfect grid of points which is fed into generatePoint (with a hard-coded level of 1?)
-
-
-1. Investigate why level 2 segments do not appear to connect back to level 1 segments, note this appears to be an issue with level 2 segments and up.  Are they attempting to connect to the linear interpolation of the point instead of the spline?
-2. Level 0 segments (created both inside cell level 0 and as stitching segments) hive tight /non-continuous joints and repetitive structuring.  To fix this:
-    A.  When segments join at a node, at least two of the joining segments should have tangents that are opposite angles to give continuity along the node.
-    B.  When creating segments between nodes based on distance, the shortest distance should be compensated for the square grid structure (Should already be implemented at higher levels - to break up the grid-line appearance.)
-
-0. Function "computeAllSegmentsForCell" duplicates much of the logic in "evaluate", can these be merged in such a way that logic trees are not duplicated in different functions?
-
-3. Add another input similar to the control function that references a function that controls the probability of a level 1 node getting created (from 0 to 1)
-
-Self checks:
-
-1. Investigate wind / curvature
-2. Investigate unconnected segments - root level not 0?  But should not matter since cell 0 nodes are minimums?
-3. Add in sampler function that affects distribution / point allocation.  Should this just be probability-based?
-    A. The control function should return a number between 0 and 1, where 1 guarantees point creation.  But note points still cannot be connected if there is no downstream adjacent block.
-    B. Segments need to be rejected / removed that don't flow back to level 0.
-    C. Add hard-slope limits that prevents return paths backup the chain?
-    D. Make sure segments have their elevation forced down to accommodate all points on the chain.
-    E. Pixel elevation should be based on the slope along the full length of the spline, and increment linearly within each?  Or should splines be 3d?  That seems way ore complicated...
-4. Allow segments within level 0 to be connected to diagnal cells, and use distance that compensates for the block spacing.
-5. Allow stitching across level 0 cells to be diagonal.  So first find the lowest elevation cell between the boundary, and then connect to the closest cell within the parent 

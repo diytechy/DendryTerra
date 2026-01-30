@@ -347,12 +347,13 @@ public class DendrySampler implements Sampler {
 
         // Asterism (Level 0): Generate and process
         List<Segment3D> asterismBase = generateAsterism(cell1);
-        Map<Long, NodeTangentInfo> asterismTangents = computeNodeTangents(asterismBase);
+        //Map<Long, NodeTangentInfo> asterismTangents = computeNodeTangents(asterismBase);
         List<Segment3D> asterismPruned = pruneToQueryRegion(asterismBase, cell1);
+        //List<Segment3D> asterismPruned = asterismBase;
 
-        int asterismSubdivisions = Math.max(2, defaultBranches);
-        asterismPruned = subdivideSegments(asterismPruned, asterismSubdivisions, 0, asterismTangents);
-        asterismPruned = displaceSegmentsWithSplit(asterismPruned, displacementLevel0, 0);
+        //int asterismSubdivisions = Math.max(2, defaultBranches);
+        //asterismPruned = subdivideSegments(asterismPruned, asterismSubdivisions, 0, asterismTangents);
+        //asterismPruned = displaceSegmentsWithSplit(asterismPruned, displacementLevel0, 0);
 
         if (resolution == 0) {
             return asterismPruned;
@@ -1050,8 +1051,8 @@ public class DendrySampler implements Sampler {
 
             for (Segment3D seg : segments) {
                 // Find closest point on segment using linear interpolation
-                Point2D segA = seg.a.projectZ();
-                Point2D segB = seg.b.projectZ();
+                Point2D segA = seg.srt.projectZ();
+                Point2D segB = seg.end.projectZ();
                 double distSq = pointToSegmentDistanceSquared(p2d, segA, segB);
 
                 if (distSq < mergeDistSq) {
@@ -1531,14 +1532,14 @@ public class DendrySampler implements Sampler {
      */
     private List<Segment3D> subdivideWithSpline(Segment3D seg, int subdivisions, int cellX, int cellY) {
         List<Segment3D> result = new ArrayList<>();
-        Point3D prev = seg.a;
+        Point3D prev = seg.srt;
 
         for (int i = 1; i <= subdivisions; i++) {
             double t = (double) i / subdivisions;
             Point3D next;
 
             if (i == subdivisions) {
-                next = seg.b;
+                next = seg.end;
             } else {
                 // Cubic Hermite spline interpolation
                 double t2 = t * t;
@@ -1548,14 +1549,14 @@ public class DendrySampler implements Sampler {
                 double h01 = -2 * t3 + 3 * t2;
                 double h11 = t3 - t2;
 
-                double segLength = seg.a.projectZ().distanceTo(seg.b.projectZ());
+                double segLength = seg.srt.projectZ().distanceTo(seg.end.projectZ());
                 double tangentScale = segLength * tangentStrength;
 
-                double x = h00 * seg.a.x + h10 * (seg.tangentA != null ? seg.tangentA.x * tangentScale : 0)
-                         + h01 * seg.b.x + h11 * (seg.tangentB != null ? seg.tangentB.x * tangentScale : 0);
-                double y = h00 * seg.a.y + h10 * (seg.tangentA != null ? seg.tangentA.y * tangentScale : 0)
-                         + h01 * seg.b.y + h11 * (seg.tangentB != null ? seg.tangentB.y * tangentScale : 0);
-                double z = MathUtils.lerp(seg.a.z, seg.b.z, t);  // Linear interpolation for elevation
+                double x = h00 * seg.srt.x + h10 * (seg.tangentSrt != null ? seg.tangentSrt.x * tangentScale : 0)
+                         + h01 * seg.end.x + h11 * (seg.tangentEnd != null ? seg.tangentEnd.x * tangentScale : 0);
+                double y = h00 * seg.srt.y + h10 * (seg.tangentSrt != null ? seg.tangentSrt.y * tangentScale : 0)
+                         + h01 * seg.end.y + h11 * (seg.tangentEnd != null ? seg.tangentEnd.y * tangentScale : 0);
+                double z = MathUtils.lerp(seg.srt.z, seg.end.z, t);  // Linear interpolation for elevation
 
                 next = new Point3D(x, y, z);
             }
@@ -1578,15 +1579,15 @@ public class DendrySampler implements Sampler {
         List<Segment3D> result = new ArrayList<>();
         for (Segment3D seg : segments) {
             // Only displace interior points, not endpoints
-            Random rng = initRandomGenerator((int)(seg.a.x * 1000 + seg.a.y * 1000), (int)(seg.b.x * 1000), level + 200);
+            Random rng = initRandomGenerator((int)(seg.srt.x * 1000 + seg.srt.y * 1000), (int)(seg.end.x * 1000), level + 200);
             double dx = (rng.nextDouble() * 2 - 1) * displacementMagnitude;
             double dy = (rng.nextDouble() * 2 - 1) * displacementMagnitude;
 
             // Displace midpoint slightly
-            Point3D midA = new Point3D(seg.a.x + dx * 0.3, seg.a.y + dy * 0.3, seg.a.z);
-            Point3D midB = new Point3D(seg.b.x + dx * 0.3, seg.b.y + dy * 0.3, seg.b.z);
+            Point3D midA = new Point3D(seg.srt.x + dx * 0.3, seg.srt.y + dy * 0.3, seg.srt.z);
+            Point3D midB = new Point3D(seg.end.x + dx * 0.3, seg.end.y + dy * 0.3, seg.end.z);
 
-            result.add(new Segment3D(midA, midB, seg.level, seg.tangentA, seg.tangentB));
+            result.add(new Segment3D(midA, midB, seg.level, seg.tangentSrt, seg.tangentEnd));
         }
 
         return result;
@@ -1969,8 +1970,8 @@ public class DendrySampler implements Sampler {
 
         return segments.stream()
             .filter(seg -> {
-                boolean aInside = isPointInBounds(seg.a, minX, minY, maxX, maxY);
-                boolean bInside = isPointInBounds(seg.b, minX, minY, maxX, maxY);
+                boolean aInside = isPointInBounds(seg.srt, minX, minY, maxX, maxY);
+                boolean bInside = isPointInBounds(seg.end, minX, minY, maxX, maxY);
                 return aInside || bInside;
             })
             .collect(Collectors.toList());
@@ -2019,14 +2020,14 @@ public class DendrySampler implements Sampler {
         Map<Long, List<Point3D>> connectivity = new HashMap<>();
 
         for (Segment3D seg : segments) {
-            long keyA = pointHash(seg.a);
-            long keyB = pointHash(seg.b);
+            long keyA = pointHash(seg.srt);
+            long keyB = pointHash(seg.end);
 
-            nodePoints.putIfAbsent(keyA, seg.a);
-            nodePoints.putIfAbsent(keyB, seg.b);
+            nodePoints.putIfAbsent(keyA, seg.srt);
+            nodePoints.putIfAbsent(keyB, seg.end);
 
-            connectivity.computeIfAbsent(keyA, k -> new ArrayList<>()).add(seg.b);
-            connectivity.computeIfAbsent(keyB, k -> new ArrayList<>()).add(seg.a);
+            connectivity.computeIfAbsent(keyA, k -> new ArrayList<>()).add(seg.end);
+            connectivity.computeIfAbsent(keyB, k -> new ArrayList<>()).add(seg.srt);
         }
 
         // Step 2: For each node, compute tangent vectors
@@ -2221,8 +2222,8 @@ public class DendrySampler implements Sampler {
         return segments.stream()
             .filter(seg -> {
                 // Keep if either endpoint is within inner region
-                boolean aInside = isPointInBounds(seg.a, minX, minY, maxX, maxY);
-                boolean bInside = isPointInBounds(seg.b, minX, minY, maxX, maxY);
+                boolean aInside = isPointInBounds(seg.srt, minX, minY, maxX, maxY);
+                boolean bInside = isPointInBounds(seg.end, minX, minY, maxX, maxY);
                 return aInside || bInside;
             })
             .collect(Collectors.toList());
@@ -2301,8 +2302,8 @@ public class DendrySampler implements Sampler {
 
         return segments.stream()
             .filter(seg -> {
-                Point2D a = seg.a.projectZ();
-                Point2D b = seg.b.projectZ();
+                Point2D a = seg.srt.projectZ();
+                Point2D b = seg.end.projectZ();
 
                 // If segment starts inside query cell, keep it
                 if (isInCell(a, cellMinX, cellMinY, cellMaxX, cellMaxY)) {
@@ -2404,10 +2405,10 @@ public class DendrySampler implements Sampler {
         List<Segment3D> subdivided = new ArrayList<>();
 
         for (Segment3D seg : segments) {
-            Point3D prev = seg.a;
+            Point3D prev = seg.srt;
             for (int j = 1; j <= numDivisions; j++) {
                 double t = (double) j / numDivisions;
-                Point3D next = (j == numDivisions) ? seg.b : Point3D.lerp(seg.a, seg.b, t);
+                Point3D next = (j == numDivisions) ? seg.end : Point3D.lerp(seg.srt, seg.end, t);
                 subdivided.add(new Segment3D(prev, next, level));
                 prev = next;
             }
@@ -2437,8 +2438,8 @@ public class DendrySampler implements Sampler {
             : computeNodeTangents(segments);
 
         for (Segment3D seg : segments) {
-            Point3D p1 = seg.a;
-            Point3D p2 = seg.b;
+            Point3D p1 = seg.srt;
+            Point3D p2 = seg.end;
             long key1 = pointHash(p1);
             long key2 = pointHash(p2);
 
@@ -2541,7 +2542,7 @@ public class DendrySampler implements Sampler {
         List<Segment3D> result = new ArrayList<>();
 
         for (Segment3D seg : segments) {
-            Vec2D dir = new Vec2D(seg.a.projectZ(), seg.b.projectZ());
+            Vec2D dir = new Vec2D(seg.srt.projectZ(), seg.end.projectZ());
             double segLength = dir.length();
 
             if (segLength < MathUtils.EPSILON) {
@@ -2552,8 +2553,8 @@ public class DendrySampler implements Sampler {
             Vec2D perp = dir.rotateCCW90().normalize();
 
             // Use both endpoints for seed to ensure determinism based on segment identity
-            int seedX = (int)((seg.a.x + seg.b.x) * 50);
-            int seedY = (int)((seg.a.y + seg.b.y) * 50);
+            int seedX = (int)((seg.srt.x + seg.end.x) * 50);
+            int seedY = (int)((seg.srt.y + seg.end.y) * 50);
             Random rng = initRandomGenerator(seedX, seedY, level);
             // Displacement proportional to segment length
             double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
@@ -2566,8 +2567,8 @@ public class DendrySampler implements Sampler {
             );
 
             // Split into two segments: a→mid and mid→b (preserves connectivity)
-            result.add(new Segment3D(seg.a, displacedMid, seg.level));
-            result.add(new Segment3D(displacedMid, seg.b, seg.level));
+            result.add(new Segment3D(seg.srt, displacedMid, seg.level));
+            result.add(new Segment3D(displacedMid, seg.end, seg.level));
         }
 
         return result;
@@ -2582,14 +2583,14 @@ public class DendrySampler implements Sampler {
         for (int i = 0; i < segments.size(); i++) {
             Segment3D seg = segments.get(i);
 
-            Vec2D dir = new Vec2D(seg.a.projectZ(), seg.b.projectZ());
+            Vec2D dir = new Vec2D(seg.srt.projectZ(), seg.end.projectZ());
             double segLength = dir.length();
 
             if (segLength < MathUtils.EPSILON) continue;
 
             Vec2D perp = dir.rotateCCW90().normalize();
 
-            Random rng = initRandomGenerator((int)(seg.a.x * 100), (int)(seg.a.y * 100), cell.resolution);
+            Random rng = initRandomGenerator((int)(seg.srt.x * 100), (int)(seg.srt.y * 100), cell.resolution);
             // Displacement proportional to segment length
             double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
 
@@ -2600,12 +2601,12 @@ public class DendrySampler implements Sampler {
                 mid.z
             );
 
-            segments.set(i, new Segment3D(seg.a, displacedMid, seg.level));
+            segments.set(i, new Segment3D(seg.srt, displacedMid, seg.level));
 
             if (i + 1 < segments.size()) {
                 Segment3D next = segments.get(i + 1);
-                if (next.a.equals(seg.b)) {
-                    segments.set(i + 1, new Segment3D(displacedMid, next.b, next.level));
+                if (next.srt.equals(seg.end)) {
+                    segments.set(i + 1, new Segment3D(displacedMid, next.end, next.level));
                 }
             }
         }
@@ -2684,7 +2685,7 @@ public class DendrySampler implements Sampler {
         return stream
             .map(seg -> {
                 MathUtils.DistanceResult result = MathUtils.distanceToLineSegment(point, seg);
-                double z = MathUtils.lerp(seg.a.z, seg.b.z, result.parameter);
+                double z = MathUtils.lerp(seg.srt.z, seg.end.z, result.parameter);
                 double weightedDist = result.distance / seg.level;
                 return new NearestSegmentResult(
                     result.distance,
@@ -2711,7 +2712,7 @@ public class DendrySampler implements Sampler {
         return stream
             .map(seg -> {
                 MathUtils.DistanceResult result = MathUtils.distanceToLineSegment(point, seg);
-                double z = MathUtils.lerp(seg.a.z, seg.b.z, result.parameter);
+                double z = MathUtils.lerp(seg.srt.z, seg.end.z, result.parameter);
                 double weightedDist = result.distance / seg.level;
                 return new NearestSegmentResult(
                     result.distance,
@@ -2896,10 +2897,10 @@ public class DendrySampler implements Sampler {
 
         for (Segment3D seg : segments) {
             // Get segment bounds in cell-local coordinates
-            double ax = seg.a.x - cellX;
-            double ay = seg.a.y - cellY;
-            double bx = seg.b.x - cellX;
-            double by = seg.b.y - cellY;
+            double ax = seg.srt.x - cellX;
+            double ay = seg.srt.y - cellY;
+            double bx = seg.end.x - cellX;
+            double by = seg.end.y - cellY;
 
             // Skip if segment is entirely outside the cell
             if ((ax < 0 && bx < 0) || (ax >= 1 && bx >= 1) ||

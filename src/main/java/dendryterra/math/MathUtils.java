@@ -105,7 +105,7 @@ public final class MathUtils {
      * Project point p onto line segment.
      */
     public static double pointLineSegmentProjection(Point2D p, Segment2D s) {
-        return pointLineSegmentProjection(p, s.a, s.b);
+        return pointLineSegmentProjection(p, s.srt, s.end);
     }
 
     /**
@@ -145,7 +145,7 @@ public final class MathUtils {
      * Calculate distance from point p to a 3D segment (projected to 2D).
      */
     public static DistanceResult distanceToLineSegment(Point2D p, Segment3D seg) {
-        return distanceToLineSegment(p, seg.a.projectZ(), seg.b.projectZ());
+        return distanceToLineSegment(p, seg.srt.projectZ(), seg.end.projectZ());
     }
 
     /**
