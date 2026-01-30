@@ -1052,29 +1052,30 @@ public class DendrySampler implements Sampler {
 
         // Phase A: Create initial downstream flows from highest to lowest elevation
         // Process points without connections, from highest to next-to-lowest
-        boolean connectionMade;
-        do {
-            connectionMade = false;
+        int maxIterations = nodes.size() * 3;  // Safety limit
+        int iterations = 0;
 
-            // Find highest elevation node without any connections
-            int highestUnconnected = findHighestUnconnectedNode(nodes);
+        while (iterations < maxIterations) {
+            iterations++;
+
+            // Find highest elevation ORIGINAL node (not subdivision point) without any connections
+            int highestUnconnected = findHighestUnconnectedOriginalNode(nodes);
             if (highestUnconnected < 0) break;
 
             // Attempt to create and fully define a segment
             boolean success = createAndDefineSegment(nodes, allSegments, highestUnconnected,
                                                       maxDistSq, level, cellX, cellY,
                                                       parent, rank, previousLevelSegments);
-            if (success) {
-                connectionMade = true;
-            } else {
-                // No valid connection found - check if should remove node
+            if (!success) {
+                // No valid connection found - mark node so we don't try again
                 NetworkNode node = nodes.get(highestUnconnected);
-                if (level > 0) {
-                    // At higher levels, remove nodes that can't connect
-                    node.removed = true;
-                }
+                node.removed = true;  // Mark at ALL levels to prevent infinite loop
             }
-        } while (connectionMade);
+        }
+
+        if (iterations >= maxIterations) {
+            LOGGER.warn("CleanAndNetworkPoints Phase A reached max iterations ({})", maxIterations);
+        }
 
         // Phase B: Connect chains to form single connected network
         // Find chains that aren't connected to the root chain and connect them
@@ -1082,15 +1083,17 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Find the highest elevation node that has no connections yet.
+     * Find the highest elevation ORIGINAL node (not a subdivision point) that has no connections yet.
+     * Subdivision points should only be targets, not initiators of connections.
      */
-    private int findHighestUnconnectedNode(List<NetworkNode> nodes) {
+    private int findHighestUnconnectedOriginalNode(List<NetworkNode> nodes) {
         int bestIdx = -1;
         double bestZ = Double.NEGATIVE_INFINITY;
 
         for (int i = 0; i < nodes.size(); i++) {
             NetworkNode node = nodes.get(i);
             if (node.removed) continue;
+            if (node.isSubdivisionPoint) continue;  // Skip subdivision points
             if (!node.connections.isEmpty()) continue;
 
             if (node.point.z > bestZ) {
