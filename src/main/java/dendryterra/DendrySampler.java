@@ -1136,18 +1136,27 @@ public class DendrySampler implements Sampler {
             return false;
         }
 
-        // Check if this would create a crossing segment
+        // Check if this would create a crossing segment (may need multiple redirections)
         Point2D srcPos = sourceNode.point.projectZ();
         Point2D tgtPos = targetNode.point.projectZ();
-        if (wouldCrossExistingSegment(srcPos, tgtPos, allSegments)) {
+        int crossingRedirects = 0;
+        final int maxCrossingRedirects = 5;  // Prevent infinite loops
+
+        while (wouldCrossExistingSegment(srcPos, tgtPos, allSegments) && crossingRedirects < maxCrossingRedirects) {
+            crossingRedirects++;
             // Find subdivision point on crossed segment instead
             int subdivisionIdx = createSubdivisionAtCrossing(nodes, allSegments, srcPos, tgtPos, level, parent, rank);
             if (subdivisionIdx >= 0) {
                 bestNeighbor = subdivisionIdx;
                 targetNode = nodes.get(bestNeighbor);
+                tgtPos = targetNode.point.projectZ();  // Update target for next crossing check
             } else {
                 return false;  // Couldn't resolve crossing
             }
+        }
+
+        if (crossingRedirects >= maxCrossingRedirects) {
+            return false;  // Too many crossing redirects - path is blocked
         }
 
         // Determine if this is a branch (target already has 2+ connections)
@@ -1551,13 +1560,16 @@ public class DendrySampler implements Sampler {
                 next = Point3D.lerp(segment.srt, segment.end, t);
             }
 
-            // Apply small displacement for interior points
+            // Apply small displacement for interior points (skip at level 0 to prevent crossings)
             if (i < subdivisions) {
-                Random rng = initRandomGenerator((int)(prev.x * 1000 + next.x * 500), (int)(prev.y * 1000), level + i);
-                double displaceMag = 0.02 / Math.pow(2, level);
-                double dx = (rng.nextDouble() * 2 - 1) * displaceMag;
-                double dy = (rng.nextDouble() * 2 - 1) * displaceMag;
-                next = new Point3D(next.x + dx, next.y + dy, next.z);
+                if (level > 0) {
+                    Random rng = initRandomGenerator((int)(prev.x * 1000 + next.x * 500), (int)(prev.y * 1000), level + i);
+                    double displaceMag = 0.02 / Math.pow(2, level);
+                    double dx = (rng.nextDouble() * 2 - 1) * displaceMag;
+                    double dy = (rng.nextDouble() * 2 - 1) * displaceMag;
+                    next = new Point3D(next.x + dx, next.y + dy, next.z);
+                }
+                // At level 0, no displacement to prevent crossings
 
                 // Create new node for this subdivision point
                 int newIdx = nodes.size();
@@ -1625,6 +1637,7 @@ public class DendrySampler implements Sampler {
 
     /**
      * Connect separate chains to form a single connected network.
+     * At level 0 (asterisms), all stars must connect - chains are never removed.
      */
     private void connectChainsToRoot(List<NetworkNode> nodes, List<Segment3D> allSegments,
                                       double maxDistSq, int level, int cellX, int cellY,
@@ -1634,8 +1647,14 @@ public class DendrySampler implements Sampler {
 
         // Keep connecting until all nodes are in the same chain or no more connections possible
         boolean connectionMade;
-        int maxIterations = nodes.size() * 2;
+        // At level 0, we may need more iterations since we can't remove chains
+        int maxIterations = level == 0 ? nodes.size() * 5 : nodes.size() * 2;
         int iterations = 0;
+
+        // For level 0, try with progressively larger distances if needed
+        double currentMaxDistSq = maxDistSq;
+        int distanceExpansions = 0;
+        final int maxDistanceExpansions = 3;
 
         do {
             connectionMade = false;
@@ -1653,7 +1672,7 @@ public class DendrySampler implements Sampler {
 
             for (int nodeIdx : chainNodes) {
                 boolean success = createAndDefineSegment(nodes, allSegments, nodeIdx,
-                                                          maxDistSq, level, cellX, cellY,
+                                                          currentMaxDistSq, level, cellX, cellY,
                                                           parent, rank, previousLevelSegments);
                 if (success) {
                     connectionMade = true;
@@ -1663,14 +1682,33 @@ public class DendrySampler implements Sampler {
                 }
             }
 
-            // If chain couldn't connect, remove it
+            // If chain couldn't connect
             if (!connectionMade) {
-                for (int nodeIdx : chainNodes) {
-                    nodes.get(nodeIdx).removed = true;
+                if (level == 0 && distanceExpansions < maxDistanceExpansions) {
+                    // At level 0, expand search distance and try again
+                    distanceExpansions++;
+                    currentMaxDistSq *= 2.0;  // Double the search distance
+                    connectionMade = true;  // Force another iteration with expanded distance
+                    LOGGER.debug("Level 0: Expanding search distance (expansion {})", distanceExpansions);
+                } else if (level > 0) {
+                    // At higher levels, remove chains that can't connect
+                    for (int nodeIdx : chainNodes) {
+                        nodes.get(nodeIdx).removed = true;
+                    }
+                } else {
+                    // Level 0 but exhausted distance expansions - log warning
+                    LOGGER.warn("Level 0: Chain with {} nodes could not connect after {} distance expansions",
+                               chainNodes.size(), maxDistanceExpansions);
+                    // Still don't remove at level 0 - just break to avoid infinite loop
+                    break;
                 }
             }
 
         } while (connectionMade && iterations < maxIterations);
+
+        if (level == 0 && iterations >= maxIterations) {
+            LOGGER.warn("Level 0: connectChainsToRoot reached max iterations ({})", maxIterations);
+        }
     }
 
     /**
