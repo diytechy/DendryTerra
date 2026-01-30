@@ -65,6 +65,10 @@ public class DendrySampler implements Sampler {
     private final double tangentAngle;    // Max angle deviation (radians)
     private final double tangentStrength; // Tangent length as fraction of segment length
 
+    // Slope-based tangent alignment parameters
+    private final double slopeWhenStraight; // Slope threshold for full tangent alignment (0-1)
+    private final double lowestSlopeCutoff; // Minimum slope cutoff for point rejection
+
     // Pixel cache parameters
     private final double cachepixels;     // Pixel cache resolution (0 = disabled)
     private final int pixelGridSize;      // Number of pixels per cell axis (gridsize / cachepixels)
@@ -182,7 +186,8 @@ public class DendrySampler implements Sampler {
                          boolean debugTiming, int parallelThreshold,
                          int ConstellationScale, ConstellationShape constellationShape,
                          double tangentAngle, double tangentStrength,
-                         double cachepixels) {
+                         double cachepixels,
+                         double slopeWhenStraight, double lowestSlopeCutoff) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -207,6 +212,8 @@ public class DendrySampler implements Sampler {
         this.tangentAngle = tangentAngle;
         this.tangentStrength = tangentStrength;
         this.cachepixels = cachepixels;
+        this.slopeWhenStraight = slopeWhenStraight;
+        this.lowestSlopeCutoff = lowestSlopeCutoff;
 
         // Calculate pixel grid size
         if (cachepixels > 0) {
@@ -459,6 +466,7 @@ public class DendrySampler implements Sampler {
         Point3D[][] points = new Point3D[size][size];
         int half = size / 2;
 
+        // First pass: create all points with position and elevation
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 int px = cell.x + j - half;
@@ -472,7 +480,97 @@ public class DendrySampler implements Sampler {
                 points[i][j] = new Point3D(scaled.x, scaled.y, elevation);
             }
         }
-        return points;
+
+        // Second pass: compute slopes for each point using 2 closest neighbors at least 30 degrees apart
+        Point3D[][] pointsWithSlopes = new Point3D[size][size];
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                pointsWithSlopes[i][j] = computeSlopeForPoint(points, i, j, size);
+            }
+        }
+        return pointsWithSlopes;
+    }
+
+    /** Minimum angle (in radians) between two neighbors for slope estimation. */
+    private static final double MIN_NEIGHBOR_ANGLE_RAD = Math.toRadians(30);
+
+    /**
+     * Compute slope for a point using its 2 closest neighbors that are at least 30 degrees apart.
+     */
+    private Point3D computeSlopeForPoint(Point3D[][] points, int i, int j, int size) {
+        Point3D center = points[i][j];
+
+        // Collect all valid neighbors with their distances and angles
+        List<NeighborInfo> neighbors = new ArrayList<>();
+        for (int di = -1; di <= 1; di++) {
+            for (int dj = -1; dj <= 1; dj++) {
+                if (di == 0 && dj == 0) continue;
+                int ni = i + di;
+                int nj = j + dj;
+                if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
+
+                Point3D neighbor = points[ni][nj];
+                double dx = neighbor.x - center.x;
+                double dy = neighbor.y - center.y;
+                double dz = neighbor.z - center.z;
+                double dist = Math.sqrt(dx * dx + dy * dy);
+                double angle = Math.atan2(dy, dx);
+                neighbors.add(new NeighborInfo(dx, dy, dz, dist, angle));
+            }
+        }
+
+        // Sort by distance (closest first)
+        neighbors.sort((a, b) -> Double.compare(a.dist, b.dist));
+
+        // Find closest 2 neighbors that are at least 30 degrees apart
+        NeighborInfo n1 = null;
+        NeighborInfo n2 = null;
+        for (int k = 0; k < neighbors.size() && n2 == null; k++) {
+            NeighborInfo candidate = neighbors.get(k);
+            if (n1 == null) {
+                n1 = candidate;
+            } else {
+                double angleDiff = Math.abs(candidate.angle - n1.angle);
+                // Normalize to [0, PI]
+                if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+                if (angleDiff >= MIN_NEIGHBOR_ANGLE_RAD) {
+                    n2 = candidate;
+                }
+            }
+        }
+
+        // If we couldn't find 2 suitable neighbors, return point without slope
+        if (n1 == null || n2 == null) {
+            return center;
+        }
+
+        // Solve 2x2 linear system to find slopeX and slopeY:
+        // slopeX * dx1 + slopeY * dy1 = dz1
+        // slopeX * dx2 + slopeY * dy2 = dz2
+        double det = n1.dx * n2.dy - n2.dx * n1.dy;
+        if (Math.abs(det) < MathUtils.EPSILON) {
+            // Neighbors are collinear, can't solve
+            return center;
+        }
+
+        double slopeX = (n1.dz * n2.dy - n2.dz * n1.dy) / det;
+        double slopeY = (n1.dx * n2.dz - n2.dx * n1.dz) / det;
+
+        return center.withSlopes(slopeX, slopeY);
+    }
+
+    private static class NeighborInfo {
+        final double dx, dy, dz;
+        final double dist;
+        final double angle;
+
+        NeighborInfo(double dx, double dy, double dz, double dist, double angle) {
+            this.dx = dx;
+            this.dy = dy;
+            this.dz = dz;
+            this.dist = dist;
+            this.angle = angle;
+        }
     }
 
     // ========== Asterism (Level 0) Network Generation ==========

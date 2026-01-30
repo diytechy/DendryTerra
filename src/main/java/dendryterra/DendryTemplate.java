@@ -194,6 +194,28 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double cachepixels = 0;
 
+    /**
+     * Slope threshold for fully aligning tangents with the gradient.
+     * When the terrain slope is at or above this value, point tangents will
+     * align fully with the downhill direction without variance.
+     * Range: 0-1, default 0.1.
+     */
+    @Value("slope-when-straight")
+    @Default
+    private @Meta double slopeWhenStraight = 0.1;
+
+    /**
+     * Minimum slope cutoff for point rejection.
+     * Points with slope below this threshold may be rejected or adjusted.
+     * Positive values indicate minimum downward grade required for flow.
+     * If flow would go uphill but slope is still > 0, lower level segments
+     * will be reduced in elevation to maintain downhill flow.
+     * Default: 0.01.
+     */
+    @Value("lowest-slope-cutoff")
+    @Default
+    private @Meta double lowestSlopeCutoff = 0.01;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -241,6 +263,9 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (cachepixels > 0 && gridsize / cachepixels > 65535) {
             throw new ValidationException("gridsize/cachepixels exceeds UInt16 max (65535), got: " + (gridsize / cachepixels));
         }
+        if (slopeWhenStraight < 0 || slopeWhenStraight > 1) {
+            throw new ValidationException("slope-when-straight must be in range [0, 1], got: " + slopeWhenStraight);
+        }
         return true;
     }
 
@@ -256,7 +281,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             debugTiming, parallelThreshold,
             ConstellationScale, constellationShape,
             Math.toRadians(tangentAngle), tangentStrength,
-            cachepixels
+            cachepixels,
+            slopeWhenStraight, lowestSlopeCutoff
         );
     }
 }
