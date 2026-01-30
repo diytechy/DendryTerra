@@ -30,7 +30,7 @@ sampler:                # Optional control function
   frequency: 0.0001
   
 type: DENDRY
-n: 1                    # Resolution levels (1-5)
+n: 0                    # Resolution levels (1-5)
 epsilon: 0              # Point distribution bias [0, 0.5)
 delta: 0.05             # Segment displacement
 cachepixels: 21.0

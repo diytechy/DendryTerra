@@ -1069,7 +1069,10 @@ public class DendrySampler implements Sampler {
             if (!success) {
                 // No valid connection found - mark node so we don't try again
                 NetworkNode node = nodes.get(highestUnconnected);
-                node.removed = true;  // Mark at ALL levels to prevent infinite loop
+                if (level > 0) {
+                    // At higher levels, remove nodes that can't connect
+                    node.removed = true;
+                }
             }
         }
 
