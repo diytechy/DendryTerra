@@ -1201,7 +1201,8 @@ public class DendrySampler implements Sampler {
         Segment3D segment = new Segment3D(srtPoint, endPoint, level, tangentSrt, tangentEnd);
 
         // Subdivide and displace, adding subdivision points back to nodes
-        List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, level, cellX, cellY, parent, rank);
+        // Pass the endpoint indices so subdivision points can be properly connected
+        List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, level, cellX, cellY, parent, rank, srtIdx, endIdx);
         allSegments.addAll(subdivided);
 
         return true;
@@ -1293,7 +1294,9 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Create a subdivision point on the crossed segment and add it to nodes.
+     * Create a subdivision point on the crossed segment, split the segment, and add to nodes.
+     * The crossed segment is replaced with two new segments: (srt -> subdivision) and (subdivision -> end).
+     * The new node is properly connected to both endpoint nodes of the original segment.
      */
     private int createSubdivisionAtCrossing(List<NetworkNode> nodes, List<Segment3D> segments,
                                              Point2D newSrt, Point2D newEnd, int level,
@@ -1314,6 +1317,10 @@ public class DendrySampler implements Sampler {
                 double z = MathUtils.lerp(seg.srt.z, seg.end.z, t);
                 Point3D newPoint = new Point3D(intersection.x, intersection.y, z);
 
+                // Find node indices for the crossed segment's endpoints
+                int srtNodeIdx = findNodeByPosition(nodes, seg.srt);
+                int endNodeIdx = findNodeByPosition(nodes, seg.end);
+
                 // Add as new node
                 int newIdx = nodes.size();
                 NetworkNode newNode = new NetworkNode(newPoint, newIdx);
@@ -1330,16 +1337,77 @@ public class DendrySampler implements Sampler {
 
                 nodes.add(newNode);
 
-                // Initialize Union-Find for new node
-                if (newIdx < parent.length) {
-                    parent[newIdx] = newIdx;
-                    rank[newIdx] = 0;
+                // Connect new node to the original segment's endpoints
+                if (srtNodeIdx >= 0) {
+                    NetworkNode srtNode = nodes.get(srtNodeIdx);
+                    // Remove old connection between srt and end
+                    srtNode.connections.remove(Integer.valueOf(endNodeIdx));
+                    // Add connection to new subdivision node
+                    if (!srtNode.connections.contains(newIdx)) {
+                        srtNode.connections.add(newIdx);
+                    }
+                    if (!newNode.connections.contains(srtNodeIdx)) {
+                        newNode.connections.add(srtNodeIdx);
+                    }
+                }
+                if (endNodeIdx >= 0) {
+                    NetworkNode endNode = nodes.get(endNodeIdx);
+                    // Remove old connection between end and srt
+                    endNode.connections.remove(Integer.valueOf(srtNodeIdx));
+                    // Add connection to new subdivision node
+                    if (!endNode.connections.contains(newIdx)) {
+                        endNode.connections.add(newIdx);
+                    }
+                    if (!newNode.connections.contains(endNodeIdx)) {
+                        newNode.connections.add(endNodeIdx);
+                    }
+                }
+
+                // Remove the original crossed segment
+                segments.remove(i);
+
+                // Add two new segments: srt->subdivision and subdivision->end
+                // Interpolate tangents at the subdivision point
+                Vec2D tangentAtSub = newNode.tangent;
+                Segment3D seg1 = new Segment3D(seg.srt, newPoint, seg.level, seg.tangentSrt, tangentAtSub);
+                Segment3D seg2 = new Segment3D(newPoint, seg.end, seg.level, tangentAtSub, seg.tangentEnd);
+                segments.add(seg1);
+                segments.add(seg2);
+
+                // Update Union-Find: new node should be in same chain as original endpoints
+                if (srtNodeIdx >= 0 && srtNodeIdx < parent.length && newIdx < parent.length) {
+                    int rootSrt = find(parent, srtNodeIdx);
+                    union(parent, rank, rootSrt, newIdx);
+                }
+                if (endNodeIdx >= 0 && endNodeIdx < parent.length && newIdx < parent.length) {
+                    int rootEnd = find(parent, endNodeIdx);
+                    int rootNew = find(parent, newIdx);
+                    if (rootEnd != rootNew) {
+                        union(parent, rank, rootEnd, rootNew);
+                    }
                 }
 
                 return newIdx;
             }
         }
 
+        return -1;
+    }
+
+    /**
+     * Find the node index for a given 3D point by position matching.
+     * Returns -1 if no matching node is found.
+     */
+    private int findNodeByPosition(List<NetworkNode> nodes, Point3D point) {
+        double epsilon = MathUtils.EPSILON * 100;  // Allow small tolerance
+        for (int i = 0; i < nodes.size(); i++) {
+            NetworkNode node = nodes.get(i);
+            if (node.removed) continue;
+            double distSq = node.point.projectZ().distanceSquaredTo(point.projectZ());
+            if (distSq < epsilon) {
+                return i;
+            }
+        }
         return -1;
     }
 
@@ -1423,10 +1491,20 @@ public class DendrySampler implements Sampler {
 
     /**
      * Subdivide segment and add subdivision points back to nodes list.
+     * Subdivision points are properly connected to form a chain from srtIdx to endIdx.
+     *
+     * @param segment The segment to subdivide
+     * @param nodes The list of network nodes
+     * @param level The resolution level
+     * @param cellX, cellY The cell coordinates for RNG seeding
+     * @param parent, rank Union-Find data structures
+     * @param srtIdx The node index for segment start (srt)
+     * @param endIdx The node index for segment end (end)
      */
     private List<Segment3D> subdivideAndAddPoints(Segment3D segment, List<NetworkNode> nodes,
                                                    int level, int cellX, int cellY,
-                                                   int[] parent, int[] rank) {
+                                                   int[] parent, int[] rank,
+                                                   int srtIdx, int endIdx) {
         // Subdivision count per level
         int[] subdivisionsPerLevel = {2, 3, 4, 5, 6};
         int subdivisions = level < subdivisionsPerLevel.length ? subdivisionsPerLevel[level] : 6;
@@ -1436,7 +1514,8 @@ public class DendrySampler implements Sampler {
         }
 
         List<Segment3D> result = new ArrayList<>();
-        List<Point3D> subdivisionPoints = new ArrayList<>();
+        List<Integer> chainNodeIndices = new ArrayList<>();  // Track node indices in order
+        chainNodeIndices.add(srtIdx);  // Start with the srt node
 
         // Generate subdivision points using spline if tangents available
         Point3D prev = segment.srt;
@@ -1469,7 +1548,7 @@ public class DendrySampler implements Sampler {
                 next = Point3D.lerp(segment.srt, segment.end, t);
             }
 
-            // Apply small displacement
+            // Apply small displacement for interior points
             if (i < subdivisions) {
                 Random rng = initRandomGenerator((int)(prev.x * 1000 + next.x * 500), (int)(prev.y * 1000), level + i);
                 double displaceMag = 0.02 / Math.pow(2, level);
@@ -1477,37 +1556,64 @@ public class DendrySampler implements Sampler {
                 double dy = (rng.nextDouble() * 2 - 1) * displaceMag;
                 next = new Point3D(next.x + dx, next.y + dy, next.z);
 
-                // Track subdivision point for adding to nodes
-                subdivisionPoints.add(next);
+                // Create new node for this subdivision point
+                int newIdx = nodes.size();
+                NetworkNode newNode = new NetworkNode(next, newIdx);
+                newNode.isSubdivisionPoint = true;
+                newNode.sourceLevel = level;
+
+                // Interpolate tangent
+                if (segment.tangentSrt != null && segment.tangentEnd != null) {
+                    newNode.tangent = new Vec2D(
+                        MathUtils.lerp(segment.tangentSrt.x, segment.tangentEnd.x, t),
+                        MathUtils.lerp(segment.tangentSrt.y, segment.tangentEnd.y, t)
+                    ).normalize();
+                }
+
+                nodes.add(newNode);
+                chainNodeIndices.add(newIdx);
+
+                // Note: We'll set up Union-Find connections after all nodes are created
             }
 
             result.add(new Segment3D(prev, next, segment.level));
             prev = next;
         }
 
-        // Add subdivision points to the node list for future connections
-        for (Point3D subPoint : subdivisionPoints) {
-            int newIdx = nodes.size();
-            NetworkNode newNode = new NetworkNode(subPoint, newIdx);
-            newNode.isSubdivisionPoint = true;
-            newNode.sourceLevel = level;
+        // Add end node to chain
+        chainNodeIndices.add(endIdx);
 
-            // Interpolate tangent
-            if (segment.tangentSrt != null && segment.tangentEnd != null) {
-                double t = segment.srt.projectZ().distanceTo(subPoint.projectZ()) /
-                           segment.srt.projectZ().distanceTo(segment.end.projectZ());
-                newNode.tangent = new Vec2D(
-                    MathUtils.lerp(segment.tangentSrt.x, segment.tangentEnd.x, t),
-                    MathUtils.lerp(segment.tangentSrt.y, segment.tangentEnd.y, t)
-                ).normalize();
+        // Now connect all nodes in the chain and update Union-Find
+        // First, ensure parent array is large enough (it may not be for new nodes)
+        int requiredSize = nodes.size();
+        if (parent.length < requiredSize) {
+            // Can't expand arrays passed by reference, but new nodes beyond array size
+            // won't participate in Union-Find chain detection (they're already connected)
+        }
+
+        // Connect each adjacent pair of nodes in the chain
+        for (int i = 0; i < chainNodeIndices.size() - 1; i++) {
+            int nodeA = chainNodeIndices.get(i);
+            int nodeB = chainNodeIndices.get(i + 1);
+
+            NetworkNode a = nodes.get(nodeA);
+            NetworkNode b = nodes.get(nodeB);
+
+            // Add bidirectional connections (skip if already present from original connection)
+            if (!a.connections.contains(nodeB)) {
+                a.connections.add(nodeB);
+            }
+            if (!b.connections.contains(nodeA)) {
+                b.connections.add(nodeA);
             }
 
-            nodes.add(newNode);
-
-            // Initialize Union-Find for new node
-            if (newIdx < parent.length) {
-                parent[newIdx] = newIdx;
-                rank[newIdx] = 0;
+            // Update Union-Find if both are within array bounds
+            if (nodeA < parent.length && nodeB < parent.length) {
+                int rootA = find(parent, nodeA);
+                int rootB = find(parent, nodeB);
+                if (rootA != rootB) {
+                    union(parent, rank, rootA, rootB);
+                }
             }
         }
 
