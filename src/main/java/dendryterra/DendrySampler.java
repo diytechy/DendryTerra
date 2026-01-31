@@ -36,7 +36,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 5;
+    private static final int SEGMENT_DEBUGGING = 20;
 
     // Configuration parameters
     private final int resolution;
@@ -825,6 +825,13 @@ public class DendrySampler implements Sampler {
         // Step 1: Find level 1 cells that circumscribe the constellation
         List<int[]> circumscribingCells = getCircumscribingCells(constX, constY);
 
+        // Debug logging for constellation parameters
+        if (SEGMENT_DEBUGGING > 0) {
+            LOGGER.info("Constellation ({}, {}): center=({}, {}), size={}, ConstellationScale={}, cells={}",
+                constX, constY, String.format("%.1f", center.x), String.format("%.1f", center.y),
+                String.format("%.1f", size), ConstellationScale, circumscribingCells.size());
+        }
+
         // Step 2: Sample 9x9 grid in each cell to find candidate stars
         List<Point3D> draftedStars = new ArrayList<>();
         for (int[] cell : circumscribingCells) {
@@ -848,6 +855,12 @@ public class DendrySampler implements Sampler {
 
         // Step 4: Merge stars that are closer than MERGE_POINT_SPACING
         List<Point3D> mergedStars = mergeCloseStars(boundedStars);
+
+        // Debug logging for star counts
+        if (SEGMENT_DEBUGGING > 0) {
+            LOGGER.info("  -> drafted={}, bounded={}, merged={} stars",
+                draftedStars.size(), boundedStars.size(), mergedStars.size());
+        }
 
         return mergedStars;
     }
