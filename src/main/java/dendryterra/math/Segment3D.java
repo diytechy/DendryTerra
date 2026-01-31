@@ -15,31 +15,41 @@ public final class Segment3D {
     public final Vec2D tangentSrt;  // Tangent direction at start point (may be null)
     public final Vec2D tangentEnd;  // Tangent direction at end point (may be null)
 
-    // Endpoint type flags for debug visualization
-    // false = subdivision point, true = original point
-    public final boolean srtIsOriginal;
-    public final boolean endIsOriginal;
+    // Endpoint type for debug visualization and tracking point provenance
+    public final PointType srtType;
+    public final PointType endType;
 
     /**
      * Create a segment with specified resolution level, tangents, and endpoint types.
      */
     public Segment3D(Point3D srt, Point3D end, int level, Vec2D tangentSrt, Vec2D tangentEnd,
-                     boolean srtIsOriginal, boolean endIsOriginal) {
+                     PointType srtType, PointType endType) {
         this.srt = srt;
         this.end = end;
         this.level = level;
         this.tangentSrt = tangentSrt;
         this.tangentEnd = tangentEnd;
-        this.srtIsOriginal = srtIsOriginal;
-        this.endIsOriginal = endIsOriginal;
+        this.srtType = srtType;
+        this.endType = endType;
+    }
+
+    /**
+     * Create a segment with specified resolution level, tangents, and boolean endpoint types.
+     * @deprecated Use constructor with PointType instead
+     */
+    public Segment3D(Point3D srt, Point3D end, int level, Vec2D tangentSrt, Vec2D tangentEnd,
+                     boolean srtIsOriginal, boolean endIsOriginal) {
+        this(srt, end, level, tangentSrt, tangentEnd,
+             srtIsOriginal ? PointType.ORIGINAL : PointType.KNOT,
+             endIsOriginal ? PointType.ORIGINAL : PointType.KNOT);
     }
 
     /**
      * Create a segment with specified resolution level and tangents.
-     * Defaults to both endpoints being original points (backward compatible).
+     * Defaults to both endpoints being ORIGINAL type (backward compatible).
      */
     public Segment3D(Point3D srt, Point3D end, int level, Vec2D tangentSrt, Vec2D tangentEnd) {
-        this(srt, end, level, tangentSrt, tangentEnd, true, true);
+        this(srt, end, level, tangentSrt, tangentEnd, PointType.ORIGINAL, PointType.ORIGINAL);
     }
 
     /**
@@ -61,15 +71,41 @@ public final class Segment3D {
      */
     public Segment3D withTangents(Vec2D tangentSrt, Vec2D tangentEnd) {
         return new Segment3D(this.srt, this.end, this.level, tangentSrt, tangentEnd,
-                             this.srtIsOriginal, this.endIsOriginal);
+                             this.srtType, this.endType);
     }
 
     /**
      * Create a new segment with specified endpoint types.
      */
-    public Segment3D withEndpointTypes(boolean srtIsOriginal, boolean endIsOriginal) {
+    public Segment3D withEndpointTypes(PointType srtType, PointType endType) {
         return new Segment3D(this.srt, this.end, this.level, this.tangentSrt, this.tangentEnd,
-                             srtIsOriginal, endIsOriginal);
+                             srtType, endType);
+    }
+
+    /**
+     * Create a new segment with specified endpoint types (boolean version for compatibility).
+     * @deprecated Use withEndpointTypes(PointType, PointType) instead
+     */
+    public Segment3D withEndpointTypes(boolean srtIsOriginal, boolean endIsOriginal) {
+        return withEndpointTypes(
+            srtIsOriginal ? PointType.ORIGINAL : PointType.KNOT,
+            endIsOriginal ? PointType.ORIGINAL : PointType.KNOT);
+    }
+
+    /**
+     * Check if start point is an original point.
+     * @deprecated Use srtType field directly
+     */
+    public boolean isSrtOriginal() {
+        return srtType == PointType.ORIGINAL;
+    }
+
+    /**
+     * Check if end point is an original point.
+     * @deprecated Use endType field directly
+     */
+    public boolean isEndOriginal() {
+        return endType == PointType.ORIGINAL;
     }
 
     /**
@@ -111,9 +147,11 @@ public final class Segment3D {
     }
 
     /**
-     * Subdivide this segment into n equal segments, preserving the level.
-     * Properly marks endpoint types: original endpoints keep their type,
-     * interior subdivision points are marked as non-original.
+     * Subdivide this segment into n equal segments using linear interpolation.
+     * Note: For B-spline subdivision with jitter, use DendrySampler.subdivideSegment() instead.
+     *
+     * @param n number of segments to create
+     * @return array of n segments
      */
     public Segment3D[] subdivide(int n) {
         if (n <= 0) throw new IllegalArgumentException("n must be positive");
@@ -125,13 +163,12 @@ public final class Segment3D {
             double t = (double)(i + 1) / n;
             Point3D next = (i == n - 1) ? end : Point3D.lerp(srt, end, t);
 
-            // First segment: srt keeps original type, end is subdivision (unless n=1)
-            // Last segment: srt is subdivision (unless n=1), end keeps original type
-            // Middle segments: both are subdivision
-            boolean prevIsOriginal = (i == 0) ? this.srtIsOriginal : false;
-            boolean nextIsOriginal = (i == n - 1) ? this.endIsOriginal : false;
+            // First segment: srt keeps original type, interior points become KNOT
+            // Last segment: end keeps original type
+            PointType prevType = (i == 0) ? this.srtType : PointType.KNOT;
+            PointType nextType = (i == n - 1) ? this.endType : PointType.KNOT;
 
-            segments[i] = new Segment3D(prev, next, this.level, null, null, prevIsOriginal, nextIsOriginal);
+            segments[i] = new Segment3D(prev, next, this.level, null, null, prevType, nextType);
             prev = next;
         }
 
@@ -152,10 +189,16 @@ public final class Segment3D {
 
     @Override
     public String toString() {
+        StringBuilder sb = new StringBuilder("Segment3D(");
+        sb.append(srt).append(" -> ").append(end);
+        sb.append(", level=").append(level);
         if (hasTangents()) {
-            return "Segment3D(" + srt + " -> " + end + ", level=" + level +
-                   ", tangentSrt=" + tangentSrt + ", tangentEnd=" + tangentEnd + ")";
+            sb.append(", tangentSrt=").append(tangentSrt);
+            sb.append(", tangentEnd=").append(tangentEnd);
         }
-        return "Segment3D(" + srt + " -> " + end + ", level=" + level + ")";
+        sb.append(", srtType=").append(srtType);
+        sb.append(", endType=").append(endType);
+        sb.append(")");
+        return sb.toString();
     }
 }

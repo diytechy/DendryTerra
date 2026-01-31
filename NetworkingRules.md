@@ -16,45 +16,62 @@ Function setup:
     Note this won't affect stars, since they are at the lowest level.
 * Now the number of points that must be connected can be summed, and referenced below to determine when all points have a path out of an asterism.  This is the number of points to connect this level.
 * Finally, if not at level 0, loop through each point and deterministically remove a point depending on it's percentage chance of removal according to it's probability of removal (1 - branchesSampler(x,z))
-* Now connect all the points:
-    A. Loop through each point from highest elevation to next to the lowest elevation point to create initial downstream flows: 
-        Attempt to create a connection using the "Connection rules" below to create a segment from the point, the segment should be fully defined using the connection rules below before iterating onto the next point to prevent overlapping connections.  For this reason this may not be able to be implemented as a simple for loop, but perhaps as a while loop that runs while the number of points without any connection is greater than 0, each time running the connection rules on the highest elevation point without any connection. 
-            IMPORTANT: If greater than level 0 / asterism, and the lowest slope is greater than LowestSlopeCutoff, the selected point and any point connected to it shall be removed, since it cannot achieve a path back to the main asterism segment.
-    B. Now that initial downflows have been created, there should be multiple "chains" that contain various numbers of interconnected segments.  While any set of points or segments remain unconnected to the lower level segment (or - for stars - there must be a path from every single star to any other star), find that chains escape path to the root path / asterism segments:
-        ii. Select the chain with the fewest number of segments (excluding the segment chain that includes segments created at lower levels).
-            Iterate through all nodes on the chain from the lowest to highest attempting to create a connection using the "connection rules" below.  Again, the segment should be fully defined using the connection rules below before iterating onto the next point to prevent overlapping connections.
+
+* Now connect all the points (connectAndDefineSegments).
+
+    IMPORTANT: Fetching points to find connections for in CleanAndNetworkPoints includes both the original points into function and points that have already been converted into segments.  Neighbor points / candidates to connect to include any of these points as well as any of the segment points one level below the current level.  After any segment creation operation, new segments should have their points available to connect to and their original points should be omitted or marked or otherwise noted as having a connection.
+
+    A. If at level 0, build the "trunk" through the point cloud:
+    While the trunk is incomplete:
+        Starting at the highest elevation point:
+            Attempt to create a connection using the "Connection rules" below to create a segment from the point noting the connection rules should be for a trunk, the segment should be fully defined using the connection rules below before continuing on to prevent overlapping connections.
+            If no connections can be made, consider the trunk complete.
+            Else if a connection is made, continue to attempt to extend the trunk from the previous neighbor that was connected.
+    IMPORTANT: Add a debug here to exit connections of the points early so that the trunk segment is returned along with 0-length segments for all unconnected points so the initial tree creation can be viewed. (SEGMENT_DEBUGGING==15)
+    B. Now that the initial trunk has been created or points are being networked above level 0, connect / remove remaining points -  While any set of points or segments remain unconnected to the lower level segment (or - for stars - there must be a path from every single star to any other star), build that chain's escape path to the root path / asterism segments:
+        ii. Select the chain with the fewest number of segments that doesn't connect to a lower level segment (including single points).
+            Iterate through all nodes on the chain from the highest to lowest points attempting to create a connection using the "connection rules" below.  Again, the segment should be fully defined using the connection rules below before iterating onto the next point to prevent overlapping connections.
             If a connection is made to another chain, exit the loop and reassess.  Else if the chain is never able to be connected back to another chain segment, remove the chain with it's segments and points since it has no return path.
 
     Now all points have a return path or have been removed if they did not have a return path.
 
     If this was performed for level 0 (asterisms), the elevation of all segments should be shifted down to 0.
 
+    Any segment points at the current level that are only connected to a single point should be marked / set to a "LEAF" type.
+
     #########################################################
 
-    
-
 Connection rules (for creating a connection and detailing the segment):
-    i. Find the neighboring point (overhead xz distance less than the maximum segment distance) with the lowest slope (difference in y height / overhead distance in xz coordinates) that is also NOT connected to the current point through another path.  If no potential connection is found, exit this indicating no new connections were made.
-    ii. If neighbor is already connected with 3 nodes, or the resulting segment would cross an existing segment, subdivide the closest spline (at the same or 1 level down), and pin the new node, continuing with the checks below.  Note the new point created by subdividing a spline should inherit the level of the spline that was subdivided and the tangent and the subdivision location.
+
+    NOTE: It is expected all segments will have a flow direction from the start to the end point, where the start tangent is the angle the segment projects from, and the end tangent is the angle the segment flows into at the end point.
+
+    1. Get all the neighboring point in range (overhead xz distance less than the maximum segment distance) and get their properties:
+        Calculate the normalized slope as ((height distance between the current point and the neighbor) / (overhead xz distance between current point and neighbor)^(DistanceFalloffPower)).  Here the DistanceFalloffPower can be 2, and helps to flatten out distant neighbors slopes to prefer tighter connections.
+        If the neighbor is already connected to two other points (has a line passing through it), it's slope should be multiplied by BranchEncouragementFactor (Default 2) to encourage points to attach into already existing lines / defined flows.
+    1b. If no neighbor is valid, return empty or otherwise communicate to the caller that no valid neighbor is found:
+        If this is for tree creation, a valid neighbor is only where a normalized slope is negative.
+        If this is for level 1 or higher, a valid neighbor is only where a normalized slope is less than lowestSlopeCutoff.
+        Else a valid neighbor must exist, if we get to this point, log it since this condition should not be possible.
+    2. Select the neighbor with the lowest normalized slope that is also NOT connected to the current point through another path.  If no potential connection is found, exit this indicating no new connections were made because all neighbors are interconnected.  Create a log if this is reached.
+    3. If the selected neighbor is already connected with 3 nodes, or the resulting segment would cross an existing segment, subdivide the closest segment (at the same or 1 level down), and select that new knot from subdivision as the selected neighbor, continuing with the checks below.  Note the new point created by subdividing a segment should inherit the level of the segment that was subdivided and the tangent and the subdivision location, and the point type should be a knot.
         NOTE: This should be incredibly rare due to subdivisions / displacement already present on the segment.  Would debugs be useful here?
-    iii. Else if neighbor already has a line passing through (the neighbor is already connected to 2 or more other points), set a property in the segment to indicate it needs to be merged as a branch after that line's tangent has been computed.
-    iv. Else if the neighbor already is connected to one point and the neighbor already has a defined tangent (which would only be the case for lower level points), connect to neighbor matching the tangent for a continuous flow.
-    v. Else if the neighbor already is connected to one point, connect to the neighbor, and set the tangent of the neighbor to be the direction between it's two connected points.
+    4. Else if the selected neighbor already has a line passing through (the neighbor is already connected to 2 or more other points), set a property to indicate it needs to be merged as a branch.
 
-    If a connection is made when a slope is positive (greater than 0) the greater point and all it's downstream connections should be ratiometrically reduced in elevation so that "upward" flow does not occur.
+    If a connection is made when a slope is positive (greater than 0) the greater point and all it's downstream connections from other segments (including all lower levels) must be ratiometrically reduced in elevation so that "upward" flow does not occur, but the ratiometric change cannot reduce below 0.
 
-    Else if the segment exists, it now should have a start point (srt) defined as the original point, and the end point (end) as the lowest slope neighbor.
+    Now a neighbor has been selected, it now should have a start point (srt) defined as the original point, and the end point (end) as the selected neighbor.
 
     Now determine the tangents for the new segments:
         For each side of the segment that is not defined:
-            If the end is NOT a branch into another node (set above):
-                Determine a twist to apply to the point:
-                    random deterministic value between +/-70 deg * max((1-slope/SlopeWhenStraight ),0)
-                If the point is connected to two other points that aren't coming from segments that are set to branch into the selected point, the nominal tangent is the tangent between those two points.
-                If the point is only connected once, the nominal tangent is the tangent of the point itself.
+            If the point is not a branch into another node (set above, should only apply to end points for the segment being created):
+                If the point is already connected to another segment, match the tangent of the connected segment for continuity.
+                Else if the point is not connected to any other segment:
+                    Determine a twist to apply to the point:
+                        random deterministic value between +/-50 deg * max((1-abs(pointslope)/SlopeWhenStraight ),0)
+                Determine the nominal tangent:
+                    The point slope tangent will be calculated as the average between the angle from the start point to the end points and the slope tangent (note: this should be the cross product)
                 Set the tangent of the point to be the nominal tangent rotated by the twist angle.
-                If the end of a segment is set to branch into another path, wait to solve it until after all other segment tangents are defined.
-            Else for remaining segments with branch ends:
-                The branch tangent will be a random offset of 110 to 170 degrees from the flow path tangent on the same side as the other point of the segment that has already been defined for the same point on two other segments creating the main path.
+            Else for remaining segments that are entering as branches:
+                The branch tangent will be a random offset of 110 to 170 degrees from the tangent of the other segments that are already connected to this point, on the same side as the other point of the segment.
 
-    Finally, the segment should be subdivided according to the subdivisions per level (can be hard-coded per level), displaced, and assigned small adjustments in their tangents to give more distinct curvatures and to make available points to future calls.  The subdivision points should be added into the point list so they can be used / connected to as a part of CleanAndNetworkPoints
+    Finally, the segment should be subdivided according to the subdivisions per level (can be hard-coded per level) and displaced as should be done in subdivideAndAddPoints .  The new segments should be added into the segment pool list so they can be used / connected to as a part of CleanAndNetworkPoints.

@@ -655,10 +655,31 @@ Something like "SegmentDebugging" where:
 40 - Return the segments up to the first call of phase A in CleanAndNetworkPoints
 50 - Return the segments up to the first call of phase B in CleanAndNetworkPoints
 
-###############################################################################
 
-I see with SEGMENT_DEBUGGING = 20, there is an empty space where there should be a at least one star from an asterism. Can you investigate if there is an issue with how some constellations are formed or bounded?  
 
 ##############################################################################
 
-Add SEGMENT_DEBUGGING = 5, where the segments are constructed from the boundary of the Constellation, 
+Add SEGMENT_DEBUGGING = 40, where the segments are constructed from the boundary of the Constellation, is the merging methodology 
+
+###############################################################################
+
+It appears that ConstellationScale is not actually resulting in the constellations growing in size.  As I change ConstellationScale between 1 and 10, the segment outcome appears to be the same, can you investigate why ConstellationScale does not appear to be expanding the outcome constellations to have more stars / occupied with more level 1 cells.
+
+###################################################################################
+
+Review the current subdivision functions used in connectAndDefineSegments, revise this or make a new function to ensure the following behavior, and indicate the changed / new function(s) that accomplish this.  Make sure after running this that the original segment that was subdivided is properly removed if not already done:
+
+A. When a segment is subdivided, it should be implemented in a way that it can be subdivided into x number of segments (function input with number of divisions) in case this needs to be changed / tweaked in the future. The allowed jitter factor should also be a number from 0 to 1 indicating how much jitter / displacement is allowed for subdivided points, which may need to be different at different levels to reduce complex shape generation.
+B. The division of the segment should occur along the b-spline interpolation of the segment when the tangent information is available.  Largest jitter / displacement of the segmented point in the x/y plane should be limited to the original segment point to point distance divided by (number of divisions *2*allowed jitter factor)
+C. Any new points (knots) created by subdivision should have a point type of "Knot", to help differentiate from their initial "point" types.
+D. Any knots created by subdivision should inherit their tangents from the b-splines that created them.
+
+Make sure the Endpoint type flags for debug visualization is updated to an enum / integer instead of a boolean to since the knots can only have a definition of: 
+- Original (point was originally created)
+- Trunk (will be described later, a point that was a part of the original trunk creation)
+- Knot (point was created as a part of subdivision)
+- Leaf (will be described later, a point that exists on it's level that is the end of a branch)
+
+########################################################################
+
+After reviewing the output, segments are not connecting / branching as I would expect.  I suspect the points created as part of segment creation and subdivision are not being used when potential neighbors are being found for subsequent point connection.  I have attempted some clarifications in "NetworkingRules/md", please review this updated text, plan the implementation, ask clarifying questions if necessary, and implement the changes when ready.

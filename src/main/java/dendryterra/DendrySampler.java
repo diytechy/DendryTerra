@@ -36,7 +36,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 20;
+    private static final int SEGMENT_DEBUGGING = 15;
 
     // Configuration parameters
     private final int resolution;
@@ -634,7 +634,7 @@ public class DendrySampler implements Sampler {
     // - AsterismSegment: A segment in the asterism network (level 0 segment)
     //
     // Constellation scaling:
-    // - ConstellationScale=1 means the largest inscribed square is 3 gridspaces wide
+    // - =1 means the largest inscribed square is 3 gridspaces wide
     // - This ensures only 4 closest constellations need to be solved for any query
 
     /**
@@ -776,12 +776,12 @@ public class DendrySampler implements Sampler {
         }
 
         // DEBUG: Return all constellation segments before stitching
-        if (SEGMENT_DEBUGGING == 20) {
+        if ((SEGMENT_DEBUGGING == 20)||(SEGMENT_DEBUGGING == 15)) {
             List<Segment3D> allSegments = new ArrayList<>();
             for (List<Segment3D> segs : constellationSegments.values()) {
                 allSegments.addAll(segs);
             }
-            LOGGER.info("SEGMENT_DEBUGGING=20: Returning all constellation segments before stitching ({} segments)", allSegments.size());
+            LOGGER.info("SEGMENT_DEBUGGING=20or15: Returning all constellation segments before stitching ({} segments)", allSegments.size());
             return allSegments;
         }
 
@@ -1327,7 +1327,11 @@ public class DendrySampler implements Sampler {
 
         // Subdivide and displace, adding subdivision points back to nodes
         // Pass the endpoint indices so subdivision points can be properly connected
-        List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, level, cellX, cellY, parent, rank, srtIdx, endIdx);
+        // Subdivision count per level: 2, 3, 4, 5, 6 for levels 0-4
+        int[] subdivisionsPerLevel = {2, 3, 4, 5, 6};
+        int divisions = level < subdivisionsPerLevel.length ? subdivisionsPerLevel[level] : 6;
+        double jitterFactor = (level == 0) ? 0.0 : 0.5;  // No jitter at level 0 to prevent crossings
+        List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, divisions, jitterFactor, level, cellX, cellY, parent, rank, srtIdx, endIdx);
         allSegments.addAll(subdivided);
 
         return true;
@@ -1616,10 +1620,13 @@ public class DendrySampler implements Sampler {
 
     /**
      * Subdivide segment and add subdivision points back to nodes list.
+     * Uses cubic Hermite spline interpolation when tangents are available.
      * Subdivision points are properly connected to form a chain from srtIdx to endIdx.
      *
      * @param segment The segment to subdivide
      * @param nodes The list of network nodes
+     * @param divisions Number of segments to create (must be >= 1)
+     * @param jitterFactor Jitter factor (0-1), where 0 = no jitter, 1 = max jitter
      * @param level The resolution level
      * @param cellX, cellY The cell coordinates for RNG seeding
      * @param parent, rank Union-Find data structures
@@ -1627,40 +1634,46 @@ public class DendrySampler implements Sampler {
      * @param endIdx The node index for segment end (end)
      */
     private List<Segment3D> subdivideAndAddPoints(Segment3D segment, List<NetworkNode> nodes,
+                                                   int divisions, double jitterFactor,
                                                    int level, int cellX, int cellY,
                                                    int[] parent, int[] rank,
                                                    int srtIdx, int endIdx) {
-        // Subdivision count per level
-        int[] subdivisionsPerLevel = {2, 3, 4, 5, 6};
-        int subdivisions = level < subdivisionsPerLevel.length ? subdivisionsPerLevel[level] : 6;
-
-        if (subdivisions <= 1) {
+        if (divisions <= 1) {
             return List.of(segment);
         }
+
+        // Calculate maximum jitter based on segment length and number of divisions
+        // Jitter is limited to prevent subdivision points from overlapping
+        double segLength2D = segment.srt.projectZ().distanceTo(segment.end.projectZ());
+        double maxJitter = (segLength2D / (divisions * 2.0)) * jitterFactor;
 
         List<Segment3D> result = new ArrayList<>();
         List<Integer> chainNodeIndices = new ArrayList<>();  // Track node indices in order
         chainNodeIndices.add(srtIdx);  // Start with the srt node
 
+        // Precompute tangent scale for Hermite interpolation
+        double tangentScale = segLength2D * tangentStrength;
+
         // Generate subdivision points using spline if tangents available
         Point3D prev = segment.srt;
-        for (int i = 1; i <= subdivisions; i++) {
-            double t = (double) i / subdivisions;
-            Point3D next;
+        Vec2D prevTangent = segment.tangentSrt;
 
-            if (i == subdivisions) {
+        for (int i = 1; i <= divisions; i++) {
+            double t = (double) i / divisions;
+            Point3D next;
+            Vec2D nextTangent = null;
+
+            if (i == divisions) {
                 next = segment.end;
+                nextTangent = segment.tangentEnd;
             } else if (segment.hasTangents()) {
-                // Cubic Hermite spline interpolation
+                // Cubic Hermite spline interpolation for position
                 double t2 = t * t;
                 double t3 = t2 * t;
                 double h00 = 2 * t3 - 3 * t2 + 1;
                 double h10 = t3 - 2 * t2 + t;
                 double h01 = -2 * t3 + 3 * t2;
                 double h11 = t3 - t2;
-
-                double segLength = segment.srt.projectZ().distanceTo(segment.end.projectZ());
-                double tangentScale = segLength * tangentStrength;
 
                 double x = h00 * segment.srt.x + h10 * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
                          + h01 * segment.end.x + h11 * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
@@ -1669,20 +1682,46 @@ public class DendrySampler implements Sampler {
                 double z = MathUtils.lerp(segment.srt.z, segment.end.z, t);
 
                 next = new Point3D(x, y, z);
+
+                // Compute tangent from Hermite spline derivative
+                // Derivative of Hermite basis functions:
+                // h00' = 6t^2 - 6t, h10' = 3t^2 - 4t + 1, h01' = -6t^2 + 6t, h11' = 3t^2 - 2t
+                double h00d = 6 * t2 - 6 * t;
+                double h10d = 3 * t2 - 4 * t + 1;
+                double h01d = -6 * t2 + 6 * t;
+                double h11d = 3 * t2 - 2 * t;
+
+                double dx = h00d * segment.srt.x + h10d * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
+                          + h01d * segment.end.x + h11d * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
+                double dy = h00d * segment.srt.y + h10d * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
+                          + h01d * segment.end.y + h11d * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
+
+                // Normalize to get unit tangent direction
+                double len = Math.sqrt(dx * dx + dy * dy);
+                if (len > MathUtils.EPSILON) {
+                    nextTangent = new Vec2D(dx / len, dy / len);
+                }
             } else {
                 next = Point3D.lerp(segment.srt, segment.end, t);
+
+                // For linear segments, tangent is just the direction from srt to end
+                double dx = segment.end.x - segment.srt.x;
+                double dy = segment.end.y - segment.srt.y;
+                double len = Math.sqrt(dx * dx + dy * dy);
+                if (len > MathUtils.EPSILON) {
+                    nextTangent = new Vec2D(dx / len, dy / len);
+                }
             }
 
-            // Apply small displacement for interior points (skip at level 0 to prevent crossings)
-            if (i < subdivisions) {
-                if (level > 0) {
+            // Apply jitter for interior points (skip at level 0 to prevent crossings)
+            if (i < divisions) {
+                if (level > 0 && maxJitter > MathUtils.EPSILON) {
                     Random rng = initRandomGenerator((int)(prev.x * 1000 + next.x * 500), (int)(prev.y * 1000), level + i);
-                    double displaceMag = 0.02 / Math.pow(2, level);
-                    double dx = (rng.nextDouble() * 2 - 1) * displaceMag;
-                    double dy = (rng.nextDouble() * 2 - 1) * displaceMag;
-                    next = new Point3D(next.x + dx, next.y + dy, next.z);
+                    double jitterX = (rng.nextDouble() * 2 - 1) * maxJitter;
+                    double jitterY = (rng.nextDouble() * 2 - 1) * maxJitter;
+                    next = new Point3D(next.x + jitterX, next.y + jitterY, next.z);
                 }
-                // At level 0, no displacement to prevent crossings
+                // At level 0, no jitter to prevent crossings
 
                 // Create new node for this subdivision point
                 int newIdx = nodes.size();
@@ -1690,42 +1729,31 @@ public class DendrySampler implements Sampler {
                 newNode.isSubdivisionPoint = true;
                 newNode.sourceLevel = level;
 
-                // Interpolate tangent
-                if (segment.tangentSrt != null && segment.tangentEnd != null) {
-                    newNode.tangent = new Vec2D(
-                        MathUtils.lerp(segment.tangentSrt.x, segment.tangentEnd.x, t),
-                        MathUtils.lerp(segment.tangentSrt.y, segment.tangentEnd.y, t)
-                    ).normalize();
+                // Store the inherited tangent from B-spline derivative
+                if (nextTangent != null) {
+                    newNode.tangent = nextTangent;
                 }
 
                 nodes.add(newNode);
                 chainNodeIndices.add(newIdx);
-
-                // Note: We'll set up Union-Find connections after all nodes are created
             }
 
-            // Determine endpoint types for this sub-segment
-            // First segment's srt is original (from srtIdx node), subsequent are subdivision
-            // Last segment's end is original (from endIdx node), others are subdivision
-            boolean prevIsOriginal = (result.isEmpty());  // First segment starts at original node
-            boolean nextIsOriginal = (i == subdivisions);  // Last segment ends at original node
+            // Determine endpoint types for this sub-segment using PointType enum
+            // First segment's srt keeps original type, subsequent are KNOT
+            // Last segment's end keeps original type, others are KNOT
+            PointType prevType = (result.isEmpty()) ? segment.srtType : PointType.KNOT;
+            PointType nextType = (i == divisions) ? segment.endType : PointType.KNOT;
 
-            result.add(new Segment3D(prev, next, segment.level, null, null, prevIsOriginal, nextIsOriginal));
+            // Create sub-segment with tangents for proper rendering
+            result.add(new Segment3D(prev, next, segment.level, prevTangent, nextTangent, prevType, nextType));
             prev = next;
+            prevTangent = nextTangent;
         }
 
         // Add end node to chain
         chainNodeIndices.add(endIdx);
 
-        // Now connect all nodes in the chain and update Union-Find
-        // First, ensure parent array is large enough (it may not be for new nodes)
-        int requiredSize = nodes.size();
-        if (parent.length < requiredSize) {
-            // Can't expand arrays passed by reference, but new nodes beyond array size
-            // won't participate in Union-Find chain detection (they're already connected)
-        }
-
-        // Connect each adjacent pair of nodes in the chain
+        // Connect all nodes in the chain and update Union-Find
         for (int i = 0; i < chainNodeIndices.size() - 1; i++) {
             int nodeA = chainNodeIndices.get(i);
             int nodeB = chainNodeIndices.get(i + 1);
@@ -3865,8 +3893,8 @@ public class DendrySampler implements Sampler {
                     int py = (int) (ay * pixelGridSize);
                     float elevation = (float) seg.srt.z;
                     byte level = (byte) seg.level;
-                    // pointType: 2 = original, 1 = subdivision
-                    byte pointType = seg.srtIsOriginal ? (byte) 2 : (byte) 1;
+                    // pointType from PointType enum value
+                    byte pointType = (byte) seg.srtType.getValue();
                     cache.markPointWithRadius(px, py, elevation, level, pointType, 2);
                 }
 
@@ -3876,8 +3904,8 @@ public class DendrySampler implements Sampler {
                     int py = (int) (by * pixelGridSize);
                     float elevation = (float) seg.end.z;
                     byte level = (byte) seg.level;
-                    // pointType: 2 = original, 1 = subdivision
-                    byte pointType = seg.endIsOriginal ? (byte) 2 : (byte) 1;
+                    // pointType from PointType enum value
+                    byte pointType = (byte) seg.endType.getValue();
                     cache.markPointWithRadius(px, py, elevation, level, pointType, 2);
                 }
             }
