@@ -73,7 +73,7 @@ public class DendrySampler implements Sampler {
     private static final double MAX_POINT_SEGMENT_DISTANCE = Math.sqrt(8) + 1.0 / 3.0;  // Max distance between adjacent stars after merging
 
     // Star sampling grid size (9x9 grid per cell)
-    private static final int STAR_SAMPLE_GRID_SIZE = 9;
+    private static final int STAR_SAMPLE_GRID_SIZE = 3;
 
     // Spline tangent parameters
     private final double tangentAngle;    // Max angle deviation (radians)
@@ -828,7 +828,7 @@ public class DendrySampler implements Sampler {
         // Step 2: Sample 9x9 grid in each cell to find candidate stars
         List<Point3D> draftedStars = new ArrayList<>();
         for (int[] cell : circumscribingCells) {
-            Point3D star = findStarInCell9x9(cell[0], cell[1]);
+            Point3D star = findStarInCelllLowestGrid(cell[0], cell[1]);
             if (star != null) {
                 draftedStars.add(star);
             }
@@ -911,22 +911,22 @@ public class DendrySampler implements Sampler {
      * Find the star (lowest elevation point) within a level 1 cell using 9x9 sampling.
      * If there are multiple points with the same lowest elevation, randomly select one.
      */
-    private Point3D findStarInCell9x9(int cellX, int cellY) {
+    private Point3D findStarInCelllLowestGrid(int cellX, int cellY) {
         // Generate deterministic jitter for this cell
         Random rng = initRandomGenerator(cellX, cellY, 0);
-        double jitterX = (rng.nextDouble() - 0.5) * 0.08;
-        double jitterY = (rng.nextDouble() - 0.5) * 0.08;
+        double jitterX = (rng.nextDouble() - 0.5) / STAR_SAMPLE_GRID_SIZE;
+        double jitterY = (rng.nextDouble() - 0.5) / STAR_SAMPLE_GRID_SIZE;
 
         double lowestElevation = Double.MAX_VALUE;
         List<double[]> lowestPoints = new ArrayList<>();
 
         for (int si = 0; si < STAR_SAMPLE_GRID_SIZE; si++) {
             for (int sj = 0; sj < STAR_SAMPLE_GRID_SIZE; sj++) {
-                double tx = 0.05 + 0.9 * (sj + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterX;
-                double ty = 0.05 + 0.9 * (si + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterY;
+                double tx = (sj + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterX;
+                double ty = (si + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterY;
 
-                tx = Math.max(0.02, Math.min(0.98, tx));
-                ty = Math.max(0.02, Math.min(0.98, ty));
+                tx = Math.max(0.0, Math.min(1.0, tx));
+                ty = Math.max(0.0, Math.min(1.0, ty));
 
                 double sampleX = cellX + tx;
                 double sampleY = cellY + ty;
@@ -2659,10 +2659,10 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * @deprecated Use findStarInCell9x9 instead
+     * @deprecated Use findStarInCelllLowestGrid instead
      */
     private Point3D findStarInCell(int cellX, int cellY) {
-        return findStarInCell9x9(cellX, cellY);
+        return findStarInCelllLowestGrid(cellX, cellY);
     }
 
     /**
