@@ -72,6 +72,13 @@ public class DendrySampler implements Sampler {
     private static final double MERGE_POINT_SPACING = 2.0 / 3.0;  // Stars closer than this get merged
     private static final double MAX_POINT_SEGMENT_DISTANCE = Math.sqrt(8) + 1.0 / 3.0;  // Max distance between adjacent stars after merging
 
+    // Slope calculation parameters for neighbor selection
+    // DistanceFalloffPower: Use dist^power in denominator to prefer tighter connections
+    private static final double DISTANCE_FALLOFF_POWER = 2.0;
+    // BranchEncouragementFactor: Multiply slope by this when neighbor has 2+ connections
+    // to encourage attaching to existing flows
+    private static final double BRANCH_ENCOURAGEMENT_FACTOR = 2.0;
+
     // Star sampling grid size (9x9 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
 
@@ -1022,6 +1029,7 @@ public class DendrySampler implements Sampler {
         int chainId;                       // Chain identifier for connectivity tracking
         boolean isSubdivisionPoint;        // True if this node was created by subdivision
         int sourceLevel;                   // Level of segment that created this point (for subdivision points)
+        PointType pointType;               // Type of this point (ORIGINAL, TRUNK, KNOT, LEAF)
 
         NetworkNode(Point3D point, int index) {
             this.point = point;
@@ -1034,6 +1042,7 @@ public class DendrySampler implements Sampler {
             this.chainId = index;  // Initially each node is its own chain
             this.isSubdivisionPoint = false;
             this.sourceLevel = -1;
+            this.pointType = PointType.ORIGINAL;  // Default for original points
         }
     }
 
@@ -1152,11 +1161,53 @@ public class DendrySampler implements Sampler {
             rank[i] = 0;
         }
 
-        // Phase A: Create initial downstream flows from highest to lowest elevation
-        // Process points without connections, from highest to next-to-lowest
+        // Phase A: Create initial downstream flows
         int maxIterations = nodes.size() * 3;  // Safety limit
         int iterations = 0;
 
+        // For level 0: Build trunk continuously from highest point
+        if (level == 0) {
+            // Start at highest elevation point
+            int currentNode = findHighestUnconnectedOriginalNode(nodes);
+            if (currentNode >= 0) {
+                nodes.get(currentNode).pointType = PointType.TRUNK;
+            }
+
+            // Continuously extend trunk until no more connections can be made
+            while (currentNode >= 0 && iterations < maxIterations) {
+                iterations++;
+
+                // Try to extend trunk from current node (isTrunk = true)
+                boolean success = createAndDefineSegment(nodes, allSegments, currentNode,
+                                                          maxDistSq, level, cellX, cellY,
+                                                          parent, rank, previousLevelSegments,
+                                                          true);  // isTrunk = true
+                if (!success) {
+                    break;  // Trunk is complete - no more downhill connections
+                }
+
+                // Get the last connected neighbor to continue from
+                currentNode = getLastConnectedNeighbor(nodes, currentNode);
+                if (currentNode >= 0) {
+                    nodes.get(currentNode).pointType = PointType.TRUNK;
+                }
+            }
+
+            // DEBUG: Return after trunk creation (SEGMENT_DEBUGGING == 15)
+            if (SEGMENT_DEBUGGING == 15) {
+                // Add 0-length segments for unconnected points for visualization
+                for (NetworkNode node : nodes) {
+                    if (node.connections.isEmpty() && !node.removed) {
+                        allSegments.add(new Segment3D(node.point, node.point, 0, null, null,
+                                                       node.pointType, node.pointType));
+                    }
+                }
+                LOGGER.info("SEGMENT_DEBUGGING=15: Returning after trunk ({} segments, {} nodes)", allSegments.size(), nodes.size());
+                return;
+            }
+        }
+
+        // For all levels: Process remaining unconnected points from highest to lowest
         while (iterations < maxIterations) {
             iterations++;
 
@@ -1164,10 +1215,11 @@ public class DendrySampler implements Sampler {
             int highestUnconnected = findHighestUnconnectedOriginalNode(nodes);
             if (highestUnconnected < 0) break;
 
-            // Attempt to create and fully define a segment
+            // Attempt to create and fully define a segment (isTrunk = false for branch connections)
             boolean success = createAndDefineSegment(nodes, allSegments, highestUnconnected,
                                                       maxDistSq, level, cellX, cellY,
-                                                      parent, rank, previousLevelSegments);
+                                                      parent, rank, previousLevelSegments,
+                                                      false);  // isTrunk = false
             if (!success) {
                 // No valid connection found - mark node so we don't try again
                 NetworkNode node = nodes.get(highestUnconnected);
@@ -1196,6 +1248,13 @@ public class DendrySampler implements Sampler {
         if (SEGMENT_DEBUGGING == 50) {
             LOGGER.info("SEGMENT_DEBUGGING=50: Returning after Phase B ({} segments, {} nodes)", allSegments.size(), nodes.size());
         }
+
+        // Mark leaf points (only connected to one other point)
+        for (NetworkNode node : nodes) {
+            if (!node.removed && node.connections.size() == 1 && !node.isSubdivisionPoint) {
+                node.pointType = PointType.LEAF;
+            }
+        }
     }
 
     /**
@@ -1222,20 +1281,35 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Get the last connected neighbor of a node (for trunk extension).
+     * Returns the most recently added connection, or -1 if no connections.
+     */
+    private int getLastConnectedNeighbor(List<NetworkNode> nodes, int nodeIdx) {
+        NetworkNode node = nodes.get(nodeIdx);
+        if (node.connections.isEmpty()) {
+            return -1;
+        }
+        // Return the last connection added (most recent)
+        return node.connections.get(node.connections.size() - 1);
+    }
+
+    /**
      * Create a connection and fully define the resulting segment.
      * This includes: connecting, computing tangents, subdividing, displacing.
      * Subdivision points are added back to the node list.
      *
+     * @param isTrunk True if building trunk (level 0), requires downhill flow
      * @return true if a segment was created, false if no valid connection found
      */
     private boolean createAndDefineSegment(List<NetworkNode> nodes, List<Segment3D> allSegments,
                                             int sourceIdx, double maxDistSq, int level,
                                             int cellX, int cellY, int[] parent, int[] rank,
-                                            List<Segment3D> previousLevelSegments) {
+                                            List<Segment3D> previousLevelSegments,
+                                            boolean isTrunk) {
         NetworkNode sourceNode = nodes.get(sourceIdx);
 
         // Find best neighbor: lowest slope, within distance, not already connected via path
-        int bestNeighbor = findBestNeighborForSegment(nodes, sourceIdx, maxDistSq, level, parent, allSegments);
+        int bestNeighbor = findBestNeighborForSegment(nodes, sourceIdx, maxDistSq, level, parent, allSegments, isTrunk);
         if (bestNeighbor < 0) {
             return false;
         }
@@ -1339,11 +1413,21 @@ public class DendrySampler implements Sampler {
 
     /**
      * Find best neighbor for segment creation.
-     * Must be within distance, have lowest slope, and not already connected via another path.
+     * Uses normalized slope with DistanceFalloffPower and BranchEncouragementFactor.
+     *
+     * @param nodes List of network nodes
+     * @param sourceIdx Index of source node
+     * @param maxDistSq Maximum distance squared for connection
+     * @param level Current resolution level
+     * @param parent Union-Find parent array
+     * @param existingSegments List of existing segments (unused but kept for API)
+     * @param isTrunk True if building the trunk (level 0), requires negative slope
+     * @return Index of best neighbor, or -1 if none found
      */
     private int findBestNeighborForSegment(List<NetworkNode> nodes, int sourceIdx,
                                             double maxDistSq, int level, int[] parent,
-                                            List<Segment3D> existingSegments) {
+                                            List<Segment3D> existingSegments,
+                                            boolean isTrunk) {
         NetworkNode sourceNode = nodes.get(sourceIdx);
         Point2D sourcePos = sourceNode.point.projectZ();
 
@@ -1368,9 +1452,29 @@ public class DendrySampler implements Sampler {
 
             if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
 
-            double slope = Math.abs(calculateSlope(sourceNode.point, candidate.point));
-            if (slope < bestSlope) {
-                bestSlope = slope;
+            // Calculate normalized slope with DistanceFalloffPower
+            // normalizedSlope = heightDiff / dist^DISTANCE_FALLOFF_POWER
+            double dist = Math.sqrt(distSq);
+            double heightDiff = candidate.point.z - sourceNode.point.z;
+            double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+
+            // Validity check based on context
+            if (isTrunk && normalizedSlope >= 0) {
+                continue;  // Trunk requires downhill flow (negative slope)
+            }
+            if (level > 0 && normalizedSlope > lowestSlopeCutoff) {
+                continue;  // Higher levels have slope cutoff
+            }
+
+            // Apply branch encouragement factor if candidate has 2+ connections
+            // (has a line passing through it - encourages attaching to existing flows)
+            double effectiveSlope = normalizedSlope;
+            if (candidate.connections.size() >= 2) {
+                effectiveSlope *= BRANCH_ENCOURAGEMENT_FACTOR;
+            }
+
+            if (effectiveSlope < bestSlope) {
+                bestSlope = effectiveSlope;
                 bestNeighbor = i;
             }
         }
@@ -1820,7 +1924,8 @@ public class DendrySampler implements Sampler {
             for (int nodeIdx : chainNodes) {
                 boolean success = createAndDefineSegment(nodes, allSegments, nodeIdx,
                                                           currentMaxDistSq, level, cellX, cellY,
-                                                          parent, rank, previousLevelSegments);
+                                                          parent, rank, previousLevelSegments,
+                                                          false);  // isTrunk = false for chain connections
                 if (success) {
                     connectionMade = true;
                     // Update root chain
