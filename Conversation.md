@@ -654,3 +654,11 @@ Something like "SegmentDebugging" where:
 30 - Return the segments for all the constellations including stitching, tied to their closest neighbor.
 40 - Return the segments up to the first call of phase A in CleanAndNetworkPoints
 50 - Return the segments up to the first call of phase B in CleanAndNetworkPoints
+
+###############################################################################
+
+I see with SEGMENT_DEBUGGING = 20, there is an empty space where there should be a at least one star from an asterism. Can you investigate if there is an issue with how some constellations are formed or bounded?  
+
+##############################################################################
+
+Add SEGMENT_DEBUGGING = 5, where the segments are constructed from the boundary of the Constellation, 

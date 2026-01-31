@@ -36,7 +36,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 10;
+    private static final int SEGMENT_DEBUGGING = 5;
 
     // Configuration parameters
     private final int resolution;
@@ -752,6 +752,15 @@ public class DendrySampler implements Sampler {
             // Generate stars for this constellation (with 9x9 sampling, merging, etc.)
             List<Point3D> stars = generateConstellationStarsNew(constX, constY);
 
+            if (SEGMENT_DEBUGGING == 5) {
+                // DEBUG: Return stars only as zero-length segments
+                List<Segment3D> starSegments = new ArrayList<>();
+                for (Point3D star : stars) {
+                    starSegments.add(new Segment3D(star, star));
+                }
+                LOGGER.info("SEGMENT_DEBUGGING=5: Returning stars only for constellation ({})", stars.size());
+                return starSegments;
+            }
             // Build network within constellation using CleanAndNetworkPoints (placeholder)
             List<Segment3D> segments = CleanAndNetworkPoints(constX, constY, 0, stars);
 
@@ -2624,6 +2633,7 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * 
      * @deprecated Use findFourClosestConstellations instead
      */
     private java.util.Set<Long> getRequiredConstellations(Cell queryCell1) {
