@@ -1437,7 +1437,8 @@ public class DendrySampler implements Sampler {
         // Subdivision count per level: 2, 3, 4, 5, 6 for levels 0-4
         int[] subdivisionsPerLevel = {2, 3, 4, 5, 6};
         int divisions = level < subdivisionsPerLevel.length ? subdivisionsPerLevel[level] : 6;
-        double jitterFactor = (level == 0) ? 0.0 : 0.5;  // No jitter at level 0 to prevent crossings
+        //double jitterFactor = (level == 0) ? 0.0 : 0.5;  // No jitter at level 0 to prevent crossings
+        double jitterFactor =  0.5;  // No jitter at level 0 to prevent crossings
         List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, divisions, jitterFactor, level, cellX, cellY, parent, rank, srtIdx, endIdx);
         allSegments.addAll(subdivided);
 
