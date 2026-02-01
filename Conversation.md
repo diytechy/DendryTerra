@@ -683,3 +683,36 @@ Make sure the Endpoint type flags for debug visualization is updated to an enum 
 ########################################################################
 
 After reviewing the output, segments are not connecting / branching as I would expect.  I suspect the points created as part of segment creation and subdivision are not being used when potential neighbors are being found for subsequent point connection.  I have attempted some clarifications in "NetworkingRules/md", please review this updated text, plan the implementation, ask clarifying questions if necessary, and implement the changes when ready.
+
+###################################################
+
+Reviewing the output, it appears the tree (which should be a single unbranched segment) does have branches.  Can you check to see:
+1. if some other process is adding segment branches when SEGMENT_DEBUGGING is set 15 after tree creation.
+2. If there is an issue in "PIXEL_DEBUG" that might result in additional segments appearing to get created.
+
+####################################################
+
+Now add a hard-coded option in the method / function which populates pixes for the PIXEL_DEBUG return method to populate the pixels based on the evaluated b-spline using the segment tangent information, instead of what appears to be current linear interpolation.
+
+#######################################################
+
+I see discontinuities with some segments which I believe is due to tangent creation.  I have updated "NetworkingRules.md" with lines 68/69 to help verify tangent behavior in some cases to ensure continuous segments (those that do not branch) have continuous curves.  Please verify the tangents are inverted when two "end" points meet according to this logic.
+
+Please also add a hard-coded flag to allow the routine to terminate with an error if any constellation segments are returned with an undefined tangent.
+
+########################################
+I zoomed in and I see what appeared to be discontinuities are actually overlapping lines that tightly looped near the node.  Can you investigate why the tangent appears to have a vector that is moving against the segment flow direction?  The cross-product of the segment vector onto the slope vector should still yield a vector moving away from the start point, and even with the random twist applied I would not expect the deviation I saw (which appeared to be about 170 degrees)
+
+I have added line 79 to "NetworkingRules.md" to attempt to bound tangents that point against the flow path, but it is not clear to me how the tangents are flowing backwards at all.  Is the tangent calculated for the point before it is adopted by segments normalized?
+
+
+
+
+
+
+
+#################################3
+
+FUTURE:
+
+I think the class NetworkNode is uneccessary.  Into a network there are 3d points, and the output is segments.  As long as NetworkNode is intermediary, but my concern is duplicate information.

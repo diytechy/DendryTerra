@@ -1417,8 +1417,9 @@ public class DendrySampler implements Sampler {
 
         // Compute tangents for both endpoints
         // forStart=true for srt (start point), forStart=false for end (end point)
-        tangentSrt = computeNodeTangent(nodes, srtIdx, isBranch && srtIdx == sourceIdx, true, allSegments, cellX, cellY);
-        tangentEnd = computeNodeTangent(nodes, endIdx, isBranch && endIdx == sourceIdx, false, allSegments, cellX, cellY);
+        // Pass the other endpoint so tangent can be computed relative to segment direction
+        tangentSrt = computeNodeTangent(nodes, srtIdx, endPoint, isBranch && srtIdx == sourceIdx, true, allSegments, cellX, cellY);
+        tangentEnd = computeNodeTangent(nodes, endIdx, srtPoint, isBranch && endIdx == sourceIdx, false, allSegments, cellX, cellY);
 
         // Store tangents in nodes for future reference (only if not already set)
         if (nodes.get(srtIdx).tangent == null) {
@@ -1691,20 +1692,39 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Compute tangent for a node based on its connections.
+     * Compute tangent for a node based on its connections and segment direction.
      * Handles tangent continuity: when connecting to an existing tangent,
      * inverts if both are used as the same type (both start or both end).
+     * Tangent is computed as blend of segment direction and slope direction,
+     * then clamped to ±60° of segment direction.
      *
      * @param nodes List of network nodes
      * @param nodeIdx Index of the node to compute tangent for
+     * @param otherPoint The other endpoint of the segment being created (for direction reference)
      * @param isBranchEnd True if this node is a branch endpoint
      * @param forStart True if tangent is for use as segment start, false for end
      * @param allSegments List of all segments to derive tangent usage from
      * @param cellX, cellY Cell coordinates for RNG seeding
      */
-    private Vec2D computeNodeTangent(List<NetworkNode> nodes, int nodeIdx, boolean isBranchEnd,
-                                      boolean forStart, List<Segment3D> allSegments, int cellX, int cellY) {
+    private Vec2D computeNodeTangent(List<NetworkNode> nodes, int nodeIdx, Point3D otherPoint,
+                                      boolean isBranchEnd, boolean forStart,
+                                      List<Segment3D> allSegments, int cellX, int cellY) {
         NetworkNode node = nodes.get(nodeIdx);
+
+        // Compute segment direction (always points in flow direction: srt -> end)
+        Vec2D segmentDir;
+        if (forStart) {
+            // For start point, segment direction is from this node toward otherPoint
+            segmentDir = new Vec2D(node.point.projectZ(), otherPoint.projectZ());
+        } else {
+            // For end point, segment direction is from otherPoint toward this node
+            segmentDir = new Vec2D(otherPoint.projectZ(), node.point.projectZ());
+        }
+        if (segmentDir.lengthSquared() > MathUtils.EPSILON) {
+            segmentDir = segmentDir.normalize();
+        } else {
+            segmentDir = new Vec2D(1, 0);  // Fallback
+        }
 
         // If node already has a tangent, handle continuity
         if (node.tangent != null) {
@@ -1724,13 +1744,17 @@ public class DendrySampler implements Sampler {
             // Check if we need to invert for continuity
             // Flow-through (srt→end or end→srt): tangents should be identical
             // Same-type (srt→srt or end→end): tangent should be inverted
+            Vec2D continuityTangent;
             if (existingWasForStart == forStart) {
                 // Same type connection (both start or both end) - invert tangent
-                return new Vec2D(-node.tangent.x, -node.tangent.y);
+                continuityTangent = new Vec2D(-node.tangent.x, -node.tangent.y);
             } else {
                 // Flow-through connection - use tangent as-is
-                return node.tangent;
+                continuityTangent = node.tangent;
             }
+
+            // Clamp continuity tangent to ±60° of segment direction
+            return clampTangentToSegmentDirection(continuityTangent, segmentDir);
         }
 
         // Determine twist: random ±50° * max((1 - |slope|/SlopeWhenStraight), 0)
@@ -1742,35 +1766,58 @@ public class DendrySampler implements Sampler {
         Vec2D nominalTangent;
 
         if (isBranchEnd) {
-            // Branch tangent: will be computed later based on main flow
-            // For now, use point's own tangent
-            nominalTangent = getTangentFromPoint(node.point);
-        } else if (node.connections.size() >= 2) {
-            // Two or more connections: tangent is direction between first two
-            Point3D p1 = nodes.get(node.connections.get(0)).point;
-            Point3D p2 = nodes.get(node.connections.get(1)).point;
-            nominalTangent = new Vec2D(p1.projectZ(), p2.projectZ());
-            if (nominalTangent.lengthSquared() > MathUtils.EPSILON) {
-                nominalTangent = nominalTangent.normalize();
-            } else {
-                nominalTangent = getTangentFromPoint(node.point);
-            }
-        } else if (node.connections.size() == 1) {
-            // Single connection: tangent points toward/away from connected node
-            Point3D connected = nodes.get(node.connections.get(0)).point;
-            nominalTangent = new Vec2D(node.point.projectZ(), connected.projectZ());
-            if (nominalTangent.lengthSquared() > MathUtils.EPSILON) {
-                nominalTangent = nominalTangent.normalize();
-            } else {
-                nominalTangent = getTangentFromPoint(node.point);
-            }
+            // Branch tangent: random offset of 110-170° from segment direction
+            // on the same side as the flow
+            double branchAngle = Math.toRadians(110 + rng.nextDouble() * 60);  // 110-170°
+            if (rng.nextBoolean()) branchAngle = -branchAngle;  // Random side
+            nominalTangent = rotateTangent(segmentDir, branchAngle);
         } else {
-            // No connections yet: use point's own tangent from slope
-            nominalTangent = getTangentFromPoint(node.point);
+            // Blend segment direction with slope direction per NetworkingRules line 73-74
+            Vec2D slopeTangent = getTangentFromPoint(node.point);
+
+            // Average the angles of segment direction and slope tangent
+            double segAngle = Math.atan2(segmentDir.y, segmentDir.x);
+            double slopeAngle = Math.atan2(slopeTangent.y, slopeTangent.x);
+
+            // Handle angle wrapping for proper averaging
+            double angleDiff = slopeAngle - segAngle;
+            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+            // Average is segAngle + half the difference
+            double avgAngle = segAngle + angleDiff * 0.5;
+
+            nominalTangent = new Vec2D(Math.cos(avgAngle), Math.sin(avgAngle));
         }
 
         // Apply twist rotation
-        return rotateTangent(nominalTangent, twistAngle);
+        Vec2D twistedTangent = rotateTangent(nominalTangent, twistAngle);
+
+        // Clamp to ±60° of segment direction per NetworkingRules line 79
+        return clampTangentToSegmentDirection(twistedTangent, segmentDir);
+    }
+
+    /**
+     * Clamp a tangent vector to be within ±60° of the segment direction.
+     */
+    private Vec2D clampTangentToSegmentDirection(Vec2D tangent, Vec2D segmentDir) {
+        double tangentAngle = Math.atan2(tangent.y, tangent.x);
+        double segmentAngle = Math.atan2(segmentDir.y, segmentDir.x);
+
+        double angleDiff = tangentAngle - segmentAngle;
+        while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+        while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+        double maxAngle = Math.toRadians(60);  // ±60° limit
+        if (angleDiff > maxAngle) {
+            double clampedAngle = segmentAngle + maxAngle;
+            return new Vec2D(Math.cos(clampedAngle), Math.sin(clampedAngle));
+        } else if (angleDiff < -maxAngle) {
+            double clampedAngle = segmentAngle - maxAngle;
+            return new Vec2D(Math.cos(clampedAngle), Math.sin(clampedAngle));
+        }
+
+        return tangent;  // Within bounds
     }
 
     /**

@@ -76,4 +76,6 @@ Connection rules (for creating a connection and detailing the segment):
             Else for remaining segments that are entering as branches:
                 The branch tangent will be a random offset of 110 to 170 degrees from the tangent of the other segments that are already connected to this point, on the same side as the other point of the segment.
 
+    For each new tangent, verify the vector is within 60 degrees of the segment tangent (start to end angle).  If it is not, saturate the new tangent to those bounds.
+    
     Finally, the segment should be subdivided according to the subdivisions per level (can be hard-coded per level) and displaced as should be done in subdivideAndAddPoints .  The new segments should be added into the segment pool list so they can be used / connected to as a part of CleanAndNetworkPoints.
