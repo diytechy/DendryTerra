@@ -713,6 +713,20 @@ Additional changes to make:
 2. Curvatures look very minimal.  Set tangent magnitudes to scale with "merge point spacing" when tangents are assigned along with scaler constant so that curvature is more pronounced (this assumes segments are getting created / interpreted as hermite splines)
 
 
+################################
+
+stitchConstellationsNew needs some fixes.  Please update the following:
+
+1. The constellation will only have stitches created for their adjacent connections.  This means a for loop will only go through the constellations a single time, each time a constellation should be stitched into the next constellation.
+2. Up to the 6 pairs closest pairs between the two constellations will be evaluated.
+3. The pair with the lowest max elevation between the two points will be selected to stitch the two continents together.
+4. For each end of the stitch line:
+    A. If the connection to the constellation is only connected to a single other point (the connection is a leaf) the tangent will be set so that the two segments are continuous.
+    B. If the connection to the constellation is connected to two other points, the tangent can be set to match either related tangents.
+    C. Tangent strength should use an identical methodology to that used in createAndDefineSegment.
+5. After stitch creation, the segment should be subdivided using the same methodology as createAndDefineSegment, using subdivideAndAddPoints.
+
+
 #################################
 
 FUTURE:

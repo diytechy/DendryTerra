@@ -37,7 +37,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 20;
+    private static final int SEGMENT_DEBUGGING = 30;
 
     // Configuration parameters
     private final int resolution;
@@ -811,8 +811,7 @@ public class DendrySampler implements Sampler {
         }
 
         // Stitch adjacent constellations together at their boundaries
-        // (Placeholder - exact stitching method TBD)
-        List<Segment3D> stitchSegments = stitchConstellationsNew(closestConstellations, constellationStars);
+        List<Segment3D> stitchSegments = stitchConstellationsNew(closestConstellations, constellationStars, constellationSegments);
 
         // DEBUG: Return all segments including stitching
         if (SEGMENT_DEBUGGING == 30) {
@@ -2782,52 +2781,112 @@ public class DendrySampler implements Sampler {
      *    - If connecting to end of line: use continuous tangent
      *    - If connecting to middle of line: use 20-80° offset from continuous tangent
      */
+    /**
+     * Stitch adjacent constellations together.
+     * For each pair of adjacent constellations:
+     * 1. Find up to 6 closest pairs between them
+     * 2. Select the pair with lowest max elevation
+     * 3. Create stitch segment with proper tangents based on connection type
+     * 4. Subdivide the stitch segment
+     */
     private List<Segment3D> stitchConstellationsNew(List<long[]> constellations,
-                                                     Map<Long, List<Point3D>> constellationStars) {
+                                                     Map<Long, List<Point3D>> constellationStars,
+                                                     Map<Long, List<Segment3D>> constellationSegments) {
         List<Segment3D> stitchSegments = new ArrayList<>();
-        double maxDistSq = MAX_POINT_SEGMENT_DISTANCE * MAX_POINT_SEGMENT_DISTANCE * getConstellationSize() * getConstellationSize();
 
-        // Check each pair of adjacent constellations
+        if (constellations.size() < 2) {
+            return stitchSegments;
+        }
+
+        // Stitch each constellation to its adjacent neighbor (single pass)
+        // Adjacent means: 0->1, 1->2, 2->3, and 3->0 to close the loop
         for (int i = 0; i < constellations.size(); i++) {
-            for (int j = i + 1; j < constellations.size(); j++) {
-                long keyI = packKey((int) constellations.get(i)[0], (int) constellations.get(i)[1]);
-                long keyJ = packKey((int) constellations.get(j)[0], (int) constellations.get(j)[1]);
+            int j = (i + 1) % constellations.size();
 
-                List<Point3D> starsI = constellationStars.get(keyI);
-                List<Point3D> starsJ = constellationStars.get(keyJ);
+            long keyI = packKey((int) constellations.get(i)[0], (int) constellations.get(i)[1]);
+            long keyJ = packKey((int) constellations.get(j)[0], (int) constellations.get(j)[1]);
 
-                if (starsI == null || starsJ == null || starsI.isEmpty() || starsJ.isEmpty()) continue;
+            List<Point3D> starsI = constellationStars.get(keyI);
+            List<Point3D> starsJ = constellationStars.get(keyJ);
+            List<Segment3D> segmentsI = constellationSegments.get(keyI);
+            List<Segment3D> segmentsJ = constellationSegments.get(keyJ);
 
-                // Find best pair with smallest absolute slope within distance
-                Point3D bestI = null, bestJ = null;
-                double bestSlope = Double.MAX_VALUE;
+            if (starsI == null || starsJ == null || starsI.isEmpty() || starsJ.isEmpty()) continue;
+            if (segmentsI == null) segmentsI = List.of();
+            if (segmentsJ == null) segmentsJ = List.of();
 
-                for (Point3D pI : starsI) {
-                    for (Point3D pJ : starsJ) {
-                        double distSq = pI.projectZ().distanceSquaredTo(pJ.projectZ());
-                        if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
+            // Find up to 6 closest pairs between the two constellations
+            List<double[]> candidatePairs = new ArrayList<>();  // [distSq, idxI, idxJ, maxElevation]
 
-                        double slope = Math.abs(calculateSlope(pI, pJ));
-                        if (slope < bestSlope) {
-                            bestSlope = slope;
-                            bestI = pI;
-                            bestJ = pJ;
-                        }
-                    }
+            for (int pi = 0; pi < starsI.size(); pi++) {
+                Point3D pI = starsI.get(pi);
+                for (int pj = 0; pj < starsJ.size(); pj++) {
+                    Point3D pJ = starsJ.get(pj);
+                    double distSq = pI.projectZ().distanceSquaredTo(pJ.projectZ());
+                    if (distSq < MathUtils.EPSILON) continue;
+
+                    double maxElevation = Math.max(pI.z, pJ.z);
+                    candidatePairs.add(new double[]{distSq, pi, pj, maxElevation});
                 }
+            }
 
-                if (bestI != null && bestJ != null) {
-                    // Determine tangents based on connection type
-                    Vec2D tangentI = computeStitchTangent(bestI, starsI, keyI);
-                    Vec2D tangentJ = computeStitchTangent(bestJ, starsJ, keyJ);
+            // Sort by distance and take up to 6 closest
+            candidatePairs.sort((a, b) -> Double.compare(a[0], b[0]));
+            int pairsToConsider = Math.min(6, candidatePairs.size());
 
-                    // Order by elevation (a is start/higher)
-                    if (bestI.z >= bestJ.z) {
-                        stitchSegments.add(new Segment3D(bestI, bestJ, 0, tangentI, tangentJ));
-                    } else {
-                        stitchSegments.add(new Segment3D(bestJ, bestI, 0, tangentJ, tangentI));
-                    }
+            if (pairsToConsider == 0) continue;
+
+            // From the closest 6, select the one with lowest max elevation
+            double[] bestPair = null;
+            double lowestMaxElevation = Double.MAX_VALUE;
+
+            for (int k = 0; k < pairsToConsider; k++) {
+                double[] pair = candidatePairs.get(k);
+                if (pair[3] < lowestMaxElevation) {
+                    lowestMaxElevation = pair[3];
+                    bestPair = pair;
                 }
+            }
+
+            if (bestPair == null) continue;
+
+            Point3D bestI = starsI.get((int) bestPair[1]);
+            Point3D bestJ = starsJ.get((int) bestPair[2]);
+
+            // Determine tangents based on connection type using segment information
+            Vec2D tangentI = computeStitchTangentFromSegments(bestI, segmentsI, keyI);
+            Vec2D tangentJ = computeStitchTangentFromSegments(bestJ, segmentsJ, keyJ);
+
+            // Order by elevation (srt is higher elevation)
+            Point3D srtPoint, endPoint;
+            Vec2D tangentSrt, tangentEnd;
+            if (bestI.z >= bestJ.z) {
+                srtPoint = bestI;
+                endPoint = bestJ;
+                tangentSrt = tangentI;
+                tangentEnd = tangentJ;
+            } else {
+                srtPoint = bestJ;
+                endPoint = bestI;
+                tangentSrt = tangentJ;
+                tangentEnd = tangentI;
+            }
+
+            // Create the stitch segment
+            Segment3D stitchSegment = new Segment3D(srtPoint, endPoint, 0, tangentSrt, tangentEnd);
+
+            // Subdivide using same methodology as createAndDefineSegment
+            double gridSpacing = 1.0;  // Level 0 grid spacing
+            double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
+            double segmentLength = srtPoint.projectZ().distanceTo(endPoint.projectZ());
+            int divisions = Math.max(1, (int) Math.floor(segmentLength / mergeDistance));
+
+            if (divisions > 1) {
+                // Subdivide without adding to nodes (stitches don't participate in further networking)
+                List<Segment3D> subdivided = subdivideStitchSegment(stitchSegment, divisions, mergeDistance);
+                stitchSegments.addAll(subdivided);
+            } else {
+                stitchSegments.add(stitchSegment);
             }
         }
 
@@ -2835,64 +2894,144 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Compute tangent for a stitch point.
+     * Compute tangent for a stitch point based on its segment connections.
+     * If leaf (1 connection): tangent for continuity with connected segment
+     * If middle (2+ connections): match one of the related tangents
      */
-    private Vec2D computeStitchTangent(Point3D point, List<Point3D> allStars, long constellationKey) {
-        // Check if this point is at the end of a line (has only one nearby connection)
-        // or in the middle of a line (has two nearby connections)
+    private Vec2D computeStitchTangentFromSegments(Point3D point, List<Segment3D> segments, long constellationKey) {
+        // Find segments connected to this point
+        List<Segment3D> connectedSegments = new ArrayList<>();
+        List<Boolean> isStartPoint = new ArrayList<>();  // Track if point is srt or end of segment
 
-        int nearbyCount = 0;
-        Point3D nearestNeighbor = null;
-        double nearestDist = Double.MAX_VALUE;
-        Point3D secondNearest = null;
-        double secondDist = Double.MAX_VALUE;
-
-        double maxDistSq = MAX_POINT_SEGMENT_DISTANCE * MAX_POINT_SEGMENT_DISTANCE;
-
-        for (Point3D star : allStars) {
-            if (star == point) continue;
-            double distSq = point.projectZ().distanceSquaredTo(star.projectZ());
-            if (distSq < maxDistSq) {
-                nearbyCount++;
-                if (distSq < nearestDist) {
-                    secondDist = nearestDist;
-                    secondNearest = nearestNeighbor;
-                    nearestDist = distSq;
-                    nearestNeighbor = star;
-                } else if (distSq < secondDist) {
-                    secondDist = distSq;
-                    secondNearest = star;
-                }
+        for (Segment3D seg : segments) {
+            if (pointsMatch(seg.srt, point)) {
+                connectedSegments.add(seg);
+                isStartPoint.add(true);
+            } else if (pointsMatch(seg.end, point)) {
+                connectedSegments.add(seg);
+                isStartPoint.add(false);
             }
         }
 
-        if (nearbyCount <= 1 && nearestNeighbor != null) {
-            // End of line: use continuous tangent (direction from neighbor to point)
-            Vec2D tangent = new Vec2D(nearestNeighbor.projectZ(), point.projectZ());
+        if (connectedSegments.isEmpty()) {
+            // No connections - use slope-based tangent
+            return getTangentFromPoint(point);
+        }
+
+        if (connectedSegments.size() == 1) {
+            // Leaf node (single connection): set tangent for continuity
+            Segment3D seg = connectedSegments.get(0);
+            boolean isSrt = isStartPoint.get(0);
+
+            // Get the tangent from the connected segment for continuity
+            // If point is srt of segment, we want tangentSrt; if end, we want tangentEnd
+            Vec2D existingTangent = isSrt ? seg.tangentSrt : seg.tangentEnd;
+
+            if (existingTangent != null) {
+                // For a leaf extending outward, the stitch tangent should continue the flow
+                // If this point is the end of the segment, tangent points inward, so we use as-is
+                // If this point is the start of the segment, we're going against flow, so invert
+                if (isSrt) {
+                    return new Vec2D(-existingTangent.x, -existingTangent.y);
+                } else {
+                    return existingTangent;
+                }
+            }
+
+            // Fallback: direction from other endpoint to this point
+            Point3D other = isSrt ? seg.end : seg.srt;
+            Vec2D tangent = new Vec2D(other.projectZ(), point.projectZ());
             if (tangent.lengthSquared() > MathUtils.EPSILON) {
                 return tangent.normalize();
             }
-        } else if (nearbyCount >= 2 && nearestNeighbor != null && secondNearest != null) {
-            // Middle of line: use 20-80° offset from continuous tangent
-            Vec2D flowTangent = new Vec2D(nearestNeighbor.projectZ(), secondNearest.projectZ());
-            if (flowTangent.lengthSquared() > MathUtils.EPSILON) {
-                flowTangent = flowTangent.normalize();
+        } else {
+            // Middle node (2+ connections): match one of the related tangents
+            // Pick the tangent from the first connected segment
+            Segment3D seg = connectedSegments.get(0);
+            boolean isSrt = isStartPoint.get(0);
+            Vec2D existingTangent = isSrt ? seg.tangentSrt : seg.tangentEnd;
 
-                // Deterministic random angle between 20-80 degrees
-                Random rng = initRandomGenerator((int)(point.x * 1000), (int)(point.y * 1000), (int)(constellationKey % 1000));
-                double offsetAngle = Math.toRadians(20 + rng.nextDouble() * 60);
-
-                // Choose side based on position
-                if (rng.nextBoolean()) {
-                    offsetAngle = -offsetAngle;
-                }
-
-                return rotateTangent(flowTangent, offsetAngle);
+            if (existingTangent != null) {
+                return existingTangent;
             }
         }
 
-        // Default: use point's own tangent if available
+        // Default fallback
         return getTangentFromPoint(point);
+    }
+
+    /**
+     * Subdivide a stitch segment using Hermite spline interpolation.
+     * Similar to subdivideAndAddPoints but without node tracking.
+     */
+    private List<Segment3D> subdivideStitchSegment(Segment3D segment, int divisions, double mergeDistance) {
+        List<Segment3D> result = new ArrayList<>();
+
+        if (divisions <= 1) {
+            result.add(segment);
+            return result;
+        }
+
+        double segLength2D = segment.srt.projectZ().distanceTo(segment.end.projectZ());
+        double tangentScale = mergeDistance * TANGENT_MAGNITUDE_SCALE * tangentStrength;
+
+        Point3D prev = segment.srt;
+        Vec2D prevTangent = segment.tangentSrt;
+
+        for (int i = 1; i <= divisions; i++) {
+            double t = (double) i / divisions;
+            Point3D next;
+            Vec2D nextTangent;
+
+            if (i == divisions) {
+                next = segment.end;
+                nextTangent = segment.tangentEnd;
+            } else if (segment.hasTangents()) {
+                // Cubic Hermite spline interpolation
+                double t2 = t * t;
+                double t3 = t2 * t;
+                double h00 = 2 * t3 - 3 * t2 + 1;
+                double h10 = t3 - 2 * t2 + t;
+                double h01 = -2 * t3 + 3 * t2;
+                double h11 = t3 - t2;
+
+                double x = h00 * segment.srt.x + h10 * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
+                         + h01 * segment.end.x + h11 * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
+                double y = h00 * segment.srt.y + h10 * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
+                         + h01 * segment.end.y + h11 * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
+                double z = MathUtils.lerp(segment.srt.z, segment.end.z, t);
+
+                next = new Point3D(x, y, z);
+
+                // Compute tangent from spline derivative
+                double h00d = 6 * t2 - 6 * t;
+                double h10d = 3 * t2 - 4 * t + 1;
+                double h01d = -6 * t2 + 6 * t;
+                double h11d = 3 * t2 - 2 * t;
+
+                double dx = h00d * segment.srt.x + h10d * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
+                          + h01d * segment.end.x + h11d * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
+                double dy = h00d * segment.srt.y + h10d * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
+                          + h01d * segment.end.y + h11d * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
+
+                double len = Math.sqrt(dx * dx + dy * dy);
+                nextTangent = (len > MathUtils.EPSILON) ? new Vec2D(dx / len, dy / len) : prevTangent;
+            } else {
+                // Linear interpolation
+                next = Point3D.lerp(segment.srt, segment.end, t);
+                nextTangent = segment.tangentEnd;
+            }
+
+            // Create subdivision segment
+            PointType srtType = (i == 1) ? segment.srtType : PointType.KNOT;
+            PointType endType = (i == divisions) ? segment.endType : PointType.KNOT;
+            result.add(new Segment3D(prev, next, 0, prevTangent, nextTangent, srtType, endType));
+
+            prev = next;
+            prevTangent = nextTangent;
+        }
+
+        return result;
     }
 
     // ========== Legacy constellation methods (kept for compatibility) ==========
