@@ -771,7 +771,15 @@ There are fundamental issues in the way constellation coordinates are handled. f
 
 1. Revise "findFourClosestConstellations", finding the 4 constellations that are closest should be sufficient for all shapes to connect their neighbors.
 
+#####################################################
 
+Constellation indexes should not exist at all.
+
+Ex:
+int baseConstX = baseIndices[0];
+int baseConstY = baseIndices[1];
+
+Update findClosestConstellations again, get the center of the constellation for the current query point (queryCenterX,queryCenterY), find other constellations by applying thn corresponding x / y offsets according to the shape to the initial center constellation.  generateConstellationStarsNew should use startCell and cellCount to form the draft star points.
 
 
 FUTURE:
