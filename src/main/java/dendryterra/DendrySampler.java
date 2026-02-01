@@ -30,6 +30,7 @@ public class DendrySampler implements Sampler {
      *
      * Values:
      *   0  - Normal operation (default)
+     *   5  - Return stars as 0 length segments
      *  10  - Return segments for FIRST constellation only, before stitching
      *  15  - Return segments for ALL constellations, before stitching, only tree
      *  20  - Return segments for ALL constellations, before stitching
@@ -674,22 +675,25 @@ public class DendrySampler implements Sampler {
 
     /**
      * Get constellation center position for given constellation indices.
-     * Constellations are centered at 0,0 and tile outward.
+     * Returns the geometric center of the constellation's domain.
+     * For SQUARE with ConstellationScale=1, constellation (0,0) is centered at (1.5, 1.5).
      */
     private Point2D getConstellationCenter(int constX, int constY) {
         double size = getConstellationSize();
         switch (constellationShape) {
             case HEXAGON:
-                // Hexagonal offset pattern
+                // Hexagonal offset pattern - center at middle of domain, not corner
                 double hexOffsetX = (constY % 2 == 0) ? 0 : size * 0.5;
-                return new Point2D(constX * size + hexOffsetX, constY * size * 0.866); // 0.866 = sqrt(3)/2
+                return new Point2D((constX + 0.5) * size + hexOffsetX, (constY + 0.5) * size * 0.866); // 0.866 = sqrt(3)/2
             case RHOMBUS:
-                // Rhombus (diamond) offset pattern
+                // Rhombus (diamond) offset pattern - center at middle of domain, not corner
                 double rhombOffsetX = constY * size * 0.5;
-                return new Point2D(constX * size + rhombOffsetX, constY * size * 0.707); // 0.707 = sqrt(2)/2
+                return new Point2D((constX + 0.5) * size + rhombOffsetX, (constY + 0.5) * size * 0.707); // 0.707 = sqrt(2)/2
             case SQUARE:
             default:
-                return new Point2D(constX * size, constY * size);
+                // Center at the middle of the domain, not the corner
+                // Domain for constellation i is [i*size, (i+1)*size), so center is at (i+0.5)*size
+                return new Point2D((constX + 0.5) * size, (constY + 0.5) * size);
         }
     }
 
@@ -879,11 +883,9 @@ public class DendrySampler implements Sampler {
         // Step 3: Remove stars outside constellation boundary or within half merge spacing from boundary
         List<Point3D> boundedStars = new ArrayList<>();
         for (Point3D star : draftedStars) {
-            double distFromCenter = star.projectZ().distanceTo(center);
-            double boundaryDist = getConstellationBoundaryDistance(star.projectZ(), center, size);
-
-            // Keep star if it's inside and not too close to boundary
-            if (distFromCenter < boundaryDist - halfMergeSpacing) {
+            // Keep star if it's inside boundary with margin of halfMergeSpacing
+            // Uses shape-appropriate distance (Chebyshev for SQUARE, etc.)
+            if (isInsideConstellationBoundary(star.projectZ(), center, size, halfMergeSpacing)) {
                 boundedStars.add(star);
             }
         }
@@ -893,8 +895,21 @@ public class DendrySampler implements Sampler {
 
         // Debug logging for star counts
         if (SEGMENT_DEBUGGING > 0) {
-            LOGGER.info("  -> drafted={}, bounded={}, merged={} stars",
-                draftedStars.size(), boundedStars.size(), mergedStars.size());
+            // Calculate bounding box of drafted stars
+            double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
+            double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+            for (Point3D star : draftedStars) {
+                minX = Math.min(minX, star.x);
+                minY = Math.min(minY, star.y);
+                maxX = Math.max(maxX, star.x);
+                maxY = Math.max(maxY, star.y);
+            }
+            LOGGER.info("  -> drafted={}, bounded={}, merged={} stars (size={}, halfMerge={}, center=({},{}), draftBounds=[{},{} to {},{}])",
+                draftedStars.size(), boundedStars.size(), mergedStars.size(),
+                String.format("%.3f", size), String.format("%.3f", halfMergeSpacing),
+                String.format("%.2f", center.x), String.format("%.2f", center.y),
+                String.format("%.2f", minX), String.format("%.2f", minY),
+                String.format("%.2f", maxX), String.format("%.2f", maxY));
         }
 
         return mergedStars;
@@ -937,21 +952,32 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Get distance from constellation center to boundary in direction of point.
+     * Check if a point is inside the constellation boundary (with optional margin).
+     * For SQUARE, uses Chebyshev distance (max of |dx|, |dy|) instead of Euclidean.
+     *
+     * @param point The point to check
+     * @param center The constellation center
+     * @param size The constellation size
+     * @param margin Distance inside the boundary to check (positive = stricter)
+     * @return true if point is inside boundary minus margin
      */
-    private double getConstellationBoundaryDistance(Point2D point, Point2D center, double size) {
+    private boolean isInsideConstellationBoundary(Point2D point, Point2D center, double size, double margin) {
+        double dx = Math.abs(point.x - center.x);
+        double dy = Math.abs(point.y - center.y);
+        double halfSize = size / 2.0;
+
         switch (constellationShape) {
             case HEXAGON:
-                // Hexagon boundary distance (approximate)
-                return size * 0.5; // Simplified
+                // Hexagon: approximate using Euclidean distance
+                double dist = Math.sqrt(dx * dx + dy * dy);
+                return dist < halfSize - margin;
             case RHOMBUS:
-                // Rhombus boundary distance
-                double dx = Math.abs(point.x - center.x);
-                double dy = Math.abs(point.y - center.y);
-                return size * 0.5 / Math.max(dx + dy, 0.001) * size * 0.5;
+                // Rhombus: sum of |dx| + |dy| defines boundary
+                return (dx + dy) < halfSize - margin;
             case SQUARE:
             default:
-                return size / 2.0;
+                // Square: use Chebyshev distance (max of |dx|, |dy|)
+                return Math.max(dx, dy) < halfSize - margin;
         }
     }
 
@@ -1009,32 +1035,54 @@ public class DendrySampler implements Sampler {
 
     /**
      * Merge stars that are closer than MERGE_POINT_SPACING.
-     * When merging, keeps the star with lowest elevation.
+     * Uses shared merge function, prioritizing lower elevation stars.
      */
     private List<Point3D> mergeCloseStars(List<Point3D> stars) {
-        if (stars.size() <= 1) return new ArrayList<>(stars);
+        return mergePointsByDistance(stars, MERGE_POINT_SPACING, true);
+    }
 
-        List<Point3D> result = new ArrayList<>(stars);
-        boolean merged;
+    /**
+     * Merge points that are within mergeDistance of each other.
+     * Uses a greedy algorithm that maximizes the number of remaining points:
+     * 1. Sort points by priority (elevation - lower first if preferLowElevation)
+     * 2. Process each point in order, keeping it only if not within mergeDistance of any kept point
+     *
+     * @param points List of points to merge
+     * @param mergeDistance Minimum distance between kept points
+     * @param preferLowElevation If true, prioritize keeping lower elevation points
+     * @return List of merged points (maximizing count while maintaining distance)
+     */
+    private List<Point3D> mergePointsByDistance(List<Point3D> points, double mergeDistance, boolean preferLowElevation) {
+        if (points.size() <= 1) return new ArrayList<>(points);
 
-        do {
-            merged = false;
-            for (int i = 0; i < result.size() && !merged; i++) {
-                for (int j = i + 1; j < result.size() && !merged; j++) {
-                    Point3D s1 = result.get(i);
-                    Point3D s2 = result.get(j);
+        // Sort by elevation priority
+        List<Point3D> sorted = new ArrayList<>(points);
+        if (preferLowElevation) {
+            sorted.sort((a, b) -> Double.compare(a.z, b.z));  // Lowest elevation first
+        } else {
+            sorted.sort((a, b) -> Double.compare(b.z, a.z));  // Highest elevation first
+        }
 
-                    double dist = s1.projectZ().distanceTo(s2.projectZ());
-                    if (dist < MERGE_POINT_SPACING) {
-                        // Keep the star with lower elevation
-                        Point3D keeper = (s1.z <= s2.z) ? s1 : s2;
-                        result.remove(j);
-                        result.set(i, keeper);
-                        merged = true;
-                    }
+        double mergeDistSq = mergeDistance * mergeDistance;
+        List<Point3D> result = new ArrayList<>();
+
+        // Greedy selection: keep each point if not too close to any already-kept point
+        for (Point3D candidate : sorted) {
+            boolean tooClose = false;
+            Point2D candidatePos = candidate.projectZ();
+
+            for (Point3D kept : result) {
+                double distSq = candidatePos.distanceSquaredTo(kept.projectZ());
+                if (distSq < mergeDistSq) {
+                    tooClose = true;
+                    break;
                 }
             }
-        } while (merged);
+
+            if (!tooClose) {
+                result.add(candidate);
+            }
+        }
 
         return result;
     }
@@ -2191,36 +2239,8 @@ public class DendrySampler implements Sampler {
      * Clean and merge points that are within merge distance of each other.
      */
     private List<Point3D> cleanAndMergePoints(List<Point3D> points, double mergeDistance) {
-        if (points.size() <= 1) return new ArrayList<>(points);
-
-        List<Point3D> result = new ArrayList<>(points);
-        double mergeDistSq = mergeDistance * mergeDistance;
-        boolean merged;
-
-        do {
-            merged = false;
-            for (int i = 0; i < result.size() && !merged; i++) {
-                for (int j = i + 1; j < result.size() && !merged; j++) {
-                    Point3D p1 = result.get(i);
-                    Point3D p2 = result.get(j);
-                    double distSq = p1.projectZ().distanceSquaredTo(p2.projectZ());
-
-                    if (distSq < mergeDistSq) {
-                        // Merge to average x,y position, resample elevation
-                        double avgX = (p1.x + p2.x) / 2.0;
-                        double avgY = (p1.y + p2.y) / 2.0;
-                        double newZ = evaluateControlFunction(avgX, avgY);
-                        Point3D mergedPoint = new Point3D(avgX, avgY, newZ);
-
-                        result.remove(j);
-                        result.set(i, mergedPoint);
-                        merged = true;
-                    }
-                }
-            }
-        } while (merged && result.size() > 1);
-
-        return result;
+        // Use shared merge function, prioritizing lower elevation points
+        return mergePointsByDistance(points, mergeDistance, true);
     }
 
     /**

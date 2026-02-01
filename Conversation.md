@@ -739,8 +739,15 @@ There are still issues in stitching occurring:
 
 Issues:
 
-The constellation boundaries also appear to be much bigger than expected.  With a grid spacing of 1000 and a merge distance of 2/3, stars from constellations should get within 700 of eachother.  Current gaps are consistently 2000, which also indicates inappropriate bounding / removal of star points when creating constellations.
+The constellation boundaries (empty space between asterism stars) appear to be much bigger than expected.  With a grid spacing of 1000 and a merge distance of 2/3, stars from different asterisms should get within 700 of eachother.  Current gaps are consistently 2000, which also indicates inappropriate bounding / removal of star points when creating constellations.  Please investigate this issue.  Considerations:
+- Are the level 1 cells circumscribing the constellation proper?  The outside boundary of all level 1  cells should completely surround the constellation boundaries before cleaving stars outside / close to the boundary of the constellation.
+- Are some calculations attempting to derive star merge distance at level 0?  Since stars are created at level 1 cells, their merge distance should always be for the level 1 grid size.
 
+##############################################################################3
+
+On line 894, please add the constellation size to the logger info.  There are significantly less bounded stars than expected, I believe this is either a size calculation issue or ther circumscribed draft stars are getting created offset from the constellation boundary resulting in many of them being cut during bounding.
+
+###############################################################################3
 
 
 1. Tangents for stitches are not producing continuous flows consistently, verify tangents are getting inverted / flipped when necessary when on the ends of branches (leaves)
