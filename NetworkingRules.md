@@ -79,3 +79,13 @@ Connection rules (for creating a connection and detailing the segment):
     For each new tangent, verify the vector is within 60 degrees of the segment tangent (start to end angle).  If it is not, saturate the new tangent to those bounds.
     
     Finally, the segment should be subdivided according to the subdivisions per level (can be hard-coded per level) and displaced as should be done in subdivideAndAddPoints .  The new segments should be added into the segment pool list so they can be used / connected to as a part of CleanAndNetworkPoints.
+
+Merge Rules:
+- Affects "mergePointsByDistance"
+
+Perform the following until there are no distances less than the merge point distance:
+1. For all points, get the distance to any other point.
+2. Select the point that has the most connections / distances to other points that are below the merge point distance.  This selected point will be the epicenter for the current merge iteration.
+3. Select both the epicenter point and any of it's points whose distance are less than the merge distance.
+4. Remove all those points, and replace them with a point that is located at the average position.  Perform the control function to get the new elevation.
+5. Now rerun the check as necessary until there are no distances between points that are less than the merge distance.

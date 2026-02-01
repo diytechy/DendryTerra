@@ -794,6 +794,12 @@ public class DendrySampler implements Sampler {
      * Returns ConstellationInfo objects with center coordinates and circumscribing cell info.
      */
     private List<ConstellationInfo> findClosestConstellations(Cell queryCell1) {
+        final double avgX;
+        final double avgY;
+
+        double sumX = 0;
+        double sumY = 0;
+
         // Query cell center in world coordinates (level 1 cell coordinates)
         double queryCenterX = queryCell1.x + 0.5;
         double queryCenterY = queryCell1.y + 0.5;
@@ -828,11 +834,21 @@ public class DendrySampler implements Sampler {
 
         // Take 4 closest
         List<ConstellationInfo> closest = new ArrayList<>(candidates.subList(0, Math.min(4, candidates.size())));
+        
+        // Get center coordinate between the selected constellations
+        for (ConstellationInfo constInfo : closest) {
+            sumX += constInfo.centerX;
+            sumY += constInfo.centerY;
+        }
+
+        avgX = sumX / closest.size();
+        avgY = sumY / closest.size();
+
 
         // Sort in clockwise order around query center to avoid crossing stitches
         closest.sort((a, b) -> {
-            double angleA = Math.atan2(a.centerY - queryCenterY, a.centerX - queryCenterX);
-            double angleB = Math.atan2(b.centerY - queryCenterY, b.centerX - queryCenterX);
+            double angleA = Math.atan2(a.centerY - avgY, a.centerX - avgX);
+            double angleB = Math.atan2(b.centerY - avgY, b.centerX - avgX);
             return Double.compare(angleA, angleB);
         });
 

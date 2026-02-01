@@ -781,9 +781,34 @@ int baseConstY = baseIndices[1];
 
 Update findClosestConstellations again, get the center of the constellation for the current query point (queryCenterX,queryCenterY), find other constellations by applying thn corresponding x / y offsets according to the shape to the initial center constellation.  generateConstellationStarsNew should use startCell and cellCount to form the draft star points.
 
-##############################################3
+##############################################
 
 Refactor subdivideStitchSegment and subdivideAndAddPoints to use common subfunction(s) that performs the segment subdivision and adds jitter to the points so code is not duplicated between the two.
+
+##############################################
+
+To fix the tangents on stitches (constructed within stitchConstellations), make sure tangents are properly aligned for connections with leafs
+
+For each end of the stitch segment that ends on the leaf of a segment:
+If the stitch point type matches the leaf type (both types are end or both types are start), use the tangent from the leaf point but flip / invert it.
+Else if the stitch point type is opposite of the leaf type (end to start connection type), just take the tangent from the connected leaf directly.
+
+This should ensure continuity within the segment.
+
+##########################################################
+
+Increase constellation query for borders?  Issue with ordering and angle assignment?  Angle should be around const center?
+
+Still issues with merging and bounding?
+
+Do:
+
+Update "isInsideConstellationBoundary" to cleave / remove points to the exact shape boundaries (not estimated using distance from the constellation center, and remove boundary checks).
+
+Determine 4 connected constellations using angle from selected constellation (constellation containing query cell), this was just attempted by hand-code.
+
+
+###############################################
 
 FUTURE:
 
