@@ -37,7 +37,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 15;
+    private static final int SEGMENT_DEBUGGING = 20;
 
     // Configuration parameters
     private final int resolution;
@@ -81,7 +81,7 @@ public class DendrySampler implements Sampler {
     private static final double BRANCH_ENCOURAGEMENT_FACTOR = 2.0;
     // TangentMagnitudeScale: Scale factor for tangent magnitude in Hermite spline interpolation
     // Higher values create more pronounced curvature
-    private static final double TANGENT_MAGNITUDE_SCALE = 3.0;
+    private static final double TANGENT_MAGNITUDE_SCALE = 10.0;
 
     /**
      * Use B-spline (cubic Hermite) interpolation for pixel sampling in PIXEL_DEBUG mode.
@@ -1438,10 +1438,10 @@ public class DendrySampler implements Sampler {
         // Subdivide and displace, adding subdivision points back to nodes
         // Pass the endpoint indices so subdivision points can be properly connected
         // Calculate divisions from segment length / merge point spacing to ensure nodes available at lower levels
-        double gridSpacing = 1.0 / Math.pow(2, level);
+        double gridSpacing = 1.0 / Math.pow(2, (level+1));
         double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
         double segmentLength = srtPoint.projectZ().distanceTo(endPoint.projectZ());
-        int divisions = Math.max(1, (int) Math.floor(segmentLength / mergeDistance));
+        int divisions = Math.max(1, (int) Math.ceil(segmentLength / mergeDistance));
         double jitterFactor = 0.5;
         List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, divisions, jitterFactor, level, cellX, cellY, parent, rank, srtIdx, endIdx, mergeDistance);
         allSegments.addAll(subdivided);
