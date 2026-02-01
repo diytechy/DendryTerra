@@ -3070,24 +3070,44 @@ public class DendrySampler implements Sampler {
             Point3D bestI = endpointsI.get((int) bestPair[1]);
             Point3D bestJ = endpointsJ.get((int) bestPair[2]);
 
-            // Determine tangents based on connection type using segment information
-            Vec2D tangentI = computeStitchTangentFromSegments(bestI, segmentsI, keyI);
-            Vec2D tangentJ = computeStitchTangentFromSegments(bestJ, segmentsJ, keyJ);
+            // Get tangent info including whether point is at start or end of its connected segment
+            StitchTangentInfo tangentInfoI = getStitchTangentInfo(bestI, segmentsI);
+            StitchTangentInfo tangentInfoJ = getStitchTangentInfo(bestJ, segmentsJ);
 
             // Order by elevation (srt is higher elevation)
             Point3D srtPoint, endPoint;
-            Vec2D tangentSrt, tangentEnd;
+            StitchTangentInfo srtInfo, endInfo;
             if (bestI.z >= bestJ.z) {
                 srtPoint = bestI;
                 endPoint = bestJ;
-                tangentSrt = tangentI;
-                tangentEnd = tangentJ;
+                srtInfo = tangentInfoI;
+                endInfo = tangentInfoJ;
             } else {
                 srtPoint = bestJ;
                 endPoint = bestI;
-                tangentSrt = tangentJ;
-                tangentEnd = tangentI;
+                srtInfo = tangentInfoJ;
+                endInfo = tangentInfoI;
             }
+
+            // Apply tangent alignment rules for leaf connections:
+            // - If stitch point type MATCHES leaf type (both start or both end) → INVERT
+            // - If stitch point type is OPPOSITE of leaf type → use directly
+            Vec2D tangentSrt = srtInfo.tangent;
+            Vec2D tangentEnd = endInfo.tangent;
+
+            // For srtPoint: stitch uses it as START
+            // If leaf also has it as START (isLeafStart=true), types match → invert
+            if (srtInfo.isLeaf && srtInfo.isLeafStart && tangentSrt != null) {
+                tangentSrt = new Vec2D(-tangentSrt.x, -tangentSrt.y);
+            }
+            // If leaf has it as END (isLeafStart=false), types are opposite → use directly (no change)
+
+            // For endPoint: stitch uses it as END
+            // If leaf also has it as END (isLeafStart=false), types match → invert
+            if (endInfo.isLeaf && !endInfo.isLeafStart && tangentEnd != null) {
+                tangentEnd = new Vec2D(-tangentEnd.x, -tangentEnd.y);
+            }
+            // If leaf has it as START (isLeafStart=true), types are opposite → use directly (no change)
 
             // Create the stitch segment at level 0
             Segment3D stitchSegment = new Segment3D(srtPoint, endPoint, 0, tangentSrt, tangentEnd);
@@ -3146,14 +3166,29 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Compute tangent for a stitch point based on its segment connections.
-     * If leaf (1 connection): tangent for continuity with connected segment
-     * If middle (2+ connections): match one of the related tangents
+     * Holds tangent information for a stitch connection point.
      */
-    private Vec2D computeStitchTangentFromSegments(Point3D point, List<Segment3D> segments, long constellationKey) {
+    private static class StitchTangentInfo {
+        final Vec2D tangent;       // The tangent at this point
+        final boolean isLeaf;      // True if this is a leaf node (single connection)
+        final boolean isLeafStart; // If leaf, true if point is the START of its segment
+
+        StitchTangentInfo(Vec2D tangent, boolean isLeaf, boolean isLeafStart) {
+            this.tangent = tangent;
+            this.isLeaf = isLeaf;
+            this.isLeafStart = isLeafStart;
+        }
+    }
+
+    /**
+     * Get tangent information for a stitch point based on its segment connections.
+     * Returns the raw tangent from the connected segment plus metadata about the connection type.
+     * The caller applies inversion based on whether stitch point type matches leaf type.
+     */
+    private StitchTangentInfo getStitchTangentInfo(Point3D point, List<Segment3D> segments) {
         // Find segments connected to this point
         List<Segment3D> connectedSegments = new ArrayList<>();
-        List<Boolean> isStartPoint = new ArrayList<>();  // Track if point is srt or end of segment
+        List<Boolean> isStartPoint = new ArrayList<>();
 
         for (Segment3D seg : segments) {
             if (pointsMatch(seg.srt, point)) {
@@ -3166,50 +3201,43 @@ public class DendrySampler implements Sampler {
         }
 
         if (connectedSegments.isEmpty()) {
-            // No connections - use slope-based tangent
-            return getTangentFromPoint(point);
+            // No connections - use slope-based tangent, not a leaf
+            return new StitchTangentInfo(getTangentFromPoint(point), false, false);
         }
 
         if (connectedSegments.size() == 1) {
-            // Leaf node (single connection): set tangent for continuity
+            // Leaf node (single connection)
             Segment3D seg = connectedSegments.get(0);
             boolean isSrt = isStartPoint.get(0);
 
-            // Get the tangent from the connected segment for continuity
-            // If point is srt of segment, we want tangentSrt; if end, we want tangentEnd
+            // Get the tangent from the connected segment
             Vec2D existingTangent = isSrt ? seg.tangentSrt : seg.tangentEnd;
 
             if (existingTangent != null) {
-                // For a leaf extending outward, the stitch tangent should continue the flow
-                // If this point is the end of the segment, tangent points inward, so we use as-is
-                // If this point is the start of the segment, we're going against flow, so invert
-                if (isSrt) {
-                    return new Vec2D(-existingTangent.x, -existingTangent.y);
-                } else {
-                    return existingTangent;
-                }
+                // Return raw tangent with leaf info - caller will apply inversion logic
+                return new StitchTangentInfo(existingTangent, true, isSrt);
             }
 
             // Fallback: direction from other endpoint to this point
             Point3D other = isSrt ? seg.end : seg.srt;
             Vec2D tangent = new Vec2D(other.projectZ(), point.projectZ());
             if (tangent.lengthSquared() > MathUtils.EPSILON) {
-                return tangent.normalize();
+                return new StitchTangentInfo(tangent.normalize(), true, isSrt);
             }
+            return new StitchTangentInfo(getTangentFromPoint(point), true, isSrt);
         } else {
-            // Middle node (2+ connections): match one of the related tangents
-            // Pick the tangent from the first connected segment
+            // Middle node (2+ connections): not a leaf, use existing tangent
             Segment3D seg = connectedSegments.get(0);
             boolean isSrt = isStartPoint.get(0);
             Vec2D existingTangent = isSrt ? seg.tangentSrt : seg.tangentEnd;
 
             if (existingTangent != null) {
-                return existingTangent;
+                return new StitchTangentInfo(existingTangent, false, false);
             }
         }
 
         // Default fallback
-        return getTangentFromPoint(point);
+        return new StitchTangentInfo(getTangentFromPoint(point), false, false);
     }
 
     /**
