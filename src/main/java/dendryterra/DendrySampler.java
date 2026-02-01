@@ -38,7 +38,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 20;
+    private static final int SEGMENT_DEBUGGING = 30;
 
     // Configuration parameters
     private final int resolution;
