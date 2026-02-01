@@ -37,7 +37,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 20;
+    private static final int SEGMENT_DEBUGGING = 15;
 
     // Configuration parameters
     private final int resolution;
@@ -1038,7 +1038,6 @@ public class DendrySampler implements Sampler {
         int index;                         // Index in the node list
         final List<Integer> connections;   // Indices of connected nodes
         Vec2D tangent;                     // Computed tangent direction (null until set)
-        boolean tangentWasForStart;        // True if tangent was computed for use as segment start
         boolean isBranchPoint;             // True if this node branches into another path
         int branchIntoNode;                // Index of node this branches into (-1 if not branching)
         boolean removed;                   // True if node was removed during cleaning
@@ -1052,7 +1051,6 @@ public class DendrySampler implements Sampler {
             this.index = index;
             this.connections = new ArrayList<>();
             this.tangent = null;
-            this.tangentWasForStart = false;
             this.isBranchPoint = false;
             this.branchIntoNode = -1;
             this.removed = false;
@@ -1419,17 +1417,15 @@ public class DendrySampler implements Sampler {
 
         // Compute tangents for both endpoints
         // forStart=true for srt (start point), forStart=false for end (end point)
-        tangentSrt = computeNodeTangent(nodes, srtIdx, isBranch && srtIdx == sourceIdx, true, cellX, cellY);
-        tangentEnd = computeNodeTangent(nodes, endIdx, isBranch && endIdx == sourceIdx, false, cellX, cellY);
+        tangentSrt = computeNodeTangent(nodes, srtIdx, isBranch && srtIdx == sourceIdx, true, allSegments, cellX, cellY);
+        tangentEnd = computeNodeTangent(nodes, endIdx, isBranch && endIdx == sourceIdx, false, allSegments, cellX, cellY);
 
         // Store tangents in nodes for future reference (only if not already set)
         if (nodes.get(srtIdx).tangent == null) {
             nodes.get(srtIdx).tangent = tangentSrt;
-            nodes.get(srtIdx).tangentWasForStart = true;
         }
         if (nodes.get(endIdx).tangent == null) {
             nodes.get(endIdx).tangent = tangentEnd;
-            nodes.get(endIdx).tangentWasForStart = false;
         }
 
         // Create the segment
@@ -1703,18 +1699,32 @@ public class DendrySampler implements Sampler {
      * @param nodeIdx Index of the node to compute tangent for
      * @param isBranchEnd True if this node is a branch endpoint
      * @param forStart True if tangent is for use as segment start, false for end
+     * @param allSegments List of all segments to derive tangent usage from
      * @param cellX, cellY Cell coordinates for RNG seeding
      */
     private Vec2D computeNodeTangent(List<NetworkNode> nodes, int nodeIdx, boolean isBranchEnd,
-                                      boolean forStart, int cellX, int cellY) {
+                                      boolean forStart, List<Segment3D> allSegments, int cellX, int cellY) {
         NetworkNode node = nodes.get(nodeIdx);
 
         // If node already has a tangent, handle continuity
         if (node.tangent != null) {
+            // Derive whether the existing tangent was for start or end usage
+            // by finding the segment that contains this node's point
+            boolean existingWasForStart = false;
+            for (Segment3D seg : allSegments) {
+                if (pointsMatch(seg.srt, node.point)) {
+                    existingWasForStart = true;
+                    break;
+                } else if (pointsMatch(seg.end, node.point)) {
+                    existingWasForStart = false;
+                    break;
+                }
+            }
+
             // Check if we need to invert for continuity
             // Flow-through (srt→end or end→srt): tangents should be identical
             // Same-type (srt→srt or end→end): tangent should be inverted
-            if (node.tangentWasForStart == forStart) {
+            if (existingWasForStart == forStart) {
                 // Same type connection (both start or both end) - invert tangent
                 return new Vec2D(-node.tangent.x, -node.tangent.y);
             } else {
@@ -1773,6 +1783,16 @@ public class DendrySampler implements Sampler {
             sourceNode.point = new Point3D(sourceNode.point.x, sourceNode.point.y, newZ,
                                             sourceNode.point.slopeX, sourceNode.point.slopeY);
         }
+    }
+
+    /**
+     * Check if two points match (within epsilon tolerance).
+     */
+    private static boolean pointsMatch(Point3D a, Point3D b) {
+        double dx = a.x - b.x;
+        double dy = a.y - b.y;
+        double dz = a.z - b.z;
+        return (dx * dx + dy * dy + dz * dz) < MathUtils.EPSILON * MathUtils.EPSILON;
     }
 
     /**
