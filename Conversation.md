@@ -781,6 +781,9 @@ int baseConstY = baseIndices[1];
 
 Update findClosestConstellations again, get the center of the constellation for the current query point (queryCenterX,queryCenterY), find other constellations by applying thn corresponding x / y offsets according to the shape to the initial center constellation.  generateConstellationStarsNew should use startCell and cellCount to form the draft star points.
 
+##############################################3
+
+Refactor subdivideStitchSegment and subdivideAndAddPoints to use common subfunction(s) that performs the segment subdivision and adds jitter to the points so code is not duplicated between the two.
 
 FUTURE:
 

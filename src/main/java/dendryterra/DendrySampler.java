@@ -2034,6 +2034,101 @@ public class DendrySampler implements Sampler {
         return (dx * dx + dy * dy + dz * dz) < MathUtils.EPSILON * MathUtils.EPSILON;
     }
 
+    // ========== Shared Subdivision Helpers ==========
+
+    /**
+     * Result of a single subdivision interpolation: position and tangent.
+     */
+    private static class SubdivisionPoint {
+        final Point3D position;
+        final Vec2D tangent;
+
+        SubdivisionPoint(Point3D position, Vec2D tangent) {
+            this.position = position;
+            this.tangent = tangent;
+        }
+    }
+
+    /**
+     * Compute a subdivision point along a segment at parameter t using Hermite spline interpolation.
+     *
+     * @param segment The segment to interpolate
+     * @param t Parameter value [0, 1]
+     * @param tangentScale Scale factor for tangent magnitudes in Hermite interpolation
+     * @return SubdivisionPoint with interpolated position and tangent
+     */
+    private SubdivisionPoint computeSubdivisionPoint(Segment3D segment, double t, double tangentScale) {
+        Point3D position;
+        Vec2D tangent;
+
+        if (segment.hasTangents()) {
+            // Cubic Hermite spline interpolation
+            double t2 = t * t;
+            double t3 = t2 * t;
+
+            // Hermite basis functions
+            double h00 = 2 * t3 - 3 * t2 + 1;
+            double h10 = t3 - 2 * t2 + t;
+            double h01 = -2 * t3 + 3 * t2;
+            double h11 = t3 - t2;
+
+            // Position interpolation
+            double x = h00 * segment.srt.x + h10 * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
+                     + h01 * segment.end.x + h11 * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
+            double y = h00 * segment.srt.y + h10 * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
+                     + h01 * segment.end.y + h11 * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
+            double z = MathUtils.lerp(segment.srt.z, segment.end.z, t);
+
+            position = new Point3D(x, y, z);
+
+            // Derivative of Hermite basis functions for tangent computation
+            double h00d = 6 * t2 - 6 * t;
+            double h10d = 3 * t2 - 4 * t + 1;
+            double h01d = -6 * t2 + 6 * t;
+            double h11d = 3 * t2 - 2 * t;
+
+            double dx = h00d * segment.srt.x + h10d * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
+                      + h01d * segment.end.x + h11d * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
+            double dy = h00d * segment.srt.y + h10d * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
+                      + h01d * segment.end.y + h11d * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
+
+            // Normalize to get unit tangent direction
+            double len = Math.sqrt(dx * dx + dy * dy);
+            tangent = (len > MathUtils.EPSILON) ? new Vec2D(dx / len, dy / len) : null;
+        } else {
+            // Linear interpolation fallback
+            position = Point3D.lerp(segment.srt, segment.end, t);
+
+            // Tangent is just the segment direction
+            double dx = segment.end.x - segment.srt.x;
+            double dy = segment.end.y - segment.srt.y;
+            double len = Math.sqrt(dx * dx + dy * dy);
+            tangent = (len > MathUtils.EPSILON) ? new Vec2D(dx / len, dy / len) : null;
+        }
+
+        return new SubdivisionPoint(position, tangent);
+    }
+
+    /**
+     * Apply jitter to a point using deterministic random based on position.
+     *
+     * @param point The point to jitter
+     * @param maxJitter Maximum jitter distance
+     * @param seedX X component for RNG seed
+     * @param seedY Y component for RNG seed
+     * @param seedZ Z component for RNG seed
+     * @return New point with jitter applied
+     */
+    private Point3D applyJitter(Point3D point, double maxJitter, int seedX, int seedY, int seedZ) {
+        if (maxJitter <= MathUtils.EPSILON) {
+            return point;
+        }
+        Random rng = initRandomGenerator(seedX, seedY, seedZ);
+        double jitterX = (rng.nextDouble() * 2 - 1) * maxJitter;
+        double jitterY = (rng.nextDouble() * 2 - 1) * maxJitter;
+        return new Point3D(point.x + jitterX, point.y + jitterY, point.z);
+    }
+
     /**
      * Subdivide segment and add subdivision points back to nodes list.
      * Uses cubic Hermite spline interpolation when tangents are available.
@@ -2060,86 +2155,42 @@ public class DendrySampler implements Sampler {
         }
 
         // Calculate maximum jitter based on segment length and number of divisions
-        // Jitter is limited to prevent subdivision points from overlapping
         double segLength2D = segment.srt.projectZ().distanceTo(segment.end.projectZ());
-        double maxJitter = (segLength2D / (divisions * 2.0)) * jitterFactor;
+        double maxJitter = (level > 0) ? (segLength2D / (divisions * 2.0)) * jitterFactor : 0;
 
         List<Segment3D> result = new ArrayList<>();
-        List<Integer> chainNodeIndices = new ArrayList<>();  // Track node indices in order
-        chainNodeIndices.add(srtIdx);  // Start with the srt node
+        List<Integer> chainNodeIndices = new ArrayList<>();
+        chainNodeIndices.add(srtIdx);
 
         // Precompute tangent scale for Hermite interpolation
-        // Scale with merge distance to ensure pronounced curvature for spline interpretation
         double tangentScale = mergeDistance * TANGENT_MAGNITUDE_SCALE * tangentStrength;
 
-        // Generate subdivision points using spline if tangents available
         Point3D prev = segment.srt;
         Vec2D prevTangent = segment.tangentSrt;
 
         for (int i = 1; i <= divisions; i++) {
             double t = (double) i / divisions;
             Point3D next;
-            Vec2D nextTangent = null;
+            Vec2D nextTangent;
 
             if (i == divisions) {
+                // Last point is the segment endpoint
                 next = segment.end;
                 nextTangent = segment.tangentEnd;
-            } else if (segment.hasTangents()) {
-                // Cubic Hermite spline interpolation for position
-                double t2 = t * t;
-                double t3 = t2 * t;
-                double h00 = 2 * t3 - 3 * t2 + 1;
-                double h10 = t3 - 2 * t2 + t;
-                double h01 = -2 * t3 + 3 * t2;
-                double h11 = t3 - t2;
-
-                double x = h00 * segment.srt.x + h10 * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
-                         + h01 * segment.end.x + h11 * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
-                double y = h00 * segment.srt.y + h10 * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
-                         + h01 * segment.end.y + h11 * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
-                double z = MathUtils.lerp(segment.srt.z, segment.end.z, t);
-
-                next = new Point3D(x, y, z);
-
-                // Compute tangent from Hermite spline derivative
-                // Derivative of Hermite basis functions:
-                // h00' = 6t^2 - 6t, h10' = 3t^2 - 4t + 1, h01' = -6t^2 + 6t, h11' = 3t^2 - 2t
-                double h00d = 6 * t2 - 6 * t;
-                double h10d = 3 * t2 - 4 * t + 1;
-                double h01d = -6 * t2 + 6 * t;
-                double h11d = 3 * t2 - 2 * t;
-
-                double dx = h00d * segment.srt.x + h10d * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
-                          + h01d * segment.end.x + h11d * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
-                double dy = h00d * segment.srt.y + h10d * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
-                          + h01d * segment.end.y + h11d * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
-
-                // Normalize to get unit tangent direction
-                double len = Math.sqrt(dx * dx + dy * dy);
-                if (len > MathUtils.EPSILON) {
-                    nextTangent = new Vec2D(dx / len, dy / len);
-                }
             } else {
-                next = Point3D.lerp(segment.srt, segment.end, t);
+                // Use shared helper for Hermite interpolation
+                SubdivisionPoint subdivPt = computeSubdivisionPoint(segment, t, tangentScale);
+                next = subdivPt.position;
+                nextTangent = subdivPt.tangent;
 
-                // For linear segments, tangent is just the direction from srt to end
-                double dx = segment.end.x - segment.srt.x;
-                double dy = segment.end.y - segment.srt.y;
-                double len = Math.sqrt(dx * dx + dy * dy);
-                if (len > MathUtils.EPSILON) {
-                    nextTangent = new Vec2D(dx / len, dy / len);
+                // Apply jitter for interior points (only at level > 0 to prevent crossings)
+                if (maxJitter > MathUtils.EPSILON) {
+                    next = applyJitter(next,
+                        maxJitter,
+                        (int)(prev.x * 1000 + next.x * 500),
+                        (int)(prev.y * 1000),
+                        level + i);
                 }
-            }
-
-            // Apply jitter for interior points (skip at level 0 to prevent crossings)
-            if (i < divisions) {
-                if (level > 0 && maxJitter > MathUtils.EPSILON) {
-                    Random rng = initRandomGenerator((int)(prev.x * 1000 + next.x * 500), (int)(prev.y * 1000), level + i);
-                    double jitterX = (rng.nextDouble() * 2 - 1) * maxJitter;
-                    double jitterY = (rng.nextDouble() * 2 - 1) * maxJitter;
-                    next = new Point3D(next.x + jitterX, next.y + jitterY, next.z);
-                }
-                // At level 0, no jitter to prevent crossings
 
                 // Create new node for this subdivision point
                 int newIdx = nodes.size();
@@ -3042,7 +3093,7 @@ public class DendrySampler implements Sampler {
             Segment3D stitchSegment = new Segment3D(srtPoint, endPoint, 0, tangentSrt, tangentEnd);
 
             // Subdivide using same methodology as createAndDefineSegment for level 0
-            double gridSpacing = 1.0;  // Level 0 grid spacing
+            double gridSpacing = 0.5;  // Spaced for next level
             double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
             double segmentLength = srtPoint.projectZ().distanceTo(endPoint.projectZ());
             int divisions = Math.max(1, (int) Math.floor(segmentLength / mergeDistance));
@@ -3163,17 +3214,14 @@ public class DendrySampler implements Sampler {
 
     /**
      * Subdivide a stitch segment using Hermite spline interpolation.
-     * Similar to subdivideAndAddPoints but without node tracking.
+     * Uses shared subdivision helpers - similar to subdivideAndAddPoints but without node tracking.
      */
     private List<Segment3D> subdivideStitchSegment(Segment3D segment, int divisions, double mergeDistance) {
-        List<Segment3D> result = new ArrayList<>();
-
         if (divisions <= 1) {
-            result.add(segment);
-            return result;
+            return List.of(segment);
         }
 
-        double segLength2D = segment.srt.projectZ().distanceTo(segment.end.projectZ());
+        List<Segment3D> result = new ArrayList<>();
         double tangentScale = mergeDistance * TANGENT_MAGNITUDE_SCALE * tangentStrength;
 
         Point3D prev = segment.srt;
@@ -3185,45 +3233,17 @@ public class DendrySampler implements Sampler {
             Vec2D nextTangent;
 
             if (i == divisions) {
+                // Last point is the segment endpoint
                 next = segment.end;
                 nextTangent = segment.tangentEnd;
-            } else if (segment.hasTangents()) {
-                // Cubic Hermite spline interpolation
-                double t2 = t * t;
-                double t3 = t2 * t;
-                double h00 = 2 * t3 - 3 * t2 + 1;
-                double h10 = t3 - 2 * t2 + t;
-                double h01 = -2 * t3 + 3 * t2;
-                double h11 = t3 - t2;
-
-                double x = h00 * segment.srt.x + h10 * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
-                         + h01 * segment.end.x + h11 * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
-                double y = h00 * segment.srt.y + h10 * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
-                         + h01 * segment.end.y + h11 * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
-                double z = MathUtils.lerp(segment.srt.z, segment.end.z, t);
-
-                next = new Point3D(x, y, z);
-
-                // Compute tangent from spline derivative
-                double h00d = 6 * t2 - 6 * t;
-                double h10d = 3 * t2 - 4 * t + 1;
-                double h01d = -6 * t2 + 6 * t;
-                double h11d = 3 * t2 - 2 * t;
-
-                double dx = h00d * segment.srt.x + h10d * (segment.tangentSrt != null ? segment.tangentSrt.x * tangentScale : 0)
-                          + h01d * segment.end.x + h11d * (segment.tangentEnd != null ? segment.tangentEnd.x * tangentScale : 0);
-                double dy = h00d * segment.srt.y + h10d * (segment.tangentSrt != null ? segment.tangentSrt.y * tangentScale : 0)
-                          + h01d * segment.end.y + h11d * (segment.tangentEnd != null ? segment.tangentEnd.y * tangentScale : 0);
-
-                double len = Math.sqrt(dx * dx + dy * dy);
-                nextTangent = (len > MathUtils.EPSILON) ? new Vec2D(dx / len, dy / len) : prevTangent;
             } else {
-                // Linear interpolation
-                next = Point3D.lerp(segment.srt, segment.end, t);
-                nextTangent = segment.tangentEnd;
+                // Use shared helper for Hermite interpolation
+                SubdivisionPoint subdivPt = computeSubdivisionPoint(segment, t, tangentScale);
+                next = subdivPt.position;
+                nextTangent = (subdivPt.tangent != null) ? subdivPt.tangent : prevTangent;
             }
 
-            // Create subdivision segment
+            // Create subdivision segment with appropriate point types
             PointType srtType = (i == 1) ? segment.srtType : PointType.KNOT;
             PointType endType = (i == divisions) ? segment.endType : PointType.KNOT;
             result.add(new Segment3D(prev, next, 0, prevTangent, nextTangent, srtType, endType));
@@ -3242,7 +3262,7 @@ public class DendrySampler implements Sampler {
      */
     private Cell getConstellation(int level1CellX, int level1CellY) {
         Point2D center = getConstellationCenterForPoint(level1CellX + 0.5, level1CellY + 0.5);
-        // Return quantized center as "indices" for backwards compatibility
+        // Return quantized center for backwards compatibility
         int qx = (int) Math.round(center.x * 100);
         int qy = (int) Math.round(center.y * 100);
         return new Cell(qx, qy, 0);
