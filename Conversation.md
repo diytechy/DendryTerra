@@ -749,14 +749,27 @@ On line 894, please add the constellation size to the logger info.  There are si
 
 ###############################################################################3
 
+mergeCloseStars is implemented incorrectly, and should use the same method as used in cleanAndMergePoints.  Update mergeCloseStars and if necessary cleanAndMergePoints to use the same function to merge stars.  Merging them in such a way the maximizes the number of remaining stars but such that no star is within the merge distance from one another.
 
-1. Tangents for stitches are not producing continuous flows consistently, verify tangents are getting inverted / flipped when necessary when on the ends of branches (leaves)
-2. As noted earlier, the subdivision rules should be identical to constellation creation.  The subdivisions currently appear about 3x bigger than expected, which coincides to level 0 cells being referenced.
-3. 
+#############################################################################
 
+In the logger on line 895 add the center of the constellation coordinates and lowest x, lowest y, highest x, and highest y of the stars before they were cleaved and merged.
 
+###################################################
 
+In the logger now on line 907, also add the boundaries after merging similar to the boundaries that are shown before cleaving.
 
+1. Tangents for stitches are occasionally flipped from the orientation they should have, resulting in sharp / spike like corners instead of continuous / smooth curves. Verify tangents are getting inverted / flipped when necessary when on the ends of branches (leaves)
+2. As noted earlier, the subdivision rules should be identical to constellation creation.  The subdivisions currently appear about 3x bigger than expected, which coincides to level 0 cells being referenced.  Since stitches are stitching level 1 cells across constellations, their segment construction and subdivision should be handled identically to segments that are created for asterisms.
+3. Stitches appear to abruptly end sometimes at cell boundaries.  This indicates for some query cells, the wrong constellations are being solved such that a stitch ends up missing when that stitch is evaluated.  Are the closest constellations being returned based on the level 1 query cell to ensure close connections including stitches can be solved?
+
+###########################################################
+
+I have reverted previous changes as segments now are not appearing at all.
+
+There are fundamental issues in the way constellation coordinates are handled. findFourClosestConstellations treats the constellations like square cells, but rhombuses and hexagons will not fall on this grid pattern.  A constellation should not be assumed as a grid.  Instead, according to the pattern layout of the shape, the closest constellation centers should be able to be found based on the center of the query cell.  Constellations need only be reported as their center coordinates, the start coordinate of the level 1 cells that circumscribe that constellation, and then number of level 1 cells horizontally and vertically to completely tile across / circumscribe the constellation shape.
+
+1. Revise "findFourClosestConstellations", finding the 4 constellations that are closest should be sufficient for all shapes to connect their neighbors.
 
 
 

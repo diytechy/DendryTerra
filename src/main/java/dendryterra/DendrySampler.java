@@ -704,14 +704,18 @@ public class DendrySampler implements Sampler {
         double size = getConstellationSize();
         switch (constellationShape) {
             case HEXAGON:
-                // Approximate - may need refinement for exact hex boundaries
-                int hexY = (int) Math.floor(worldY / (size * 0.866));
+                // Hexagonal grid: rows are spaced by size * sqrt(3)/2
+                // Odd rows are offset by size/2 in X
+                double hexRowHeight = size * 0.866;
+                int hexY = (int) Math.floor(worldY / hexRowHeight);
                 double hexOffsetX = (hexY % 2 == 0) ? 0 : size * 0.5;
                 int hexX = (int) Math.floor((worldX - hexOffsetX) / size);
                 return new int[] { hexX, hexY };
             case RHOMBUS:
-                // Approximate rhombus mapping
-                int rhombY = (int) Math.floor(worldY / (size * 0.707));
+                // Rhombus grid: rows are spaced by size * sqrt(2)/2
+                // Each row is offset by size/2 cumulatively
+                double rhombRowHeight = size * 0.707;
+                int rhombY = (int) Math.floor(worldY / rhombRowHeight);
                 double rhombOffsetX = rhombY * size * 0.5;
                 int rhombX = (int) Math.floor((worldX - rhombOffsetX) / size);
                 return new int[] { rhombX, rhombY };
@@ -722,11 +726,34 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Find the 4 closest constellations to the query cell.
-     * For SQUARE shape, these are the constellation containing the query and its 3 nearest neighbors.
+     * Get complete constellation information including center and circumscribing cells.
      */
-    private List<long[]> findFourClosestConstellations(Cell queryCell1) {
-        // Query cell center in world coordinates
+    private ConstellationInfo getConstellationInfo(int constX, int constY) {
+        double size = getConstellationSize();
+        Point2D center = getConstellationCenter(constX, constY);
+
+        // Calculate bounding box of level 1 cells that circumscribe this constellation
+        // Add margin of 1 cell on each side to ensure full coverage
+        int startCellX = (int) Math.floor(center.x - size / 2.0 - 1);
+        int startCellY = (int) Math.floor(center.y - size / 2.0 - 1);
+        int endCellX = (int) Math.ceil(center.x + size / 2.0 + 1);
+        int endCellY = (int) Math.ceil(center.y + size / 2.0 + 1);
+
+        return new ConstellationInfo(
+            constX, constY,
+            center.x, center.y,
+            startCellX, startCellY,
+            endCellX - startCellX, endCellY - startCellY
+        );
+    }
+
+    /**
+     * Find the closest constellations to the query cell center.
+     * Returns ConstellationInfo objects with center coordinates and circumscribing cell info.
+     * Uses shape-specific neighbor patterns to find candidates, then sorts by distance.
+     */
+    private List<ConstellationInfo> findClosestConstellations(Cell queryCell1) {
+        // Query cell center in world coordinates (level 1 cell coordinates)
         double queryCenterX = queryCell1.x + 0.5;
         double queryCenterY = queryCell1.y + 0.5;
 
@@ -735,40 +762,76 @@ public class DendrySampler implements Sampler {
         int baseConstX = baseIndices[0];
         int baseConstY = baseIndices[1];
 
-        // Collect candidate constellations (3x3 grid around base)
-        List<long[]> candidates = new ArrayList<>();
-        for (int di = -1; di <= 1; di++) {
-            for (int dj = -1; dj <= 1; dj++) {
-                int cx = baseConstX + dj;
-                int cy = baseConstY + di;
-                Point2D center = getConstellationCenter(cx, cy);
-                double dist = Math.sqrt(
-                    (center.x - queryCenterX) * (center.x - queryCenterX) +
-                    (center.y - queryCenterY) * (center.y - queryCenterY)
-                );
-                candidates.add(new long[] { cx, cy, Double.doubleToLongBits(dist) });
-            }
+        // Collect candidate constellations based on shape-specific neighbor patterns
+        // Use a larger search radius to ensure all relevant neighbors are found
+        List<ConstellationInfo> candidates = new ArrayList<>();
+
+        switch (constellationShape) {
+            case HEXAGON:
+                // For hexagon, check the 6 neighbors plus itself and extended ring
+                // Neighbor pattern depends on even/odd row
+                for (int dy = -2; dy <= 2; dy++) {
+                    for (int dx = -2; dx <= 2; dx++) {
+                        ConstellationInfo info = getConstellationInfo(baseConstX + dx, baseConstY + dy);
+                        candidates.add(info);
+                    }
+                }
+                break;
+
+            case RHOMBUS:
+                // For rhombus, similar extended search
+                for (int dy = -2; dy <= 2; dy++) {
+                    for (int dx = -2; dx <= 2; dx++) {
+                        ConstellationInfo info = getConstellationInfo(baseConstX + dx, baseConstY + dy);
+                        candidates.add(info);
+                    }
+                }
+                break;
+
+            case SQUARE:
+            default:
+                // For square, 3x3 grid around base is sufficient
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        ConstellationInfo info = getConstellationInfo(baseConstX + dx, baseConstY + dy);
+                        candidates.add(info);
+                    }
+                }
+                break;
         }
 
-        // Sort by distance and take 4 closest
-        candidates.sort((a, b) -> Double.compare(
-            Double.longBitsToDouble(a[2]),
-            Double.longBitsToDouble(b[2])
-        ));
+        // Sort by distance from query center to constellation center
+        candidates.sort((a, b) -> {
+            double distA = (a.centerX - queryCenterX) * (a.centerX - queryCenterX) +
+                           (a.centerY - queryCenterY) * (a.centerY - queryCenterY);
+            double distB = (b.centerX - queryCenterX) * (b.centerX - queryCenterX) +
+                           (b.centerY - queryCenterY) * (b.centerY - queryCenterY);
+            return Double.compare(distA, distB);
+        });
 
-        List<long[]> closest4 = new ArrayList<>(candidates.subList(0, Math.min(4, candidates.size())));
+        // Take 4 closest
+        List<ConstellationInfo> closest = new ArrayList<>(candidates.subList(0, Math.min(4, candidates.size())));
 
-        // Sort the 4 closest in clockwise order around query center to avoid crossing stitches
-        // Calculate angle from query center to each constellation center
-        closest4.sort((a, b) -> {
-            Point2D centerA = getConstellationCenter((int) a[0], (int) a[1]);
-            Point2D centerB = getConstellationCenter((int) b[0], (int) b[1]);
-            double angleA = Math.atan2(centerA.y - queryCenterY, centerA.x - queryCenterX);
-            double angleB = Math.atan2(centerB.y - queryCenterY, centerB.x - queryCenterX);
+        // Sort in clockwise order around query center to avoid crossing stitches
+        closest.sort((a, b) -> {
+            double angleA = Math.atan2(a.centerY - queryCenterY, a.centerX - queryCenterX);
+            double angleB = Math.atan2(b.centerY - queryCenterY, b.centerX - queryCenterX);
             return Double.compare(angleA, angleB);
         });
 
-        return closest4;
+        return closest;
+    }
+
+    /**
+     * @deprecated Use findClosestConstellations instead
+     */
+    private List<long[]> findFourClosestConstellations(Cell queryCell1) {
+        List<ConstellationInfo> infos = findClosestConstellations(queryCell1);
+        List<long[]> result = new ArrayList<>();
+        for (ConstellationInfo info : infos) {
+            result.add(new long[] { info.constX, info.constY, 0 });
+        }
+        return result;
     }
 
     /**
@@ -917,21 +980,41 @@ public class DendrySampler implements Sampler {
 
     /**
      * Get level 1 cells that circumscribe a constellation.
+     * Uses ConstellationInfo for cell range, then filters by actual overlap.
      */
     private List<int[]> getCircumscribingCells(int constX, int constY) {
-        Point2D center = getConstellationCenter(constX, constY);
+        ConstellationInfo info = getConstellationInfo(constX, constY);
+        Point2D center = info.getCenter();
         double size = getConstellationSize();
 
-        // Calculate bounding box in cell coordinates
-        int minCellX = (int) Math.floor(center.x - size / 2.0 - 1);
-        int maxCellX = (int) Math.ceil(center.x + size / 2.0 + 1);
-        int minCellY = (int) Math.floor(center.y - size / 2.0 - 1);
-        int maxCellY = (int) Math.ceil(center.y + size / 2.0 + 1);
+        // Use ConstellationInfo's pre-computed cell range
+        List<int[]> cells = new ArrayList<>();
+        for (int dy = 0; dy < info.cellCountY; dy++) {
+            for (int dx = 0; dx < info.cellCountX; dx++) {
+                int x = info.startCellX + dx;
+                int y = info.startCellY + dy;
+                // Check if cell overlaps with constellation
+                Point2D cellCenter = new Point2D(x + 0.5, y + 0.5);
+                if (cellOverlapsConstellation(cellCenter, center, size)) {
+                    cells.add(new int[] { x, y });
+                }
+            }
+        }
+        return cells;
+    }
+
+    /**
+     * Get level 1 cells that circumscribe a constellation using ConstellationInfo.
+     */
+    private List<int[]> getCircumscribingCells(ConstellationInfo info) {
+        Point2D center = info.getCenter();
+        double size = getConstellationSize();
 
         List<int[]> cells = new ArrayList<>();
-        for (int y = minCellY; y <= maxCellY; y++) {
-            for (int x = minCellX; x <= maxCellX; x++) {
-                // Check if cell overlaps with constellation
+        for (int dy = 0; dy < info.cellCountY; dy++) {
+            for (int dx = 0; dx < info.cellCountX; dx++) {
+                int x = info.startCellX + dx;
+                int y = info.startCellY + dy;
                 Point2D cellCenter = new Point2D(x + 0.5, y + 0.5);
                 if (cellOverlapsConstellation(cellCenter, center, size)) {
                     cells.add(new int[] { x, y });
@@ -1089,6 +1172,41 @@ public class DendrySampler implements Sampler {
 
     // ========== CleanAndNetworkPoints Implementation ==========
     // Refactored to process segments one at a time, fully defining each before moving to next
+
+    /**
+     * Holds constellation layout information independent of shape type.
+     * Provides the constellation center, and the level 1 cells that circumscribe it.
+     */
+    private static class ConstellationInfo {
+        final int constX;          // Constellation index X
+        final int constY;          // Constellation index Y
+        final double centerX;      // Constellation center X coordinate
+        final double centerY;      // Constellation center Y coordinate
+        final int startCellX;      // First level 1 cell X that overlaps
+        final int startCellY;      // First level 1 cell Y that overlaps
+        final int cellCountX;      // Number of level 1 cells in X direction
+        final int cellCountY;      // Number of level 1 cells in Y direction
+
+        ConstellationInfo(int constX, int constY, double centerX, double centerY,
+                          int startCellX, int startCellY, int cellCountX, int cellCountY) {
+            this.constX = constX;
+            this.constY = constY;
+            this.centerX = centerX;
+            this.centerY = centerY;
+            this.startCellX = startCellX;
+            this.startCellY = startCellY;
+            this.cellCountX = cellCountX;
+            this.cellCountY = cellCountY;
+        }
+
+        Point2D getCenter() {
+            return new Point2D(centerX, centerY);
+        }
+
+        long getKey() {
+            return ((long) constX << 32) | (constY & 0xFFFFFFFFL);
+        }
+    }
 
     /**
      * Internal class to track network node state during CleanAndNetworkPoints.
