@@ -79,6 +79,9 @@ public class DendrySampler implements Sampler {
     // BranchEncouragementFactor: Multiply slope by this when neighbor has 2+ connections
     // to encourage attaching to existing flows
     private static final double BRANCH_ENCOURAGEMENT_FACTOR = 2.0;
+    // TangentMagnitudeScale: Scale factor for tangent magnitude in Hermite spline interpolation
+    // Higher values create more pronounced curvature
+    private static final double TANGENT_MAGNITUDE_SCALE = 3.0;
 
     /**
      * Use B-spline (cubic Hermite) interpolation for pixel sampling in PIXEL_DEBUG mode.
@@ -1434,12 +1437,13 @@ public class DendrySampler implements Sampler {
 
         // Subdivide and displace, adding subdivision points back to nodes
         // Pass the endpoint indices so subdivision points can be properly connected
-        // Subdivision count per level: 2, 3, 4, 5, 6 for levels 0-4
-        int[] subdivisionsPerLevel = {2, 3, 4, 5, 6};
-        int divisions = level < subdivisionsPerLevel.length ? subdivisionsPerLevel[level] : 6;
-        //double jitterFactor = (level == 0) ? 0.0 : 0.5;  // No jitter at level 0 to prevent crossings
-        double jitterFactor =  0.5;  // No jitter at level 0 to prevent crossings
-        List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, divisions, jitterFactor, level, cellX, cellY, parent, rank, srtIdx, endIdx);
+        // Calculate divisions from segment length / merge point spacing to ensure nodes available at lower levels
+        double gridSpacing = 1.0 / Math.pow(2, level);
+        double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
+        double segmentLength = srtPoint.projectZ().distanceTo(endPoint.projectZ());
+        int divisions = Math.max(1, (int) Math.floor(segmentLength / mergeDistance));
+        double jitterFactor = 0.5;
+        List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, divisions, jitterFactor, level, cellX, cellY, parent, rank, srtIdx, endIdx, mergeDistance);
         allSegments.addAll(subdivided);
 
         return bestNeighbor;  // Return the neighbor index for trunk continuation
@@ -1857,12 +1861,13 @@ public class DendrySampler implements Sampler {
      * @param parent, rank Union-Find data structures
      * @param srtIdx The node index for segment start (srt)
      * @param endIdx The node index for segment end (end)
+     * @param mergeDistance The merge point spacing distance for this level
      */
     private List<Segment3D> subdivideAndAddPoints(Segment3D segment, List<NetworkNode> nodes,
                                                    int divisions, double jitterFactor,
                                                    int level, int cellX, int cellY,
                                                    int[] parent, int[] rank,
-                                                   int srtIdx, int endIdx) {
+                                                   int srtIdx, int endIdx, double mergeDistance) {
         if (divisions <= 1) {
             return List.of(segment);
         }
@@ -1877,7 +1882,8 @@ public class DendrySampler implements Sampler {
         chainNodeIndices.add(srtIdx);  // Start with the srt node
 
         // Precompute tangent scale for Hermite interpolation
-        double tangentScale = segLength2D * tangentStrength;
+        // Scale with merge distance to ensure pronounced curvature for spline interpretation
+        double tangentScale = mergeDistance * TANGENT_MAGNITUDE_SCALE * tangentStrength;
 
         // Generate subdivision points using spline if tangents available
         Point3D prev = segment.srt;

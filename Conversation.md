@@ -705,13 +705,15 @@ I zoomed in and I see what appeared to be discontinuities are actually overlappi
 
 I have added line 79 to "NetworkingRules.md" to attempt to bound tangents that point against the flow path, but it is not clear to me how the tangents are flowing backwards at all.  Is the tangent calculated for the point before it is adopted by segments normalized?
 
+###################################
+
+Additional changes to make:
+
+1. Number of subdivisions in subdivideAndAddPoints (using "divisions" variable) should instead be calculated from the segment length (can just use start to end point distance), such that divisions = floor(segmentLength/"merge point spacing"), to ensure multiple nodes available on subsequent segment creation at lower levels.
+2. Curvatures look very minimal.  Set tangent magnitudes to scale with "merge point spacing" when tangents are assigned along with scaler constant so that curvature is more pronounced (this assumes segments are getting created / interpreted as hermite splines)
 
 
-
-
-
-
-#################################3
+#################################
 
 FUTURE:
 
