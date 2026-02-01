@@ -131,7 +131,7 @@ public class DendrySampler implements Sampler {
         final int yOffset;     // Y offset from cell origin (0 to pixelGridSize-1)
         final float elevation; // Elevation at this point
         final byte level;      // Resolution level (0-5)
-        final byte pointType;  // 0 = segment, 1 = subdivision point, 2 = original point
+        final byte pointType;  // -1 = segment line only, 0+ = PointType enum values (ORIGINAL, TRUNK, KNOT, LEAF)
 
         PixelData(int xOffset, int yOffset, float elevation, byte level) {
             this(xOffset, yOffset, elevation, level, (byte) 0);
@@ -195,7 +195,7 @@ public class DendrySampler implements Sampler {
          * @param py center pixel Y
          * @param elevation elevation value
          * @param level resolution level
-         * @param pointType 1=subdivision, 2=original
+         * @param pointType PointType enum value (ORIGINAL=0, TRUNK=1, KNOT=2, LEAF=3)
          * @param radius number of pixels around center to mark
          */
         void markPointWithRadius(int px, int py, float elevation, byte level, byte pointType, int radius) {
@@ -1178,19 +1178,18 @@ public class DendrySampler implements Sampler {
                 iterations++;
 
                 // Try to extend trunk from current node (isTrunk = true)
-                boolean success = createAndDefineSegment(nodes, allSegments, currentNode,
+                // Returns the neighbor index that was connected to, or -1 if no connection
+                int nextNode = createAndDefineSegment(nodes, allSegments, currentNode,
                                                           maxDistSq, level, cellX, cellY,
                                                           parent, rank, previousLevelSegments,
                                                           true);  // isTrunk = true
-                if (!success) {
+                if (nextNode < 0) {
                     break;  // Trunk is complete - no more downhill connections
                 }
 
-                // Get the last connected neighbor to continue from
-                currentNode = getLastConnectedNeighbor(nodes, currentNode);
-                if (currentNode >= 0) {
-                    nodes.get(currentNode).pointType = PointType.TRUNK;
-                }
+                // Continue trunk from the neighbor we just connected to
+                currentNode = nextNode;
+                nodes.get(currentNode).pointType = PointType.TRUNK;
             }
 
             // DEBUG: Return after trunk creation (SEGMENT_DEBUGGING == 15)
@@ -1216,11 +1215,11 @@ public class DendrySampler implements Sampler {
             if (highestUnconnected < 0) break;
 
             // Attempt to create and fully define a segment (isTrunk = false for branch connections)
-            boolean success = createAndDefineSegment(nodes, allSegments, highestUnconnected,
+            int neighborIdx = createAndDefineSegment(nodes, allSegments, highestUnconnected,
                                                       maxDistSq, level, cellX, cellY,
                                                       parent, rank, previousLevelSegments,
                                                       false);  // isTrunk = false
-            if (!success) {
+            if (neighborIdx < 0) {
                 // No valid connection found - mark node so we don't try again
                 NetworkNode node = nodes.get(highestUnconnected);
                 if (level > 0) {
@@ -1299,9 +1298,9 @@ public class DendrySampler implements Sampler {
      * Subdivision points are added back to the node list.
      *
      * @param isTrunk True if building trunk (level 0), requires downhill flow
-     * @return true if a segment was created, false if no valid connection found
+     * @return index of the neighbor that was connected to, or -1 if no connection made
      */
-    private boolean createAndDefineSegment(List<NetworkNode> nodes, List<Segment3D> allSegments,
+    private int createAndDefineSegment(List<NetworkNode> nodes, List<Segment3D> allSegments,
                                             int sourceIdx, double maxDistSq, int level,
                                             int cellX, int cellY, int[] parent, int[] rank,
                                             List<Segment3D> previousLevelSegments,
@@ -1311,7 +1310,7 @@ public class DendrySampler implements Sampler {
         // Find best neighbor: lowest slope, within distance, not already connected via path
         int bestNeighbor = findBestNeighborForSegment(nodes, sourceIdx, maxDistSq, level, parent, allSegments, isTrunk);
         if (bestNeighbor < 0) {
-            return false;
+            return -1;  // No valid neighbor found
         }
 
         NetworkNode targetNode = nodes.get(bestNeighbor);
@@ -1320,7 +1319,7 @@ public class DendrySampler implements Sampler {
         // Check slope cutoff for non-asterism levels
         if (level > 0 && slopeToNeighbor > lowestSlopeCutoff && sourceNode.connections.isEmpty()) {
             sourceNode.removed = true;
-            return false;
+            return -1;  // Slope too high
         }
 
         // Check if this would create a crossing segment (may need multiple redirections)
@@ -1338,12 +1337,12 @@ public class DendrySampler implements Sampler {
                 targetNode = nodes.get(bestNeighbor);
                 tgtPos = targetNode.point.projectZ();  // Update target for next crossing check
             } else {
-                return false;  // Couldn't resolve crossing
+                return -1;  // Couldn't resolve crossing
             }
         }
 
         if (crossingRedirects >= maxCrossingRedirects) {
-            return false;  // Too many crossing redirects - path is blocked
+            return -1;  // Too many crossing redirects - path is blocked
         }
 
         // Determine if this is a branch (target already has 2+ connections)
@@ -1408,7 +1407,7 @@ public class DendrySampler implements Sampler {
         List<Segment3D> subdivided = subdivideAndAddPoints(segment, nodes, divisions, jitterFactor, level, cellX, cellY, parent, rank, srtIdx, endIdx);
         allSegments.addAll(subdivided);
 
-        return true;
+        return bestNeighbor;  // Return the neighbor index for trunk continuation
     }
 
     /**
@@ -1922,11 +1921,11 @@ public class DendrySampler implements Sampler {
             chainNodes.sort((a, b) -> Double.compare(nodes.get(a).point.z, nodes.get(b).point.z));
 
             for (int nodeIdx : chainNodes) {
-                boolean success = createAndDefineSegment(nodes, allSegments, nodeIdx,
+                int neighborIdx = createAndDefineSegment(nodes, allSegments, nodeIdx,
                                                           currentMaxDistSq, level, cellX, cellY,
                                                           parent, rank, previousLevelSegments,
                                                           false);  // isTrunk = false for chain connections
-                if (success) {
+                if (neighborIdx >= 0) {
                     connectionMade = true;
                     // Update root chain
                     rootChain = findRootChain(nodes, parent);
@@ -3984,8 +3983,8 @@ public class DendrySampler implements Sampler {
                     if (px >= 0 && px < pixelGridSize && py >= 0 && py < pixelGridSize) {
                         float elevation = (float) pt.z;
                         byte level = (byte) seg.level;
-                        // pointType 0 = segment (not a special point)
-                        cache.setPixel(px, py, elevation, level, (byte) 0);
+                        // pointType -1 = segment line only (no special point)
+                        cache.setPixel(px, py, elevation, level, (byte) -1);
                     }
                 }
             }
@@ -4051,15 +4050,24 @@ public class DendrySampler implements Sampler {
             return data.elevation + dist * slope * gridsize;
         } else if (returnType == DendryReturnType.PIXEL_DEBUG) {
             // Debug mode: return point type as value
-            // 3 = original point, 2 = subdivision point, 1 = segment
-            // Note: pointType stores 2=original, 1=subdivision, 0=segment
-            // We map to: original->3, subdivision->2, segment->1
-            if (data.pointType == 2) {
-                return 3;  // Original point
-            } else if (data.pointType == 1) {
-                return 2;  // Subdivision point
+            // PointType enum: ORIGINAL=0, TRUNK=1, KNOT=2, LEAF=3, segment line=-1
+            // We return higher values for more "special" point types:
+            //   4 = LEAF (branch endpoint)
+            //   3 = KNOT (subdivision point)
+            //   2 = TRUNK (main flow path)
+            //   1 = ORIGINAL (initial star/point)
+            //   0 = segment line only (pointType=-1)
+            //  -1 = no data
+            if (data.pointType == PointType.LEAF.getValue()) {
+                return 4;  // Leaf point
+            } else if (data.pointType == PointType.KNOT.getValue()) {
+                return 3;  // Subdivision/knot point
+            } else if (data.pointType == PointType.TRUNK.getValue()) {
+                return 2;  // Trunk point
+            } else if (data.pointType == PointType.ORIGINAL.getValue()) {
+                return 1;  // Original star point
             } else {
-                return 1;  // Segment
+                return 0;  // Segment line only (pointType=-1)
             }
         } else {
             // PIXEL_LEVEL
