@@ -37,7 +37,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 30;
+    private static final int SEGMENT_DEBUGGING = 20;
 
     // Configuration parameters
     private final int resolution;
@@ -752,7 +752,19 @@ public class DendrySampler implements Sampler {
             Double.longBitsToDouble(b[2])
         ));
 
-        return candidates.subList(0, Math.min(4, candidates.size()));
+        List<long[]> closest4 = new ArrayList<>(candidates.subList(0, Math.min(4, candidates.size())));
+
+        // Sort the 4 closest in clockwise order around query center to avoid crossing stitches
+        // Calculate angle from query center to each constellation center
+        closest4.sort((a, b) -> {
+            Point2D centerA = getConstellationCenter((int) a[0], (int) a[1]);
+            Point2D centerB = getConstellationCenter((int) b[0], (int) b[1]);
+            double angleA = Math.atan2(centerA.y - queryCenterY, centerA.x - queryCenterX);
+            double angleB = Math.atan2(centerB.y - queryCenterY, centerB.x - queryCenterX);
+            return Double.compare(angleA, angleB);
+        });
+
+        return closest4;
     }
 
     /**
@@ -811,18 +823,8 @@ public class DendrySampler implements Sampler {
         }
 
         // Stitch adjacent constellations together at their boundaries
-        List<Segment3D> stitchSegments = stitchConstellationsNew(closestConstellations, constellationStars, constellationSegments);
-
-        // DEBUG: Return all segments including stitching
-        if (SEGMENT_DEBUGGING == 30) {
-            List<Segment3D> allSegments = new ArrayList<>();
-            for (List<Segment3D> segs : constellationSegments.values()) {
-                allSegments.addAll(segs);
-            }
-            allSegments.addAll(stitchSegments);
-            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", allSegments.size(), stitchSegments.size());
-            return allSegments;
-        }
+        // Uses segment endpoints only (not stars) for valid connection points
+        List<Segment3D> stitchSegments = stitchConstellationsNew(closestConstellations, constellationSegments);
 
         // Combine all asterism segments
         List<Segment3D> allSegments = new ArrayList<>();
@@ -830,6 +832,15 @@ public class DendrySampler implements Sampler {
             allSegments.addAll(segs);
         }
         allSegments.addAll(stitchSegments);
+
+        // Now shift all elevations to 0 (after stitching decisions are made)
+        allSegments = shiftElevationsToZero(allSegments);
+
+        // DEBUG: Return all segments including stitching
+        if (SEGMENT_DEBUGGING == 30) {
+            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", allSegments.size(), stitchSegments.size());
+            return allSegments;
+        }
 
         return allSegments;
     }
@@ -856,7 +867,7 @@ public class DendrySampler implements Sampler {
                 String.format("%.1f", size), ConstellationScale, circumscribingCells.size());
         }
 
-        // Step 2: Sample 9x9 grid in each cell to find candidate stars
+        // Step 2: Sample grid in each cell to find candidate stars
         List<Point3D> draftedStars = new ArrayList<>();
         for (int[] cell : circumscribingCells) {
             Point3D star = findStarInCelllLowestGrid(cell[0], cell[1]);
@@ -1153,10 +1164,8 @@ public class DendrySampler implements Sampler {
         // Each segment is fully defined (tangents, subdivision, displacement) before next connection
         connectAndDefineSegments(nodes, allSegments, maxSegmentDistance, level, cellX, cellY, previousLevelSegments);
 
-        // For level 0 (asterisms), shift all elevations down to 0
-        if (level == 0) {
-            allSegments = shiftElevationsToZero(allSegments);
-        }
+        // Note: For level 0 (asterisms), elevation shifting is done AFTER stitching in generateAsterism()
+        // to preserve elevation information for stitch decisions
 
         return allSegments;
     }
@@ -2784,13 +2793,13 @@ public class DendrySampler implements Sampler {
     /**
      * Stitch adjacent constellations together.
      * For each pair of adjacent constellations:
-     * 1. Find up to 6 closest pairs between them
-     * 2. Select the pair with lowest max elevation
-     * 3. Create stitch segment with proper tangents based on connection type
-     * 4. Subdivide the stitch segment
+     * 1. Extract unique endpoints from segments
+     * 2. Find up to 6 closest pairs between them
+     * 3. Select the pair with lowest max elevation
+     * 4. Create stitch segment with proper tangents based on connection type
+     * 5. Subdivide the stitch segment using level 0 parameters
      */
     private List<Segment3D> stitchConstellationsNew(List<long[]> constellations,
-                                                     Map<Long, List<Point3D>> constellationStars,
                                                      Map<Long, List<Segment3D>> constellationSegments) {
         List<Segment3D> stitchSegments = new ArrayList<>();
 
@@ -2799,29 +2808,32 @@ public class DendrySampler implements Sampler {
         }
 
         // Stitch each constellation to its adjacent neighbor (single pass)
-        // Adjacent means: 0->1, 1->2, 2->3, and 3->0 to close the loop
+        // Constellations are already ordered clockwise, so 0->1, 1->2, 2->3, 3->0 forms a loop
         for (int i = 0; i < constellations.size(); i++) {
             int j = (i + 1) % constellations.size();
 
             long keyI = packKey((int) constellations.get(i)[0], (int) constellations.get(i)[1]);
             long keyJ = packKey((int) constellations.get(j)[0], (int) constellations.get(j)[1]);
 
-            List<Point3D> starsI = constellationStars.get(keyI);
-            List<Point3D> starsJ = constellationStars.get(keyJ);
             List<Segment3D> segmentsI = constellationSegments.get(keyI);
             List<Segment3D> segmentsJ = constellationSegments.get(keyJ);
 
-            if (starsI == null || starsJ == null || starsI.isEmpty() || starsJ.isEmpty()) continue;
-            if (segmentsI == null) segmentsI = List.of();
-            if (segmentsJ == null) segmentsJ = List.of();
+            if (segmentsI == null || segmentsI.isEmpty()) continue;
+            if (segmentsJ == null || segmentsJ.isEmpty()) continue;
+
+            // Extract unique endpoints from segments
+            List<Point3D> endpointsI = extractUniqueEndpoints(segmentsI);
+            List<Point3D> endpointsJ = extractUniqueEndpoints(segmentsJ);
+
+            if (endpointsI.isEmpty() || endpointsJ.isEmpty()) continue;
 
             // Find up to 6 closest pairs between the two constellations
             List<double[]> candidatePairs = new ArrayList<>();  // [distSq, idxI, idxJ, maxElevation]
 
-            for (int pi = 0; pi < starsI.size(); pi++) {
-                Point3D pI = starsI.get(pi);
-                for (int pj = 0; pj < starsJ.size(); pj++) {
-                    Point3D pJ = starsJ.get(pj);
+            for (int pi = 0; pi < endpointsI.size(); pi++) {
+                Point3D pI = endpointsI.get(pi);
+                for (int pj = 0; pj < endpointsJ.size(); pj++) {
+                    Point3D pJ = endpointsJ.get(pj);
                     double distSq = pI.projectZ().distanceSquaredTo(pJ.projectZ());
                     if (distSq < MathUtils.EPSILON) continue;
 
@@ -2850,8 +2862,8 @@ public class DendrySampler implements Sampler {
 
             if (bestPair == null) continue;
 
-            Point3D bestI = starsI.get((int) bestPair[1]);
-            Point3D bestJ = starsJ.get((int) bestPair[2]);
+            Point3D bestI = endpointsI.get((int) bestPair[1]);
+            Point3D bestJ = endpointsJ.get((int) bestPair[2]);
 
             // Determine tangents based on connection type using segment information
             Vec2D tangentI = computeStitchTangentFromSegments(bestI, segmentsI, keyI);
@@ -2872,17 +2884,17 @@ public class DendrySampler implements Sampler {
                 tangentEnd = tangentI;
             }
 
-            // Create the stitch segment
+            // Create the stitch segment at level 0
             Segment3D stitchSegment = new Segment3D(srtPoint, endPoint, 0, tangentSrt, tangentEnd);
 
-            // Subdivide using same methodology as createAndDefineSegment
+            // Subdivide using same methodology as createAndDefineSegment for level 0
             double gridSpacing = 1.0;  // Level 0 grid spacing
             double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
             double segmentLength = srtPoint.projectZ().distanceTo(endPoint.projectZ());
             int divisions = Math.max(1, (int) Math.floor(segmentLength / mergeDistance));
 
             if (divisions > 1) {
-                // Subdivide without adding to nodes (stitches don't participate in further networking)
+                // Subdivide using level 0 tangent magnitude
                 List<Segment3D> subdivided = subdivideStitchSegment(stitchSegment, divisions, mergeDistance);
                 stitchSegments.addAll(subdivided);
             } else {
@@ -2891,6 +2903,41 @@ public class DendrySampler implements Sampler {
         }
 
         return stitchSegments;
+    }
+
+    /**
+     * Extract unique endpoints from a list of segments.
+     */
+    private List<Point3D> extractUniqueEndpoints(List<Segment3D> segments) {
+        List<Point3D> endpoints = new ArrayList<>();
+
+        for (Segment3D seg : segments) {
+            // Check if srt point is already in list
+            boolean srtFound = false;
+            for (Point3D existing : endpoints) {
+                if (pointsMatch(existing, seg.srt)) {
+                    srtFound = true;
+                    break;
+                }
+            }
+            if (!srtFound) {
+                endpoints.add(seg.srt);
+            }
+
+            // Check if end point is already in list
+            boolean endFound = false;
+            for (Point3D existing : endpoints) {
+                if (pointsMatch(existing, seg.end)) {
+                    endFound = true;
+                    break;
+                }
+            }
+            if (!endFound) {
+                endpoints.add(seg.end);
+            }
+        }
+
+        return endpoints;
     }
 
     /**

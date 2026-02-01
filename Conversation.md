@@ -715,7 +715,7 @@ Additional changes to make:
 
 ################################
 
-stitchConstellationsNew needs some fixes.  Please update the following:
+stitchConstellationsNew needs some fixes.  Please refactor it for updated behavior:
 
 1. The constellation will only have stitches created for their adjacent connections.  This means a for loop will only go through the constellations a single time, each time a constellation should be stitched into the next constellation.
 2. Up to the 6 pairs closest pairs between the two constellations will be evaluated.
@@ -726,8 +726,33 @@ stitchConstellationsNew needs some fixes.  Please update the following:
     C. Tangent strength should use an identical methodology to that used in createAndDefineSegment.
 5. After stitch creation, the segment should be subdivided using the same methodology as createAndDefineSegment, using subdivideAndAddPoints.
 
+###################################
+
+0. Wait till after constellation stitching is complete to force the elevation of segments / points to 0 so elevation is available in stitching decisions.  Currently elevation is forced to 0 as a part of constellation segment creation.
+
+There are still issues in stitching occurring:
+1. The order of the constellations being presented is creating an "x" pattern.  Make sure the constellations are ordered or the original array is initialized such that the constellation order creates a loop around the constellations (like clockwise or counterclockwise) so crossing segments do not occur.
+2. When stitches are made, their tangents both appear less significant and their subdivisions smaller than constellation subdivision.  Segments should use identical tangent magnification and subdivision (at level 1) as constellation segments.
+3. There are stitch segments that appear to no end in connections, and instead appear to be floating.  Stitching should NOT require the input "constellationStars" (for stitchConstellationsNew) as stitching should only apply to the already computed segments for the constellation in "constellationSegments"
 
 #################################
+
+Issues:
+
+The constellation boundaries also appear to be much bigger than expected.  With a grid spacing of 1000 and a merge distance of 2/3, stars from constellations should get within 700 of eachother.  Current gaps are consistently 2000, which also indicates inappropriate bounding / removal of star points when creating constellations.
+
+
+
+1. Tangents for stitches are not producing continuous flows consistently, verify tangents are getting inverted / flipped when necessary when on the ends of branches (leaves)
+2. As noted earlier, the subdivision rules should be identical to constellation creation.  The subdivisions currently appear about 3x bigger than expected, which coincides to level 0 cells being referenced.
+3. 
+
+
+
+
+
+
+
 
 FUTURE:
 
