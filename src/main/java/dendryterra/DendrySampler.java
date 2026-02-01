@@ -31,12 +31,13 @@ public class DendrySampler implements Sampler {
      * Values:
      *   0  - Normal operation (default)
      *  10  - Return segments for FIRST constellation only, before stitching
+     *  15  - Return segments for ALL constellations, before stitching, only tree
      *  20  - Return segments for ALL constellations, before stitching
      *  30  - Return segments for all constellations INCLUDING stitching
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 15;
+    private static final int SEGMENT_DEBUGGING = 20;
 
     // Configuration parameters
     private final int resolution;

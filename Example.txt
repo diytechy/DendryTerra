@@ -52,7 +52,7 @@ slope: 0.001              # Valley/cliff factor
 gridsize: 1000      # Grid scaling (1000)
 return: PIXEL_DEBUG       # distance, weighted, or elevation
 curvature: 1.0
-ConstellationScale: 2
+constellation-scale: 2
 sampler:                # Optional control function
   type: OPEN_SIMPLEX_2
   frequency: 0.0001
