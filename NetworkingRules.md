@@ -65,6 +65,8 @@ Connection rules (for creating a connection and detailing the segment):
         For each side of the segment that is not defined:
             If the point is not a branch into another node (set above, should only apply to end points for the segment being created):
                 If the point is already connected to another segment, match the tangent of the connected segment for continuity.
+                    If the points flow through (a start point connects to an end point or an end point connects to a start point) their connecting point tangents should be identical.
+                    Else if two end-points are connecting or two start-points are connecting, the undefined tangent should be set to the inverse of the their connecting tangent to guarantee continuity.
                 Else if the point is not connected to any other segment:
                     Determine a twist to apply to the point:
                         random deterministic value between +/-50 deg * max((1-abs(pointslope)/SlopeWhenStraight ),0)

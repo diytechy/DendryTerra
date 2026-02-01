@@ -80,6 +80,20 @@ public class DendrySampler implements Sampler {
     // to encourage attaching to existing flows
     private static final double BRANCH_ENCOURAGEMENT_FACTOR = 2.0;
 
+    /**
+     * Use B-spline (cubic Hermite) interpolation for pixel sampling in PIXEL_DEBUG mode.
+     * When true, segments with tangent information will be sampled along the curved spline.
+     * When false, uses linear interpolation between endpoints.
+     */
+    private static final boolean USE_BSPLINE_PIXEL_SAMPLING = true;
+
+    /**
+     * Error if any constellation segment is returned with undefined tangents.
+     * When true, throws an error if any segment in the constellation has null tangentSrt or tangentEnd.
+     * Useful for debugging tangent computation issues.
+     */
+    private static final boolean ERROR_ON_UNDEFINED_TANGENT = true;
+
     // Star sampling grid size (9x9 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
 
@@ -1024,6 +1038,7 @@ public class DendrySampler implements Sampler {
         int index;                         // Index in the node list
         final List<Integer> connections;   // Indices of connected nodes
         Vec2D tangent;                     // Computed tangent direction (null until set)
+        boolean tangentWasForStart;        // True if tangent was computed for use as segment start
         boolean isBranchPoint;             // True if this node branches into another path
         int branchIntoNode;                // Index of node this branches into (-1 if not branching)
         boolean removed;                   // True if node was removed during cleaning
@@ -1037,6 +1052,7 @@ public class DendrySampler implements Sampler {
             this.index = index;
             this.connections = new ArrayList<>();
             this.tangent = null;
+            this.tangentWasForStart = false;
             this.isBranchPoint = false;
             this.branchIntoNode = -1;
             this.removed = false;
@@ -1255,6 +1271,19 @@ public class DendrySampler implements Sampler {
                 node.pointType = PointType.LEAF;
             }
         }
+
+        // Check for undefined tangents if error flag is set
+        if (ERROR_ON_UNDEFINED_TANGENT) {
+            for (Segment3D seg : allSegments) {
+                if (seg.tangentSrt == null || seg.tangentEnd == null) {
+                    String msg = String.format(
+                        "Segment has undefined tangent at level %d: srt=%s (tangent=%s), end=%s (tangent=%s)",
+                        level, seg.srt, seg.tangentSrt, seg.end, seg.tangentEnd);
+                    LOGGER.error(msg);
+                    throw new IllegalStateException(msg);
+                }
+            }
+        }
     }
 
     /**
@@ -1389,12 +1418,19 @@ public class DendrySampler implements Sampler {
         }
 
         // Compute tangents for both endpoints
-        tangentSrt = computeNodeTangent(nodes, srtIdx, isBranch && srtIdx == sourceIdx, cellX, cellY);
-        tangentEnd = computeNodeTangent(nodes, endIdx, isBranch && endIdx == sourceIdx, cellX, cellY);
+        // forStart=true for srt (start point), forStart=false for end (end point)
+        tangentSrt = computeNodeTangent(nodes, srtIdx, isBranch && srtIdx == sourceIdx, true, cellX, cellY);
+        tangentEnd = computeNodeTangent(nodes, endIdx, isBranch && endIdx == sourceIdx, false, cellX, cellY);
 
-        // Store tangents in nodes for future reference
-        nodes.get(srtIdx).tangent = tangentSrt;
-        nodes.get(endIdx).tangent = tangentEnd;
+        // Store tangents in nodes for future reference (only if not already set)
+        if (nodes.get(srtIdx).tangent == null) {
+            nodes.get(srtIdx).tangent = tangentSrt;
+            nodes.get(srtIdx).tangentWasForStart = true;
+        }
+        if (nodes.get(endIdx).tangent == null) {
+            nodes.get(endIdx).tangent = tangentEnd;
+            nodes.get(endIdx).tangentWasForStart = false;
+        }
 
         // Create the segment
         Segment3D segment = new Segment3D(srtPoint, endPoint, level, tangentSrt, tangentEnd);
@@ -1660,21 +1696,38 @@ public class DendrySampler implements Sampler {
 
     /**
      * Compute tangent for a node based on its connections.
+     * Handles tangent continuity: when connecting to an existing tangent,
+     * inverts if both are used as the same type (both start or both end).
+     *
+     * @param nodes List of network nodes
+     * @param nodeIdx Index of the node to compute tangent for
+     * @param isBranchEnd True if this node is a branch endpoint
+     * @param forStart True if tangent is for use as segment start, false for end
+     * @param cellX, cellY Cell coordinates for RNG seeding
      */
     private Vec2D computeNodeTangent(List<NetworkNode> nodes, int nodeIdx, boolean isBranchEnd,
-                                      int cellX, int cellY) {
+                                      boolean forStart, int cellX, int cellY) {
         NetworkNode node = nodes.get(nodeIdx);
 
-        // If node already has a tangent, use it
+        // If node already has a tangent, handle continuity
         if (node.tangent != null) {
-            return node.tangent;
+            // Check if we need to invert for continuity
+            // Flow-through (srt→end or end→srt): tangents should be identical
+            // Same-type (srt→srt or end→end): tangent should be inverted
+            if (node.tangentWasForStart == forStart) {
+                // Same type connection (both start or both end) - invert tangent
+                return new Vec2D(-node.tangent.x, -node.tangent.y);
+            } else {
+                // Flow-through connection - use tangent as-is
+                return node.tangent;
+            }
         }
 
-        // Determine twist: random ±70° * max((1 - slope/SlopeWhenStraight), 0)
+        // Determine twist: random ±50° * max((1 - |slope|/SlopeWhenStraight), 0)
         double nodeSlope = node.point.hasSlope() ? node.point.getSlope() : 0;
-        double twistFactor = Math.max(0, 1.0 - nodeSlope / slopeWhenStraight);
+        double twistFactor = Math.max(0, 1.0 - Math.abs(nodeSlope) / slopeWhenStraight);
         Random rng = initRandomGenerator((int)(node.point.x * 1000), (int)(node.point.y * 1000), 73);
-        double twistAngle = (rng.nextDouble() * 2 - 1) * Math.toRadians(70) * twistFactor;
+        double twistAngle = (rng.nextDouble() * 2 - 1) * Math.toRadians(50) * twistFactor;
 
         Vec2D nominalTangent;
 
@@ -3969,9 +4022,36 @@ public class DendrySampler implements Sampler {
             double pixelSize = 1.0 / pixelGridSize;
             int numSamples = Math.max(2, (int) Math.ceil(segLength / pixelSize * 2));
 
+            // Determine if we should use B-spline interpolation
+            boolean useSpline = USE_BSPLINE_PIXEL_SAMPLING && seg.hasTangents();
+
+            // Precompute tangent scale for Hermite interpolation
+            double tangentScale = useSpline ? segLength * tangentStrength : 0;
+
             for (int i = 0; i <= numSamples; i++) {
                 double t = (double) i / numSamples;
-                Point3D pt = seg.lerp(t);
+                Point3D pt;
+
+                if (useSpline) {
+                    // Cubic Hermite spline interpolation
+                    double t2 = t * t;
+                    double t3 = t2 * t;
+                    double h00 = 2 * t3 - 3 * t2 + 1;
+                    double h10 = t3 - 2 * t2 + t;
+                    double h01 = -2 * t3 + 3 * t2;
+                    double h11 = t3 - t2;
+
+                    double x = h00 * seg.srt.x + h10 * (seg.tangentSrt != null ? seg.tangentSrt.x * tangentScale : 0)
+                             + h01 * seg.end.x + h11 * (seg.tangentEnd != null ? seg.tangentEnd.x * tangentScale : 0);
+                    double y = h00 * seg.srt.y + h10 * (seg.tangentSrt != null ? seg.tangentSrt.y * tangentScale : 0)
+                             + h01 * seg.end.y + h11 * (seg.tangentEnd != null ? seg.tangentEnd.y * tangentScale : 0);
+                    double z = MathUtils.lerp(seg.srt.z, seg.end.z, t);
+
+                    pt = new Point3D(x, y, z);
+                } else {
+                    // Linear interpolation
+                    pt = seg.lerp(t);
+                }
 
                 double localX = pt.x - cellX;
                 double localY = pt.y - cellY;
