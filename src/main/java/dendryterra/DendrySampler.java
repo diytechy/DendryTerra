@@ -76,6 +76,23 @@ public class DendrySampler implements Sampler {
     private static final double MERGE_POINT_SPACING = 2.0 / 3.0;  // Stars closer than this get merged
     private static final double MAX_POINT_SEGMENT_DISTANCE = Math.sqrt(8) + 1.0 / 3.0;  // Max distance between adjacent stars after merging
 
+    // Divisions per level configuration
+    // Each value indicates how many divisions occur at that level relative to the previous
+    // Example: [3, 2, 2, 2, 2] means level 0 has 3 divisions, levels 1+ have 2 each
+    private static final int[] DIVISIONS_PER_LEVEL = {3, 2, 2, 2, 2};
+
+    // Pre-computed cumulative points per cell per level (calculated in static block)
+    // [3, 6, 12, 24, 48] for DIVISIONS_PER_LEVEL = [3, 2, 2, 2, 2]
+    private static final int[] POINTS_PER_CELL;
+
+    static {
+        POINTS_PER_CELL = new int[DIVISIONS_PER_LEVEL.length];
+        POINTS_PER_CELL[0] = DIVISIONS_PER_LEVEL[0];
+        for (int i = 1; i < DIVISIONS_PER_LEVEL.length; i++) {
+            POINTS_PER_CELL[i] = POINTS_PER_CELL[i - 1] * DIVISIONS_PER_LEVEL[i];
+        }
+    }
+
     // Slope calculation parameters for neighbor selection
     // DistanceFalloffPower: Use dist^power in denominator to prefer tighter connections
     private static final double DISTANCE_FALLOFF_POWER = 2.0;
@@ -411,35 +428,19 @@ public class DendrySampler implements Sampler {
      * @return List of all generated segments
      */
     private List<Segment3D> generateAllSegments(Cell cell1, double queryX, double queryY) {
-        // Displacement factors decrease exponentially for each level
-        double displacementLevel0 = delta * 2.0;
+        // Displacement factor for level 1 (levels 2+ handled in CleanAndNetworkPoints)
         double displacementLevel1 = delta;
-        double displacementLevel2 = displacementLevel1 / 4.0;
-        double displacementLevel3 = displacementLevel2 / 4.0;
-
-        // Minimum slope constraints for sub-branch connections
-        double minSlopeLevel1 = 0;
-        double minSlopeLevel2 = 0;
-        double minSlopeLevel3 = 0;
-        double minSlopeLevel4 = 0;
-        double minSlopeLevel5 = 0;
 
         // Asterism (Level 0): Generate and process
         List<Segment3D> asterismBase = generateAsterism(cell1);
-        //Map<Long, NodeTangentInfo> asterismTangents = computeNodeTangents(asterismBase);
-        //List<Segment3D> asterismPruned = pruneToQueryRegion(asterismBase, cell1);
         List<Segment3D> asterismPruned = asterismBase;
-
-        //int asterismSubdivisions = Math.max(2, defaultBranches);
-        //asterismPruned = subdivideSegments(asterismPruned, asterismSubdivisions, 0, asterismTangents);
-        //asterismPruned = displaceSegmentsWithSplit(asterismPruned, displacementLevel0, 0);
 
         if (resolution == 0) {
             return asterismPruned;
         }
 
         // Level 1: Generate from asterism
-        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, asterismPruned, minSlopeLevel1);
+        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, asterismPruned, 0);
         Map<Long, NodeTangentInfo> tangentMap1 = computeNodeTangents(segments1Base);
 
         int branchCount = getBranchCountForCell(cell1);
@@ -453,43 +454,29 @@ public class DendrySampler implements Sampler {
             return allSegments;
         }
 
-        // Level 2+: Higher resolution refinement
-        Cell cell2 = getCell(queryX, queryY, 2);
-        Point3D[][] points2 = generateNeighboringPoints3D(cell2, 5);
-        List<Segment3D> segments2 = generateSubSegments(points2, allSegments, minSlopeLevel2, 2);
-        displaceSegments(segments2, displacementLevel2, cell2);
+        // Level 2+: Higher resolution refinement using loop
+        // Each level generates points for the query cell and connects them using CleanAndNetworkPoints
+        List<Segment3D> previousLevelSegments = new ArrayList<>(allSegments);
 
-        if (resolution == 2) {
-            allSegments.addAll(segments2);
-            return allSegments;
+        for (int level = 2; level <= resolution; level++) {
+            // Get the cell at this level's resolution
+            int cellResolution = getCellResolutionForLevel(level);
+            Cell levelCell = getCell(queryX, queryY, cellResolution);
+
+            // Generate points for this cell at this level's density
+            List<Point3D> levelPoints = generatePointsForCellAtLevel(levelCell.x, levelCell.y, level);
+
+            // Use CleanAndNetworkPoints to create properly connected segments
+            // This handles merging, cleaning, tangent computation, subdivision, and displacement
+            List<Segment3D> levelSegments = CleanAndNetworkPoints(
+                levelCell.x, levelCell.y, level, levelPoints, previousLevelSegments);
+
+            if (!levelSegments.isEmpty()) {
+                allSegments.addAll(levelSegments);
+                // Update previous level segments for next iteration
+                previousLevelSegments = new ArrayList<>(allSegments);
+            }
         }
-
-        Cell cell3 = getCell(queryX, queryY, 4);
-        Point3D[][] points3 = generateNeighboringPoints3D(cell3, 5);
-        allSegments.addAll(segments2);
-        List<Segment3D> segments3 = generateSubSegments(points3, allSegments, minSlopeLevel3, 3);
-        displaceSegments(segments3, displacementLevel3, cell3);
-
-        if (resolution == 3) {
-            allSegments.addAll(segments3);
-            return allSegments;
-        }
-
-        Cell cell4 = getCell(queryX, queryY, 8);
-        Point3D[][] points4 = generateNeighboringPoints3D(cell4, 5);
-        allSegments.addAll(segments3);
-        List<Segment3D> segments4 = generateSubSegments(points4, allSegments, minSlopeLevel4, 4);
-
-        if (resolution == 4) {
-            allSegments.addAll(segments4);
-            return allSegments;
-        }
-
-        Cell cell5 = getCell(queryX, queryY, 16);
-        Point3D[][] points5 = generateNeighboringPoints3D(cell5, 5);
-        allSegments.addAll(segments4);
-        List<Segment3D> segments5 = generateSubSegments(points5, allSegments, minSlopeLevel5, 5);
-        allSegments.addAll(segments5);
 
         return allSegments;
     }
@@ -542,6 +529,55 @@ public class DendrySampler implements Sampler {
         return new Random(seed);
     }
 
+    /**
+     * Get the grid spacing for a given level based on DIVISIONS_PER_LEVEL configuration.
+     * Grid spacing = 1.0 / pointsPerCell[level]
+     *
+     * @param level The level (0-indexed)
+     * @return Grid spacing for this level
+     */
+    private double getGridSpacingForLevel(int level) {
+        if (level < 0) return 1.0;
+        if (level >= POINTS_PER_CELL.length) {
+            // Extrapolate for levels beyond configuration
+            int lastIdx = POINTS_PER_CELL.length - 1;
+            int extraLevels = level - lastIdx;
+            int lastDivision = DIVISIONS_PER_LEVEL[lastIdx];
+            return 1.0 / (POINTS_PER_CELL[lastIdx] * Math.pow(lastDivision, extraLevels));
+        }
+        return 1.0 / POINTS_PER_CELL[level];
+    }
+
+    /**
+     * Get the number of point divisions for a given level.
+     *
+     * @param level The level (0-indexed)
+     * @return Number of points per cell axis for this level
+     */
+    private int getPointsPerCellForLevel(int level) {
+        if (level < 0) return 1;
+        if (level >= POINTS_PER_CELL.length) {
+            // Extrapolate for levels beyond configuration
+            int lastIdx = POINTS_PER_CELL.length - 1;
+            int extraLevels = level - lastIdx;
+            int lastDivision = DIVISIONS_PER_LEVEL[lastIdx];
+            return (int) (POINTS_PER_CELL[lastIdx] * Math.pow(lastDivision, extraLevels));
+        }
+        return POINTS_PER_CELL[level];
+    }
+
+    /**
+     * Get the cell resolution multiplier for a given level.
+     * This is used for getCell() to find the correct sub-cell.
+     *
+     * @param level The level (0-indexed, where 0 = level 1 cells)
+     * @return Resolution multiplier (1 for level 0, 2 for level 1, etc.)
+     */
+    private int getCellResolutionForLevel(int level) {
+        if (level <= 0) return 1;
+        return (int) Math.pow(2, level - 1);
+    }
+
     private Point3D[][] generateNeighboringPoints3D(Cell cell, int size) {
         Point3D[][] points = new Point3D[size][size];
         int half = size / 2;
@@ -569,6 +605,43 @@ public class DendrySampler implements Sampler {
             }
         }
         return pointsWithSlopes;
+    }
+
+    /**
+     * Generate points for a single cell at a given level using DIVISIONS_PER_LEVEL configuration.
+     * Creates a grid of points within the cell based on getPointsPerCellForLevel().
+     *
+     * @param cellX Cell X coordinate in level 1 space
+     * @param cellY Cell Y coordinate in level 1 space
+     * @param level The resolution level (determines point density)
+     * @return List of 3D points within the cell
+     */
+    private List<Point3D> generatePointsForCellAtLevel(int cellX, int cellY, int level) {
+        List<Point3D> points = new ArrayList<>();
+        int pointsPerAxis = getPointsPerCellForLevel(level);
+        double gridSpacing = getGridSpacingForLevel(level);
+
+        // Generate a grid of points within the cell [cellX, cellX+1) x [cellY, cellY+1)
+        for (int i = 0; i < pointsPerAxis; i++) {
+            for (int j = 0; j < pointsPerAxis; j++) {
+                // Position point at center of each sub-cell with deterministic jitter
+                double baseX = cellX + (j + 0.5) * gridSpacing;
+                double baseY = cellY + (i + 0.5) * gridSpacing;
+
+                // Add deterministic jitter based on position and level
+                Random rng = initRandomGenerator((int)(baseX * 10000), (int)(baseY * 10000), level);
+                double jitterX = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
+                double jitterY = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
+
+                double px = baseX + jitterX;
+                double py = baseY + jitterY;
+                double elevation = evaluateControlFunction(px, py);
+
+                points.add(new Point3D(px, py, elevation));
+            }
+        }
+
+        return points;
     }
 
     /** Minimum angle (in radians) between two neighbors for slope estimation. */
@@ -1385,8 +1458,8 @@ public class DendrySampler implements Sampler {
                                                    List<Segment3D> previousLevelSegments) {
         if (points.isEmpty()) return new ArrayList<>();
 
-        // Function setup: determine cell-specific distances
-        double gridSpacing = 1.0 / Math.pow(2, level);  // Grid spacing for this level
+        // Function setup: determine cell-specific distances using DIVISIONS_PER_LEVEL config
+        double gridSpacing = getGridSpacingForLevel(level);
         double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
         double maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
 
@@ -1403,9 +1476,11 @@ public class DendrySampler implements Sampler {
             cleanedPoints = removePointsNearSegments(cleanedPoints, previousLevelSegments, mergeDistance);
         }
 
-        // Step 3: Probabilistically remove points based on branchesSampler (if not level 0)
+        // Step 3: Probabilistically remove points based on branchesSampler and distance from segments
+        // Points far from lower-level segments are more likely to be removed to reduce square patterns
         if (level > 0) {
-            cleanedPoints = probabilisticallyRemovePoints(cleanedPoints, cellX, cellY);
+            cleanedPoints = probabilisticallyRemovePoints(cleanedPoints, cellX, cellY,
+                                                          previousLevelSegments, gridSpacing);
         }
 
         if (cleanedPoints.size() <= 1) {
@@ -1707,7 +1782,8 @@ public class DendrySampler implements Sampler {
         // Subdivide and displace, adding subdivision points back to nodes
         // Pass the endpoint indices so subdivision points can be properly connected
         // Calculate divisions from segment length / merge point spacing to ensure nodes available at lower levels
-        double gridSpacing = 1.0 / Math.pow(2, (level+1));
+        // Use next level's grid spacing for subdivision density
+        double gridSpacing = getGridSpacingForLevel(level + 1);
         double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
         double segmentLength = srtPoint.projectZ().distanceTo(endPoint.projectZ());
         int divisions = Math.max(1, (int) Math.ceil(segmentLength / mergeDistance));
@@ -2564,24 +2640,76 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Probabilistically remove points based on (1 - branchesSampler(x,y)).
+     * Probabilistically remove points based on:
+     * 1. branchesSampler value (1 - branchesSampler(x,y))
+     * 2. Distance from lower-level segments (points farther away are more likely to be removed)
+     *
+     * This helps reduce the square pattern at cell edges by removing points that are
+     * far from existing segments.
+     *
+     * @param points Points to filter
+     * @param cellX Cell X coordinate
+     * @param cellY Cell Y coordinate
+     * @param previousLevelSegments Segments from the previous level (for distance-based removal)
+     * @param gridSpacing Grid spacing for this level (used to calculate distance threshold)
+     * @return Filtered list of points
      */
-    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points, int cellX, int cellY) {
-        if (branchesSampler == null) return new ArrayList<>(points);
-
+    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points, int cellX, int cellY,
+                                                         List<Segment3D> previousLevelSegments,
+                                                         double gridSpacing) {
         List<Point3D> result = new ArrayList<>();
+
+        // Distance threshold for maximum removal probability (points beyond this are very likely removed)
+        double maxDistanceForRemoval = gridSpacing * 3.0;
+        double maxDistanceForRemovalSq = maxDistanceForRemoval * maxDistanceForRemoval;
+
         for (Point3D point : points) {
-            double branchProbability = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
-            branchProbability = Math.max(0, Math.min(1, branchProbability / 8.0));  // Normalize to [0,1]
-            double removalProbability = 1.0 - branchProbability;
+            // Base removal probability from branchesSampler
+            double baseRemovalProbability = 0.0;
+            if (branchesSampler != null) {
+                double branchProbability = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
+                branchProbability = Math.max(0, Math.min(1, branchProbability / 8.0));  // Normalize to [0,1]
+                baseRemovalProbability = 1.0 - branchProbability;
+            }
+
+            // Distance-based removal probability
+            // Points farther from previous level segments have higher removal probability
+            double distanceRemovalProbability = 0.0;
+            if (!previousLevelSegments.isEmpty()) {
+                double minDistSq = Double.MAX_VALUE;
+                Point2D point2D = point.projectZ();
+
+                for (Segment3D seg : previousLevelSegments) {
+                    double distSq = pointToSegmentDistanceSquared(point2D, seg.srt.projectZ(), seg.end.projectZ());
+                    if (distSq < minDistSq) {
+                        minDistSq = distSq;
+                    }
+                }
+
+                // Scale distance to [0, 1] based on maxDistanceForRemoval
+                // Points at distance 0 have 0 additional removal probability
+                // Points at maxDistanceForRemoval have high removal probability
+                double normalizedDist = Math.min(1.0, minDistSq / maxDistanceForRemovalSq);
+                distanceRemovalProbability = normalizedDist * 0.8;  // Max 80% from distance
+            }
+
+            // Combined removal probability (max of both factors)
+            double totalRemovalProbability = Math.max(baseRemovalProbability, distanceRemovalProbability);
 
             // Deterministic removal based on point position
             Random rng = initRandomGenerator((int)(point.x * 1000), (int)(point.y * 1000), 42);
-            if (rng.nextDouble() >= removalProbability) {
+            if (rng.nextDouble() >= totalRemovalProbability) {
                 result.add(point);
             }
         }
         return result;
+    }
+
+    /**
+     * Probabilistically remove points based on branchesSampler only (legacy overload).
+     */
+    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points, int cellX, int cellY) {
+        return probabilisticallyRemovePoints(points, cellX, cellY, new ArrayList<>(), 1.0);
     }
 
     /**

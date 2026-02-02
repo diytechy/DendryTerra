@@ -834,7 +834,21 @@ Now update cell layers and compute for layers?  This should allow for full local
 I have made some minor update to "NetworkingRules.md" on the following lines:
 
 - Line 13 to prevent merging on asterisms.
-- 
+
+1. Fix grid spacing definition for consistency.  There are multiple references to grid-spacing and level-related spacing:
+    The spacing of lower-level segments should be defined by a number of divisions per level, like: [3,2,2] indicating there will be 3 levels of division on the first level, 2 on the 2nd, and 2 on the 3rd.
+    Then points spanned per cell per level would be calculated as the multiple of all upper levels, such that would result from the example above as:
+    [3,6,12]
+    This means all gridSpacing should be divided by this points spanned per cell instead of the current power function: "double gridSpacing = 1.0 / Math.pow(2, (level+1))" 
+    This would be use to compute the proper merge spacing and segment distance per level.
+
+2. Now update the main loop to generalize higher level segment creation:
+    A. Instead of stepping through each level through duplicate code (ex: "// Level 2+: Higher resolution refinement"), implement a for or while loop to go through and refine each level and return the full segment definition if the number of segments requested is reached.
+    B. At each level create points (via generateNeighboringPoints3D) with the number of points per cell per level, only on the query cell.
+    C. Use "CleanAndNetworkPoints" to create segments between the new points and the lower segment level.
+    D. Add additional rules near "probabilisticallyRemovePoints" to start removing points randomly as the points get further away from the segments 1 level below in order to reduce branches / higher level segments from creating an obvious square pattern as they approach the edge of the cell.
+
+
 
 FUTURE:
 

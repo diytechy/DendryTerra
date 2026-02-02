@@ -58,7 +58,7 @@ Connection rules (for creating a connection and detailing the segment):
         If the neighbor is already connected to two other points (has a line passing through it), it's slope should be multiplied by BranchEncouragementFactor (Default 2) to encourage points to attach into already existing lines / defined flows.
     1b. If no neighbor is valid, return empty or otherwise communicate to the caller that no valid neighbor is found:
         If this is for tree creation, a valid neighbor is only where a normalized slope is negative.
-        If this is for level 1 or higher, a valid neighbor is only where a normalized slope is less than lowestSlopeCutoff and where the neighbor's elevation exceeds 0.
+        If this is for level 1 or higher, a valid neighbor is only where a normalized slope is less than lowestSlopeCutoff.
         Else a valid neighbor must exist, if we get to this point, log it since this condition should not be possible.
     2. Select the neighbor based on the following priority:
         A. Whose true distance is less than the merge distance.
