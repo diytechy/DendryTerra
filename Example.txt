@@ -49,10 +49,10 @@ epsilon: 0              # Point distribution bias [0, 0.5)
 delta: 0.05             # Segment displacement
 cachepixels: 21.0
 slope: 0.001              # Valley/cliff factor
-gridsize: 1000      # Grid scaling (1000)
+gridsize: 2000      # Grid scaling (1000)
 return: PIXEL_DEBUG       # distance, weighted, or elevation
 curvature: 1.0
-constellation-scale: 2
+constellation-scale: 1
 sampler:                # Optional control function
   type: OPEN_SIMPLEX_2
   frequency: 0.0001

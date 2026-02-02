@@ -1156,7 +1156,9 @@ public class DendrySampler implements Sampler {
      * Uses shared merge function, prioritizing lower elevation stars.
      */
     private List<Point3D> mergeCloseStars(List<Point3D> stars) {
-        return mergePointsByDistance(stars, MERGE_POINT_SPACING, true);
+        //IMPORTANT: Suppressing merge to guarantee star availability in each cell.
+        //return mergePointsByDistance(stars, MERGE_POINT_SPACING, true);
+        return (stars);
     }
 
     /**
@@ -1388,8 +1390,13 @@ public class DendrySampler implements Sampler {
         double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
         double maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
 
-        // Step 1: Clean network points - merge points within merge distance
-        List<Point3D> cleanedPoints = cleanAndMergePoints(points, mergeDistance);
+        // Step 1: Clean network points - merge points within merge distance (only for level > 0)
+        List<Point3D> cleanedPoints;
+        if (level > 0) {
+            cleanedPoints = cleanAndMergePoints(points, mergeDistance);
+        } else {
+            cleanedPoints = new ArrayList<>(points);
+        }
 
         // Step 2: Remove points within merge distance of lower-level segments (if not level 0)
         if (level > 0 && !previousLevelSegments.isEmpty()) {

@@ -10,7 +10,7 @@ Function setup:
     A. Determine the cell specific merge distance by multiplying "merge point spacing" with the gridspacing of the cells used to generate the points.
     B. Determine the maximum segment distance in a similar manner based on gridspacing.
 
-* Clean any network points: if any points are within the merge distance, merge the points to their average x,z position and resample the control function to determine their y height.
+* Clean any network points: If network points is being performed for level 1 or higher, any points are within the merge distance, merge the points to their average x,z position and resample the control function to determine their y height.
     Note this won't affect stars, since merging already happened.
 * Then remove all input points that are within the merge point distance of any other segments 1 level below (linear interpolation for segment distance or other alternatives are appropriate)
     Note this won't affect stars, since they are at the lowest level.
@@ -43,6 +43,14 @@ Function setup:
 
 Connection rules (for creating a connection and detailing the segment):
 
+    GOALS: 
+        - Connect all nodes within the network.
+        - Make smooth transitions / paths.
+        - When branching, branch with a more outward angle.
+        - Prefer flowing "downward".
+        - Give "twist" to flow, increase twist at flatter slopes.
+        - For non-star segments, increase the likelihood that segments will be dropped as they approach the cell borders far from the root path, just to reduce the obvious square shaped boundaries that will naturally form otherwise.
+
     NOTE: It is expected all segments will have a flow direction from the start to the end point, where the start tangent is the angle the segment projects from, and the end tangent is the angle the segment flows into at the end point.
 
     1. Get all the neighboring point in range (overhead xz distance less than the maximum segment distance) and get their properties:
@@ -50,9 +58,12 @@ Connection rules (for creating a connection and detailing the segment):
         If the neighbor is already connected to two other points (has a line passing through it), it's slope should be multiplied by BranchEncouragementFactor (Default 2) to encourage points to attach into already existing lines / defined flows.
     1b. If no neighbor is valid, return empty or otherwise communicate to the caller that no valid neighbor is found:
         If this is for tree creation, a valid neighbor is only where a normalized slope is negative.
-        If this is for level 1 or higher, a valid neighbor is only where a normalized slope is less than lowestSlopeCutoff.
+        If this is for level 1 or higher, a valid neighbor is only where a normalized slope is less than lowestSlopeCutoff and where the neighbor's elevation exceeds 0.
         Else a valid neighbor must exist, if we get to this point, log it since this condition should not be possible.
-    2. Select the neighbor with the lowest normalized slope that is also NOT connected to the current point through another path.  If no potential connection is found, exit this indicating no new connections were made because all neighbors are interconnected.  Create a log if this is reached.
+    2. Select the neighbor based on the following priority:
+        A. Whose true distance is less than the merge distance.
+        B. The lowest normalized slope that is also NOT connected to the current point through another path.
+        NOTE: If no neighbor is selected, exit this indicating no new connections were made because all neighbors are interconnected.
     3. If the selected neighbor is already connected with 3 nodes, or the resulting segment would cross an existing segment, subdivide the closest segment (at the same or 1 level down), and select that new knot from subdivision as the selected neighbor, continuing with the checks below.  Note the new point created by subdividing a segment should inherit the level of the segment that was subdivided and the tangent and the subdivision location, and the point type should be a knot.
         NOTE: This should be incredibly rare due to subdivisions / displacement already present on the segment.  Would debugs be useful here?
     4. Else if the selected neighbor already has a line passing through (the neighbor is already connected to 2 or more other points), set a property to indicate it needs to be merged as a branch.
@@ -82,10 +93,11 @@ Connection rules (for creating a connection and detailing the segment):
 
 Merge Rules:
 - Affects "mergePointsByDistance"
+IMPORTANT: This may be disabled for stars to ensure star availability in each cell.
 
-Perform the following until there are no distances less than the merge point distance:
-1. For all points, get the distance to any other point.
-2. Select the point that has the most connections / distances to other points that are below the merge point distance.  This selected point will be the epicenter for the current merge iteration.
-3. Select both the epicenter point and any of it's points whose distance are less than the merge distance.
-4. Remove all those points, and replace them with a point that is located at the average position.  Perform the control function to get the new elevation.
-5. Now rerun the check as necessary until there are no distances between points that are less than the merge distance.
+    Perform the following until there are no distances less than the merge point distance:
+    1. For all points, get the distance to any other point.
+    2. Select the point that has the most connections / distances to other points that are below the merge point distance.  This selected point will be the epicenter for the current merge iteration.
+    3. Select both the epicenter point and any of it's points whose distance are less than the merge distance.
+    4. Remove all those points, and replace them with a point that is located at the average position.  Perform the control function to get the new elevation.
+    5. Now rerun the check as necessary until there are no distances between points that are less than the merge distance.

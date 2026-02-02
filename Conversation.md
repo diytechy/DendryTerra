@@ -819,6 +819,23 @@ Do:
 
 Update "isInsideConstellationBoundary" to cleave / remove points to the exact shape boundaries (not estimated using distance from the constellation center, and remove boundary checks).
 
+Implement new Merge Rules laid out starting in line "NetworkingRules.md" at line 83
+
+#############################################################
+
+Skip merging entirely so that root is available at all cells.
+
+Make sure segment connections forcibly connect any nodes within the merge distance.
+
+Now update cell layers and compute for layers?  This should allow for full locality, additionally, pruning can be done fully to a single cell level?
+
+###############################################3
+
+I have made some minor update to "NetworkingRules.md" on the following lines:
+
+- Line 13 to prevent merging on asterisms.
+- 
+
 FUTURE:
 
 I think the class NetworkNode is uneccessary.  Into a network there are 3d points, and the output is segments.  As long as NetworkNode is intermediary, but my concern is duplicate information.
