@@ -1161,48 +1161,93 @@ public class DendrySampler implements Sampler {
 
     /**
      * Merge points that are within mergeDistance of each other.
-     * Uses a greedy algorithm that maximizes the number of remaining points:
-     * 1. Sort points by priority (elevation - lower first if preferLowElevation)
-     * 2. Process each point in order, keeping it only if not within mergeDistance of any kept point
+     * Uses an iterative epicenter algorithm:
+     * 1. Find the point with the most neighbors within merge distance (epicenter)
+     * 2. Merge epicenter and all its close neighbors into a single averaged point
+     * 3. Evaluate control function to get new elevation
+     * 4. Repeat until no points are within merge distance of each other
      *
      * @param points List of points to merge
      * @param mergeDistance Minimum distance between kept points
-     * @param preferLowElevation If true, prioritize keeping lower elevation points
-     * @return List of merged points (maximizing count while maintaining distance)
+     * @param preferLowElevation Ignored - elevation is determined by control function
+     * @return List of merged points with proper spacing
      */
     private List<Point3D> mergePointsByDistance(List<Point3D> points, double mergeDistance, boolean preferLowElevation) {
         if (points.size() <= 1) return new ArrayList<>(points);
 
-        // Sort by elevation priority
-        List<Point3D> sorted = new ArrayList<>(points);
-        if (preferLowElevation) {
-            sorted.sort((a, b) -> Double.compare(a.z, b.z));  // Lowest elevation first
-        } else {
-            sorted.sort((a, b) -> Double.compare(b.z, a.z));  // Highest elevation first
-        }
-
         double mergeDistSq = mergeDistance * mergeDistance;
-        List<Point3D> result = new ArrayList<>();
+        List<Point3D> current = new ArrayList<>(points);
 
-        // Greedy selection: keep each point if not too close to any already-kept point
-        for (Point3D candidate : sorted) {
-            boolean tooClose = false;
-            Point2D candidatePos = candidate.projectZ();
+        // Iterate until no points are within merge distance
+        boolean merged = true;
+        while (merged && current.size() > 1) {
+            merged = false;
 
-            for (Point3D kept : result) {
-                double distSq = candidatePos.distanceSquaredTo(kept.projectZ());
-                if (distSq < mergeDistSq) {
-                    tooClose = true;
-                    break;
+            // Find the epicenter: point with most neighbors within merge distance
+            int epicenterIdx = -1;
+            int maxNeighborCount = 0;
+            List<Integer> epicenterNeighbors = null;
+
+            for (int i = 0; i < current.size(); i++) {
+                Point2D pI = current.get(i).projectZ();
+                List<Integer> neighbors = new ArrayList<>();
+
+                for (int j = 0; j < current.size(); j++) {
+                    if (i == j) continue;
+                    double distSq = pI.distanceSquaredTo(current.get(j).projectZ());
+                    if (distSq < mergeDistSq) {
+                        neighbors.add(j);
+                    }
+                }
+
+                if (neighbors.size() > maxNeighborCount) {
+                    maxNeighborCount = neighbors.size();
+                    epicenterIdx = i;
+                    epicenterNeighbors = neighbors;
                 }
             }
 
-            if (!tooClose) {
-                result.add(candidate);
+            // If no point has neighbors within merge distance, we're done
+            if (maxNeighborCount == 0) {
+                break;
             }
+
+            // Merge epicenter and all its neighbors into averaged position
+            double sumX = current.get(epicenterIdx).x;
+            double sumY = current.get(epicenterIdx).y;
+            int mergeCount = 1;
+
+            for (int neighborIdx : epicenterNeighbors) {
+                Point3D neighbor = current.get(neighborIdx);
+                sumX += neighbor.x;
+                sumY += neighbor.y;
+                mergeCount++;
+            }
+
+            double avgX = sumX / mergeCount;
+            double avgY = sumY / mergeCount;
+
+            // Evaluate control function for new elevation
+            double newElevation = evaluateControlFunction(avgX, avgY);
+            Point3D mergedPoint = new Point3D(avgX, avgY, newElevation);
+
+            // Build new list: remove epicenter and neighbors, add merged point
+            Set<Integer> indicesToRemove = new HashSet<>(epicenterNeighbors);
+            indicesToRemove.add(epicenterIdx);
+
+            List<Point3D> next = new ArrayList<>();
+            for (int i = 0; i < current.size(); i++) {
+                if (!indicesToRemove.contains(i)) {
+                    next.add(current.get(i));
+                }
+            }
+            next.add(mergedPoint);
+
+            current = next;
+            merged = true;
         }
 
-        return result;
+        return current;
     }
 
     // ========== CleanAndNetworkPoints Implementation ==========
