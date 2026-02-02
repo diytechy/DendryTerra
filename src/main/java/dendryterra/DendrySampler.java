@@ -10,9 +10,11 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -832,8 +834,8 @@ public class DendrySampler implements Sampler {
             return Double.compare(distA, distB);
         });
 
-        // Take 4 closest
-        List<ConstellationInfo> closest = new ArrayList<>(candidates.subList(0, Math.min(4, candidates.size())));
+        // Take 6 closest
+        List<ConstellationInfo> closest = new ArrayList<>(candidates.subList(0, Math.min(6, candidates.size())));
         
         // Get center coordinate between the selected constellations
         for (ConstellationInfo constInfo : closest) {
@@ -844,13 +846,12 @@ public class DendrySampler implements Sampler {
         avgX = sumX / closest.size();
         avgY = sumY / closest.size();
 
-
         // Sort in clockwise order around query center to avoid crossing stitches
-        closest.sort((a, b) -> {
-            double angleA = Math.atan2(a.centerY - avgY, a.centerX - avgX);
-            double angleB = Math.atan2(b.centerY - avgY, b.centerX - avgX);
-            return Double.compare(angleA, angleB);
-        });
+        //closest.sort((a, b) -> {
+        //    double angleA = Math.atan2(a.centerY - avgY, a.centerX - avgX);
+        //    double angleB = Math.atan2(b.centerY - avgY, b.centerX - avgX);
+        //    return Double.compare(angleA, angleB);
+        //});
 
         return closest;
     }
@@ -3020,6 +3021,30 @@ public class DendrySampler implements Sampler {
     /**
      * Stitch adjacent constellations together using ConstellationInfo.
      */
+    /**
+     * Get the adjacency distance threshold for constellation center-to-center distance.
+     * Adjacent constellations have centers within this distance (with small buffer for rounding).
+     */
+    private double getAdjacentConstellationThreshold() {
+        double size = getConstellationSize();
+        double buffer = size * 0.03;  // buffer for floating point tolerance
+
+        switch (constellationShape) {
+            case HEXAGON:
+                // Hexagon neighbors are all at distance = size
+                return size + buffer;
+            case RHOMBUS:
+                // Rhombus closest neighbors are at distance = size * sqrt(0.75) ≈ 0.866 * size
+                // Same row neighbors are at distance = size
+                return (size* 0.866) + buffer;
+            case SQUARE:
+            default:
+                // Square diagonal neighbors are at distance = size * sqrt(2) ≈ 1.414 * size
+                // Cardinal neighbors are at distance = size
+                return size + buffer;  // Include diagonals
+        }
+    }
+
     private List<Segment3D> stitchConstellations(List<ConstellationInfo> constellations,
                                                   Map<Long, List<Segment3D>> constellationSegments) {
         List<Segment3D> stitchSegments = new ArrayList<>();
@@ -3028,13 +3053,64 @@ public class DendrySampler implements Sampler {
             return stitchSegments;
         }
 
-        // Stitch each constellation to its adjacent neighbor (single pass)
-        // Constellations are already ordered clockwise, so 0->1, 1->2, 2->3, 3->0 forms a loop
-        for (int i = 0; i < constellations.size(); i++) {
-            int j = (i + 1) % constellations.size();
+        double adjacencyThreshold = getAdjacentConstellationThreshold();
+        double adjacencyThresholdSq = adjacencyThreshold * adjacencyThreshold;
 
-            long keyI = constellations.get(i).getKey();
-            long keyJ = constellations.get(j).getKey();
+        // Find all pairs of adjacent constellations (shared border)
+        // Use a set of processed pair keys to avoid duplicates
+        Set<Long> processedPairs = new HashSet<>();
+        List<int[]> adjacentPairs = new ArrayList<>();  // [indexI, indexJ]
+
+        for (int i = 0; i < constellations.size(); i++) {
+            ConstellationInfo constI = constellations.get(i);
+
+            for (int j = i + 1; j < constellations.size(); j++) {
+                ConstellationInfo constJ = constellations.get(j);
+
+                // Check center-to-center distance
+                double dx = constI.centerX - constJ.centerX;
+                double dy = constI.centerY - constJ.centerY;
+                double distSq = dx * dx + dy * dy;
+
+                if (distSq < adjacencyThresholdSq) {
+                    // Create deterministic pair key (smaller key first)
+                    long keyI = constI.getKey();
+                    long keyJ = constJ.getKey();
+                    long pairKey = (keyI < keyJ) ? (keyI ^ (keyJ << 1)) : (keyJ ^ (keyI << 1));
+
+                    if (!processedPairs.contains(pairKey)) {
+                        processedPairs.add(pairKey);
+                        adjacentPairs.add(new int[]{i, j});
+                    }
+                }
+            }
+        }
+
+        // Sort pairs deterministically by combined center coordinates for reproducible results
+        adjacentPairs.sort((a, b) -> {
+            ConstellationInfo aI = constellations.get(a[0]);
+            ConstellationInfo aJ = constellations.get(a[1]);
+            ConstellationInfo bI = constellations.get(b[0]);
+            ConstellationInfo bJ = constellations.get(b[1]);
+
+            // Compare by minimum X, then minimum Y of the pair
+            double aMinX = Math.min(aI.centerX, aJ.centerX);
+            double bMinX = Math.min(bI.centerX, bJ.centerX);
+            if (Math.abs(aMinX - bMinX) > MathUtils.EPSILON) {
+                return Double.compare(aMinX, bMinX);
+            }
+            double aMinY = Math.min(aI.centerY, aJ.centerY);
+            double bMinY = Math.min(bI.centerY, bJ.centerY);
+            return Double.compare(aMinY, bMinY);
+        });
+
+        // Process each adjacent pair
+        for (int[] pair : adjacentPairs) {
+            ConstellationInfo constI = constellations.get(pair[0]);
+            ConstellationInfo constJ = constellations.get(pair[1]);
+
+            long keyI = constI.getKey();
+            long keyJ = constJ.getKey();
 
             List<Segment3D> segmentsI = constellationSegments.get(keyI);
             List<Segment3D> segmentsJ = constellationSegments.get(keyJ);
@@ -3074,10 +3150,10 @@ public class DendrySampler implements Sampler {
             double lowestMaxElevation = Double.MAX_VALUE;
 
             for (int k = 0; k < pairsToConsider; k++) {
-                double[] pair = candidatePairs.get(k);
-                if (pair[3] < lowestMaxElevation) {
-                    lowestMaxElevation = pair[3];
-                    bestPair = pair;
+                double[] candidate = candidatePairs.get(k);
+                if (candidate[3] < lowestMaxElevation) {
+                    lowestMaxElevation = candidate[3];
+                    bestPair = candidate;
                 }
             }
 

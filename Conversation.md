@@ -799,16 +799,25 @@ This should ensure continuity within the segment.
 
 Increase constellation query for borders?  Issue with ordering and angle assignment?  Angle should be around const center?
 
-Still issues with merging and bounding?
+S
+
+There are cases where 6 constellations are necessary,  I have updated the number of returned constellations to 6.
+
+Rewrite the method to select constellations to stitch together (function "stitchConstellations")
+
+Instead of stitching each constellation to it's next constellation (the current for loop), only stitch pairs of constellations that have a shared border.  This can be done by finding pairs of constellations whose center-to-center distance is below the adjacent threshold, which can be calculated per shape, and is just the distance between the two adjacent shapes with a little extra for rounding.
+
+Then loop through these pairs and compute the segments as is done today, but note the segment should be computed in a deterministic way if any randomness is performed, if not already done.
+
+###############################################
+
+getAdjacentConstellationThreshold is wrong - debugging
+
+till issues with merging and bounding?
 
 Do:
 
 Update "isInsideConstellationBoundary" to cleave / remove points to the exact shape boundaries (not estimated using distance from the constellation center, and remove boundary checks).
-
-Determine 4 connected constellations using angle from selected constellation (constellation containing query cell), this was just attempted by hand-code.
-
-
-###############################################
 
 FUTURE:
 
