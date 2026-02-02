@@ -990,12 +990,11 @@ public class DendrySampler implements Sampler {
             }
         }
 
-        // Step 3: Remove stars outside constellation boundary or within half merge spacing from boundary
+        // Step 3: Remove stars outside constellation boundary (exact shape boundaries)
         List<Point3D> boundedStars = new ArrayList<>();
         for (Point3D star : draftedStars) {
-            // Keep star if it's inside boundary with margin of halfMergeSpacing
-            // Uses shape-appropriate distance (Chebyshev for SQUARE, etc.)
-            if (isInsideConstellationBoundary(star.projectZ(), center, size, halfMergeSpacing)) {
+            // Keep star if it's inside the exact constellation boundary
+            if (isInsideConstellationBoundary(star.projectZ(), center, size)) {
                 boundedStars.add(star);
             }
         }
@@ -1066,23 +1065,37 @@ public class DendrySampler implements Sampler {
      * @param margin Distance inside the boundary to check (positive = stricter)
      * @return true if point is inside boundary minus margin
      */
-    private boolean isInsideConstellationBoundary(Point2D point, Point2D center, double size, double margin) {
+    /**
+     * Check if a point is inside the exact constellation boundary shape.
+     * Uses precise geometric boundaries for each shape type.
+     */
+    private boolean isInsideConstellationBoundary(Point2D point, Point2D center, double size) {
         double dx = Math.abs(point.x - center.x);
         double dy = Math.abs(point.y - center.y);
         double halfSize = size / 2.0;
 
         switch (constellationShape) {
-            case HEXAGON:
-                // Hexagon: approximate using Euclidean distance
-                double dist = Math.sqrt(dx * dx + dy * dy);
-                return dist < halfSize - margin;
-            case RHOMBUS:
-                // Rhombus: sum of |dx| + |dy| defines boundary
-                return (dx + dy) < halfSize - margin;
+            case HEXAGON: {
+                // Pointy-top hexagon with width = size
+                // Circumradius R = size / sqrt(3)
+                // Point is inside if:
+                //   1. dx <= size/2 (within horizontal extent to left/right vertices)
+                //   2. dy <= (size - dx) / sqrt(3) (within diagonal edges)
+                double sqrt3 = Math.sqrt(3);
+                if (dx > halfSize) return false;
+                return dy <= (size - dx) / sqrt3;
+            }
+            case RHOMBUS: {
+                // Rhombus (diamond) with diagonals along axes
+                // Horizontal diagonal = size, vertical diagonal = size * sqrt(2)
+                // Point is inside if: dx + dy/sqrt(2) <= halfSize
+                double sqrt2 = Math.sqrt(2);
+                return dx + dy / sqrt2 <= halfSize;
+            }
             case SQUARE:
             default:
                 // Square: use Chebyshev distance (max of |dx|, |dy|)
-                return Math.max(dx, dy) < halfSize - margin;
+                return Math.max(dx, dy) <= halfSize;
         }
     }
 
