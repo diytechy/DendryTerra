@@ -1515,6 +1515,12 @@ public class DendrySampler implements Sampler {
                                            List<Segment3D> previousLevelSegments) {
         double maxDistSq = maxSegmentDistance * maxSegmentDistance;
 
+        // Calculate merge distance for neighbor selection priority
+        // Neighbors within merge distance are preferred (priority A in selection rules)
+        double gridSpacing = getGridSpacingForLevel(level);
+        double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
+        double mergeDistSq = mergeDistance * mergeDistance;
+
         // Union-Find for tracking chain connectivity
         int[] parent = new int[nodes.size() * 10];  // Extra space for subdivision points
         int[] rank = new int[nodes.size() * 10];
@@ -1542,7 +1548,7 @@ public class DendrySampler implements Sampler {
                 // Try to extend trunk from current node (isTrunk = true)
                 // Returns the neighbor index that was connected to, or -1 if no connection
                 int nextNode = createAndDefineSegment(nodes, allSegments, currentNode,
-                                                          maxDistSq, level, cellX, cellY,
+                                                          maxDistSq, mergeDistSq, level, cellX, cellY,
                                                           parent, rank, previousLevelSegments,
                                                           true);  // isTrunk = true
                 if (nextNode < 0) {
@@ -1578,7 +1584,7 @@ public class DendrySampler implements Sampler {
 
             // Attempt to create and fully define a segment (isTrunk = false for branch connections)
             int neighborIdx = createAndDefineSegment(nodes, allSegments, highestUnconnected,
-                                                      maxDistSq, level, cellX, cellY,
+                                                      maxDistSq, mergeDistSq, level, cellX, cellY,
                                                       parent, rank, previousLevelSegments,
                                                       false);  // isTrunk = false
             if (neighborIdx < 0) {
@@ -1603,7 +1609,7 @@ public class DendrySampler implements Sampler {
 
         // Phase B: Connect chains to form single connected network
         // Find chains that aren't connected to the root chain and connect them
-        connectChainsToRoot(nodes, allSegments, maxDistSq, level, cellX, cellY, parent, rank, previousLevelSegments);
+        connectChainsToRoot(nodes, allSegments, maxDistSq, mergeDistSq, level, cellX, cellY, parent, rank, previousLevelSegments);
 
         // DEBUG: Return after Phase B (chain connections)
         if (SEGMENT_DEBUGGING == 50) {
@@ -1672,18 +1678,19 @@ public class DendrySampler implements Sampler {
      * This includes: connecting, computing tangents, subdividing, displacing.
      * Subdivision points are added back to the node list.
      *
+     * @param mergeDistSq Squared merge distance (neighbors within this distance are preferred)
      * @param isTrunk True if building trunk (level 0), requires downhill flow
      * @return index of the neighbor that was connected to, or -1 if no connection made
      */
     private int createAndDefineSegment(List<NetworkNode> nodes, List<Segment3D> allSegments,
-                                            int sourceIdx, double maxDistSq, int level,
-                                            int cellX, int cellY, int[] parent, int[] rank,
+                                            int sourceIdx, double maxDistSq, double mergeDistSq,
+                                            int level, int cellX, int cellY, int[] parent, int[] rank,
                                             List<Segment3D> previousLevelSegments,
                                             boolean isTrunk) {
         NetworkNode sourceNode = nodes.get(sourceIdx);
 
-        // Find best neighbor: lowest slope, within distance, not already connected via path
-        int bestNeighbor = findBestNeighborForSegment(nodes, sourceIdx, maxDistSq, level, parent, allSegments, isTrunk);
+        // Find best neighbor: prefer within merge distance, then lowest slope
+        int bestNeighbor = findBestNeighborForSegment(nodes, sourceIdx, maxDistSq, mergeDistSq, level, parent, allSegments, isTrunk);
         if (bestNeighbor < 0) {
             return -1;  // No valid neighbor found
         }
@@ -1808,14 +1815,17 @@ public class DendrySampler implements Sampler {
      * @return Index of best neighbor, or -1 if none found
      */
     private int findBestNeighborForSegment(List<NetworkNode> nodes, int sourceIdx,
-                                            double maxDistSq, int level, int[] parent,
-                                            List<Segment3D> existingSegments,
+                                            double maxDistSq, double mergeDistSq, int level,
+                                            int[] parent, List<Segment3D> existingSegments,
                                             boolean isTrunk) {
         NetworkNode sourceNode = nodes.get(sourceIdx);
         Point2D sourcePos = sourceNode.point.projectZ();
 
-        double bestSlope = Double.MAX_VALUE;
-        int bestNeighbor = -1;
+        // Track best neighbor within merge distance (priority A) and overall (priority B)
+        double bestSlopeWithinMerge = Double.MAX_VALUE;
+        int bestNeighborWithinMerge = -1;
+        double bestSlopeOverall = Double.MAX_VALUE;
+        int bestNeighborOverall = -1;
 
         for (int i = 0; i < nodes.size(); i++) {
             if (i == sourceIdx) continue;
@@ -1856,13 +1866,23 @@ public class DendrySampler implements Sampler {
                 effectiveSlope *= BRANCH_ENCOURAGEMENT_FACTOR;
             }
 
-            if (effectiveSlope < bestSlope) {
-                bestSlope = effectiveSlope;
-                bestNeighbor = i;
+            // Priority A: Prefer neighbors within merge distance
+            if (distSq <= mergeDistSq) {
+                if (effectiveSlope < bestSlopeWithinMerge) {
+                    bestSlopeWithinMerge = effectiveSlope;
+                    bestNeighborWithinMerge = i;
+                }
+            }
+
+            // Priority B: Track overall best (fallback if none within merge distance)
+            if (effectiveSlope < bestSlopeOverall) {
+                bestSlopeOverall = effectiveSlope;
+                bestNeighborOverall = i;
             }
         }
 
-        return bestNeighbor;
+        // Return neighbor within merge distance if any, otherwise overall best
+        return (bestNeighborWithinMerge >= 0) ? bestNeighborWithinMerge : bestNeighborOverall;
     }
 
     /**
@@ -2414,7 +2434,7 @@ public class DendrySampler implements Sampler {
      * At level 0 (asterisms), all stars must connect - chains are never removed.
      */
     private void connectChainsToRoot(List<NetworkNode> nodes, List<Segment3D> allSegments,
-                                      double maxDistSq, int level, int cellX, int cellY,
+                                      double maxDistSq, double mergeDistSq, int level, int cellX, int cellY,
                                       int[] parent, int[] rank, List<Segment3D> previousLevelSegments) {
         // Find the root chain (largest chain or chain with lowest elevation point)
         int rootChain = findRootChain(nodes, parent);
@@ -2446,7 +2466,7 @@ public class DendrySampler implements Sampler {
 
             for (int nodeIdx : chainNodes) {
                 int neighborIdx = createAndDefineSegment(nodes, allSegments, nodeIdx,
-                                                          currentMaxDistSq, level, cellX, cellY,
+                                                          currentMaxDistSq, mergeDistSq, level, cellX, cellY,
                                                           parent, rank, previousLevelSegments,
                                                           false);  // isTrunk = false for chain connections
                 if (neighborIdx >= 0) {
