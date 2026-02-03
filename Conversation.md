@@ -885,6 +885,13 @@ There appears to be a defect in "connectChainsToRoot" causing multiple overlappi
 
 IMPORTANT: findRootChain (if it continues to be used after these updates / fixes are applied) may be overly complicated, a path to the interconnected root just means the node needs to have a connection to either a trunk type node or a node that was created 1 level down.
 
+####################################################################
+
+At level 1 I do not see any segments that return back to the main asterism / points connected to trunk nodes.  The level 1 nodes only connect to each-other.  Is there a bug preventing those segments that connect level 1 nodes to their level 0 parent segments from getting added to the pool or allowing them to be displayed?
+
+
+
+
 FUTURE:
 
 I think the class NetworkNode is unnecessary.  Into a network there are 3d points, and the output is segments.  As long as NetworkNode is intermediary, but my concern is duplicate information.

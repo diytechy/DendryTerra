@@ -1704,7 +1704,7 @@ public class DendrySampler implements Sampler {
                                                           previousLevelSegments, gridSpacing);
         }
 
-        if (cleanedPoints.size() <= 1) {
+        if (cleanedPoints.size() <= 1 && previousLevelSegments.isEmpty()) {
             return new ArrayList<>();
         }
 
@@ -1714,10 +1714,20 @@ public class DendrySampler implements Sampler {
             nodes.add(new NetworkNode(cleanedPoints.get(i), i));
         }
 
+        // Step 4: For level 1+, add previous level segment endpoints as NetworkNodes
+        // This allows new points to connect TO existing segments from previous level
+        if (level > 0 && !previousLevelSegments.isEmpty()) {
+            addPreviousLevelEndpointsAsNodes(nodes, previousLevelSegments, level - 1, mergeDistance);
+        }
+
+        if (nodes.size() <= 1) {
+            return new ArrayList<>();
+        }
+
         // Track all fully-defined segments
         List<Segment3D> allSegments = new ArrayList<>();
 
-        // Step 4: Connect points using per-segment approach
+        // Step 5: Connect points using per-segment approach
         // Each segment is fully defined (tangents, subdivision, displacement) before next connection
         connectAndDefineSegments(nodes, allSegments, maxSegmentDistance, level, cellX, cellY, previousLevelSegments);
 
@@ -1833,6 +1843,79 @@ public class DendrySampler implements Sampler {
                 }
             }
         }
+    }
+
+    /**
+     * Add previous level segment endpoints as NetworkNodes.
+     * This allows new points to connect TO existing segments from the previous level,
+     * enabling level 1 nodes to connect back to level 0 segment endpoints.
+     *
+     * @param nodes Existing list of NetworkNodes to add to
+     * @param previousLevelSegments Segments from the previous level
+     * @param previousLevel The level number of the previous segments
+     * @param mergeDistance Distance threshold to avoid adding duplicate nodes
+     */
+    private void addPreviousLevelEndpointsAsNodes(List<NetworkNode> nodes,
+                                                   List<Segment3D> previousLevelSegments,
+                                                   int previousLevel,
+                                                   double mergeDistance) {
+        double mergeDistSq = mergeDistance * mergeDistance;
+
+        // Collect unique endpoints from previous level segments
+        // Use a set of quantized positions to avoid duplicates within segments
+        Set<Long> addedPositions = new HashSet<>();
+
+        for (Segment3D seg : previousLevelSegments) {
+            // Skip EDGE points - they should not be connection targets
+            if (seg.srtType == PointType.EDGE && seg.endType == PointType.EDGE) {
+                continue;
+            }
+
+            // Process start point if not EDGE
+            if (seg.srtType != PointType.EDGE) {
+                tryAddEndpointAsNode(nodes, seg.srt, previousLevel, mergeDistSq, addedPositions);
+            }
+
+            // Process end point if not EDGE
+            if (seg.endType != PointType.EDGE) {
+                tryAddEndpointAsNode(nodes, seg.end, previousLevel, mergeDistSq, addedPositions);
+            }
+        }
+    }
+
+    /**
+     * Try to add a segment endpoint as a NetworkNode if it's not too close to existing nodes.
+     */
+    private void tryAddEndpointAsNode(List<NetworkNode> nodes, Point3D endpoint,
+                                       int sourceLevel, double mergeDistSq,
+                                       Set<Long> addedPositions) {
+        // Quantize position for deduplication (within segments)
+        long qx = Math.round(endpoint.x * 1000);
+        long qy = Math.round(endpoint.y * 1000);
+        long posKey = (qx << 32) | (qy & 0xFFFFFFFFL);
+
+        if (addedPositions.contains(posKey)) {
+            return;  // Already added this endpoint
+        }
+
+        // Check if too close to any existing node
+        for (NetworkNode existing : nodes) {
+            if (existing.removed) continue;
+            double dx = endpoint.x - existing.point.x;
+            double dy = endpoint.y - existing.point.y;
+            double distSq = dx * dx + dy * dy;
+            if (distSq < mergeDistSq) {
+                return;  // Too close to existing node
+            }
+        }
+
+        // Add as new node
+        int newIdx = nodes.size();
+        NetworkNode newNode = new NetworkNode(endpoint, newIdx);
+        newNode.sourceLevel = sourceLevel;
+        newNode.isSubdivisionPoint = true;  // Treat as subdivision point so it won't initiate connections
+        nodes.add(newNode);
+        addedPositions.add(posKey);
     }
 
     /**
