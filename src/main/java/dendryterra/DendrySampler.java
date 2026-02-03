@@ -1795,29 +1795,6 @@ public class DendrySampler implements Sampler {
             }
         }
 
-        // For all levels: Process remaining unconnected points from highest to lowest
-        while (iterations < maxIterations) {
-            iterations++;
-
-            // Find highest elevation ORIGINAL node (not subdivision point) without any connections
-            int highestUnconnected = findHighestUnconnectedOriginalNode(nodes);
-            if (highestUnconnected < 0) break;
-
-            // Attempt to create and fully define a segment (isTrunk = false for branch connections)
-            int neighborIdx = createAndDefineSegment(nodes, allSegments, highestUnconnected,
-                                                      maxDistSq, mergeDistSq, level, cellX, cellY,
-                                                      parent, rank, previousLevelSegments,
-                                                      false);  // isTrunk = false
-            if (neighborIdx < 0) {
-                // No valid connection found - mark node so we don't try again
-                NetworkNode node = nodes.get(highestUnconnected);
-                if (level > 0) {
-                    // At higher levels, remove nodes that can't connect
-                    node.removed = true;
-                }
-            }
-        }
-
         if (iterations >= maxIterations) {
             LOGGER.warn("CleanAndNetworkPoints Phase A reached max iterations ({})", maxIterations);
         }
