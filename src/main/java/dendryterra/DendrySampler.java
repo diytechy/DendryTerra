@@ -441,27 +441,13 @@ public class DendrySampler implements Sampler {
         if (resolution == 0) {
             return asterismPruned;
         }
-
-        // Level 1: Generate from asterism
-        List<Segment3D> segments1Base = generateLevel1SegmentsCompact(cell1, asterismPruned, 0);
-        Map<Long, NodeTangentInfo> tangentMap1 = computeNodeTangents(segments1Base);
-
-        int branchCount = getBranchCountForCell(cell1);
-        List<Segment3D> segments1 = subdivideSegments(segments1Base, branchCount, 1, tangentMap1);
-        segments1 = displaceSegmentsWithSplit(segments1, displacementLevel1, 1);
-
         List<Segment3D> allSegments = new ArrayList<>(asterismPruned);
-        allSegments.addAll(segments1);
 
-        if (resolution == 1) {
-            return allSegments;
-        }
-
-        // Level 2+: Higher resolution refinement using loop
+        // Level 1+: Higher resolution refinement using loop
         // Each level generates points for the query cell and connects them using CleanAndNetworkPoints
         List<Segment3D> previousLevelSegments = new ArrayList<>(allSegments);
 
-        for (int level = 2; level <= resolution; level++) {
+        for (int level = 1; level <= resolution; level++) {
             // Get the cell at this level's resolution
             int cellResolution = getCellResolutionForLevel(level);
             Cell levelCell = getCell(queryX, queryY, cellResolution);
