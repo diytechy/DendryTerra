@@ -23,7 +23,13 @@ public enum PointType {
     /**
      * Point exists at the end of a branch on its level.
      */
-    LEAF(3);
+    LEAF(3),
+
+    /**
+     * Point was created by clipping a segment at a cell boundary.
+     * Edge points should not be connected to by subsequent levels.
+     */
+    EDGE(4);
 
     private final int value;
 

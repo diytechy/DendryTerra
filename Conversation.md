@@ -853,7 +853,34 @@ I have made some minor update to "NetworkingRules.md" on the following lines:
 
 Are stitches attempting to connect to any segment node?  Or only stars / leafs?  They should evaluate for any node on the segment, not just stars.
 
-Check segment distance for both star segments and for 
+Check segment distance for both star segments and for stitch <- This appears to be fixed.
+
+####################################################
+
+IMPORTANT:
+
+Still reaching max iterations on chains? ==>
+
+Level 0: connectChainsToRoot reached max iterations (630)
+
+There is a defect somewhere.  Even at level 2 this should be impossible.
+
+2 questions:
+
+In "DendrySampler.java" why is level 1 in "generateAllSegments" not in the for loop?  Why is the for loop only for level 2+ (line 464)?
+
+What could be causing connectChainsToRoot to reach max iterations?
+
+######################################################################
+
+Make the following updates:
+
+1. Update the variable "asterismPruned" so it only contains segments that have at least one end within the query cell (level 1 cell size), and that segments that do cross the cell boundary are cut at the boundary and given a new knot / point type that indicates it is a EDGE point (public enum PointType). (DendrySampler.java line 439).
+
+2. Update connectAndDefineSegments and it's related functions so that functions do not attempt to connect to EDGE type segment ends.
+
+3. Update connectAndDefineSegments
+
 
 FUTURE:
 

@@ -436,7 +436,8 @@ public class DendrySampler implements Sampler {
 
         // Asterism (Level 0): Generate and process
         List<Segment3D> asterismBase = generateAsterism(cell1);
-        List<Segment3D> asterismPruned = asterismBase;
+        // Prune asterism to query cell - clips segments at cell boundary with EDGE points
+        List<Segment3D> asterismPruned = pruneSegmentsToCell(asterismBase, cell1);
 
         if (resolution == 0) {
             return asterismPruned;
@@ -486,6 +487,229 @@ public class DendrySampler implements Sampler {
         int cellX = MathUtils.floor(x * resolution);
         int cellY = MathUtils.floor(y * resolution);
         return new Cell(cellX, cellY, resolution);
+    }
+
+    /**
+     * Prune segments to a cell boundary.
+     * - Keeps segments that have at least one endpoint within the cell
+     * - Clips segments that cross the boundary, marking clipped points as EDGE
+     * - Removes segments entirely outside the cell
+     *
+     * @param segments List of segments to prune
+     * @param cell The cell to prune to (level 1 cell)
+     * @return List of pruned segments with EDGE points at boundaries
+     */
+    private List<Segment3D> pruneSegmentsToCell(List<Segment3D> segments, Cell cell) {
+        List<Segment3D> result = new ArrayList<>();
+
+        // Cell bounds (level 1 cells are 1x1 in normalized space)
+        double minX = cell.x;
+        double maxX = cell.x + 1.0;
+        double minY = cell.y;
+        double maxY = cell.y + 1.0;
+
+        for (Segment3D seg : segments) {
+            boolean srtInside = isPointInCell(seg.srt, minX, maxX, minY, maxY);
+            boolean endInside = isPointInCell(seg.end, minX, maxX, minY, maxY);
+
+            if (srtInside && endInside) {
+                // Both ends inside - keep segment as-is
+                result.add(seg);
+            } else if (srtInside || endInside) {
+                // One end inside, one outside - clip at boundary
+                Segment3D clipped = clipSegmentToCell(seg, minX, maxX, minY, maxY, srtInside);
+                if (clipped != null) {
+                    result.add(clipped);
+                }
+            }
+            // If neither end is inside, check if segment crosses the cell
+            else if (segmentCrossesCell(seg, minX, maxX, minY, maxY)) {
+                // Segment crosses through cell - clip both ends
+                Segment3D clipped = clipSegmentBothEnds(seg, minX, maxX, minY, maxY);
+                if (clipped != null) {
+                    result.add(clipped);
+                }
+            }
+            // Otherwise segment is entirely outside - skip it
+        }
+
+        return result;
+    }
+
+    /**
+     * Check if a point is inside a cell (inclusive of boundaries).
+     */
+    private boolean isPointInCell(Point3D point, double minX, double maxX, double minY, double maxY) {
+        return point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY;
+    }
+
+    /**
+     * Clip a segment where one end is inside the cell.
+     * The outside end is clipped to the cell boundary and marked as EDGE.
+     */
+    private Segment3D clipSegmentToCell(Segment3D seg, double minX, double maxX, double minY, double maxY,
+                                         boolean srtInside) {
+        Point3D insidePoint = srtInside ? seg.srt : seg.end;
+        Point3D outsidePoint = srtInside ? seg.end : seg.srt;
+        PointType insideType = srtInside ? seg.srtType : seg.endType;
+        Vec2D insideTangent = srtInside ? seg.tangentSrt : seg.tangentEnd;
+        Vec2D outsideTangent = srtInside ? seg.tangentEnd : seg.tangentSrt;
+
+        // Find intersection with cell boundary
+        Point3D clippedPoint = findCellBoundaryIntersection(insidePoint, outsidePoint, minX, maxX, minY, maxY);
+        if (clippedPoint == null) {
+            return null;
+        }
+
+        // Create clipped segment with EDGE type at boundary
+        if (srtInside) {
+            return new Segment3D(seg.srt, clippedPoint, seg.level, seg.tangentSrt, outsideTangent,
+                                 seg.srtType, PointType.EDGE);
+        } else {
+            return new Segment3D(clippedPoint, seg.end, seg.level, outsideTangent, seg.tangentEnd,
+                                 PointType.EDGE, seg.endType);
+        }
+    }
+
+    /**
+     * Clip a segment where both ends are outside but the segment crosses through the cell.
+     */
+    private Segment3D clipSegmentBothEnds(Segment3D seg, double minX, double maxX, double minY, double maxY) {
+        // Find both intersection points
+        Point3D entry = findCellBoundaryIntersection(seg.srt, seg.end, minX, maxX, minY, maxY);
+        Point3D exit = findCellBoundaryIntersection(seg.end, seg.srt, minX, maxX, minY, maxY);
+
+        if (entry == null || exit == null) {
+            return null;
+        }
+
+        // Both endpoints are EDGE type
+        return new Segment3D(entry, exit, seg.level, seg.tangentSrt, seg.tangentEnd,
+                             PointType.EDGE, PointType.EDGE);
+    }
+
+    /**
+     * Check if a segment crosses through a cell (both ends outside but line passes through).
+     */
+    private boolean segmentCrossesCell(Segment3D seg, double minX, double maxX, double minY, double maxY) {
+        // Use line-box intersection test
+        Point2D p1 = seg.srt.projectZ();
+        Point2D p2 = seg.end.projectZ();
+
+        // Check intersection with each edge of the cell
+        return lineIntersectsBox(p1.x, p1.y, p2.x, p2.y, minX, maxX, minY, maxY);
+    }
+
+    /**
+     * Check if a line segment intersects a box (axis-aligned).
+     */
+    private boolean lineIntersectsBox(double x1, double y1, double x2, double y2,
+                                       double minX, double maxX, double minY, double maxY) {
+        // Liang-Barsky algorithm
+        double dx = x2 - x1;
+        double dy = y2 - y1;
+
+        double[] p = {-dx, dx, -dy, dy};
+        double[] q = {x1 - minX, maxX - x1, y1 - minY, maxY - y1};
+
+        double tMin = 0.0;
+        double tMax = 1.0;
+
+        for (int i = 0; i < 4; i++) {
+            if (Math.abs(p[i]) < MathUtils.EPSILON) {
+                if (q[i] < 0) return false;
+            } else {
+                double t = q[i] / p[i];
+                if (p[i] < 0) {
+                    tMin = Math.max(tMin, t);
+                } else {
+                    tMax = Math.min(tMax, t);
+                }
+            }
+        }
+
+        return tMin <= tMax;
+    }
+
+    /**
+     * Find intersection point of a line segment with the cell boundary.
+     * Returns the intersection point closest to 'from' that enters the cell.
+     */
+    private Point3D findCellBoundaryIntersection(Point3D from, Point3D to,
+                                                  double minX, double maxX, double minY, double maxY) {
+        double dx = to.x - from.x;
+        double dy = to.y - from.y;
+        double dz = to.z - from.z;
+
+        double tMin = 0.0;
+        double tMax = 1.0;
+
+        // Check each boundary
+        double[] tValues = new double[4];
+        int tCount = 0;
+
+        // Left boundary (x = minX)
+        if (Math.abs(dx) > MathUtils.EPSILON) {
+            double t = (minX - from.x) / dx;
+            if (t > 0 && t < 1) {
+                double y = from.y + t * dy;
+                if (y >= minY && y <= maxY) {
+                    tValues[tCount++] = t;
+                }
+            }
+        }
+
+        // Right boundary (x = maxX)
+        if (Math.abs(dx) > MathUtils.EPSILON) {
+            double t = (maxX - from.x) / dx;
+            if (t > 0 && t < 1) {
+                double y = from.y + t * dy;
+                if (y >= minY && y <= maxY) {
+                    tValues[tCount++] = t;
+                }
+            }
+        }
+
+        // Bottom boundary (y = minY)
+        if (Math.abs(dy) > MathUtils.EPSILON) {
+            double t = (minY - from.y) / dy;
+            if (t > 0 && t < 1) {
+                double x = from.x + t * dx;
+                if (x >= minX && x <= maxX) {
+                    tValues[tCount++] = t;
+                }
+            }
+        }
+
+        // Top boundary (y = maxY)
+        if (Math.abs(dy) > MathUtils.EPSILON) {
+            double t = (maxY - from.y) / dy;
+            if (t > 0 && t < 1) {
+                double x = from.x + t * dx;
+                if (x >= minX && x <= maxX) {
+                    tValues[tCount++] = t;
+                }
+            }
+        }
+
+        if (tCount == 0) {
+            return null;
+        }
+
+        // Find the smallest t (closest intersection to 'from')
+        double tBest = tValues[0];
+        for (int i = 1; i < tCount; i++) {
+            if (tValues[i] < tBest) {
+                tBest = tValues[i];
+            }
+        }
+
+        // Compute intersection point
+        double x = from.x + tBest * dx;
+        double y = from.y + tBest * dy;
+        double z = from.z + tBest * dz;
+
+        return new Point3D(x, y, z);
     }
 
     private Point2D generatePoint(int cellX, int cellY) {
@@ -1646,6 +1870,7 @@ public class DendrySampler implements Sampler {
             NetworkNode node = nodes.get(i);
             if (node.removed) continue;
             if (node.isSubdivisionPoint) continue;  // Skip subdivision points
+            if (node.pointType == PointType.EDGE) continue;  // Skip EDGE points (cell boundary)
             if (!node.connections.isEmpty()) continue;
 
             if (node.point.z > bestZ) {
@@ -1828,6 +2053,7 @@ public class DendrySampler implements Sampler {
             if (i == sourceIdx) continue;
             NetworkNode candidate = nodes.get(i);
             if (candidate.removed) continue;
+            if (candidate.pointType == PointType.EDGE) continue;  // Don't connect to EDGE points (cell boundary)
             if (sourceNode.connections.contains(i)) continue;  // Already directly connected
 
             // Check if already connected via path (same chain)
