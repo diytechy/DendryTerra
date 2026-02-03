@@ -32,7 +32,8 @@ public class DendrySampler implements Sampler {
      *
      * Values:
      *   0  - Normal operation (default)
-     *   5  - Return stars as 0 length segments
+     *   5  - Return stars as 0-length segments for FIRST constellation only
+     *   6  - Return stars as 0-length segments for ALL constellations
      *  10  - Return segments for FIRST constellation only, before stitching
      *  15  - Return segments for ALL constellations, before stitching, only tree
      *  20  - Return segments for ALL constellations, before stitching
@@ -40,7 +41,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 30;
+    private static final int SEGMENT_DEBUGGING = 0;
 
     // Configuration parameters
     private final int resolution;
@@ -79,7 +80,7 @@ public class DendrySampler implements Sampler {
     // Divisions per level configuration
     // Each value indicates how many divisions occur at that level relative to the previous
     // Example: [3, 2, 2, 2, 2] means level 0 has 3 divisions, levels 1+ have 2 each
-    private static final int[] DIVISIONS_PER_LEVEL = {3, 2, 2, 2, 2};
+    private static final int[] DIVISIONS_PER_LEVEL = {1,3, 2, 2, 2, 2};
 
     // Pre-computed cumulative points per cell per level (calculated in static block)
     // [3, 6, 12, 24, 48] for DIVISIONS_PER_LEVEL = [3, 2, 2, 2, 2]
@@ -119,6 +120,8 @@ public class DendrySampler implements Sampler {
 
     // Star sampling grid size (9x9 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
+    // Star sample boundary margin (fraction of cell size)
+    private static final double STAR_SAMPLE_BOUNDARY = 0.03;
 
     // Spline tangent parameters
     private final double tangentAngle;    // Max angle deviation (radians)
@@ -957,6 +960,9 @@ public class DendrySampler implements Sampler {
         Map<Long, List<Segment3D>> constellationSegments = new HashMap<>();
         Map<Long, List<Point3D>> constellationStars = new HashMap<>();
 
+        // Initialize star segments for debugging (needs to be outside if block for scope)
+        List<Segment3D> starSegments = new ArrayList<>();
+
         boolean firstConstellation = true;
         for (ConstellationInfo constInfo : closestConstellations) {
             long constKey = constInfo.getKey();
@@ -964,13 +970,14 @@ public class DendrySampler implements Sampler {
             // Generate stars for this constellation (with 9x9 sampling, merging, etc.)
             List<Point3D> stars = generateConstellationStars(constInfo);
 
-            if (SEGMENT_DEBUGGING == 5) {
-                // DEBUG: Return stars only as zero-length segments
-                List<Segment3D> starSegments = new ArrayList<>();
+            // DEBUG: Collect stars as zero-length segments for visualization
+            if (SEGMENT_DEBUGGING == 5 || SEGMENT_DEBUGGING == 6) {
                 for (Point3D star : stars) {
-                    starSegments.add(new Segment3D(star, star));
+                    starSegments.add(new Segment3D(star, star, 0));
                 }
-                LOGGER.info("SEGMENT_DEBUGGING=5: Returning stars only for constellation ({})", stars.size());
+            }
+            if (SEGMENT_DEBUGGING == 5) {
+                LOGGER.info("SEGMENT_DEBUGGING=5: Returning stars only for first constellation ({})", stars.size());
                 return starSegments;
             }
             // Build network within constellation using CleanAndNetworkPoints
@@ -998,6 +1005,10 @@ public class DendrySampler implements Sampler {
             }
             LOGGER.info("SEGMENT_DEBUGGING=20or15: Returning all constellation segments before stitching ({} segments)", allSegments.size());
             return allSegments;
+        }
+        if (SEGMENT_DEBUGGING == 6) {
+            LOGGER.info("SEGMENT_DEBUGGING=6: Returning all constellation stars: ({} stars)", starSegments.size());
+            return starSegments;
         }
 
         // Stitch adjacent constellations together at their boundaries
@@ -1179,16 +1190,16 @@ public class DendrySampler implements Sampler {
     private Point3D findStarInCelllLowestGrid(int cellX, int cellY) {
         // Generate deterministic jitter for this cell
         Random rng = initRandomGenerator(cellX, cellY, 0);
-        double jitterX = (rng.nextDouble() - 0.5) / STAR_SAMPLE_GRID_SIZE;
-        double jitterY = (rng.nextDouble() - 0.5) / STAR_SAMPLE_GRID_SIZE;
+        double jitterX = rng.nextDouble()*(1-2*STAR_SAMPLE_BOUNDARY);
+        double jitterY = rng.nextDouble()*(1-2*STAR_SAMPLE_BOUNDARY);
 
         double lowestElevation = Double.MAX_VALUE;
         List<double[]> lowestPoints = new ArrayList<>();
 
         for (int si = 0; si < STAR_SAMPLE_GRID_SIZE; si++) {
             for (int sj = 0; sj < STAR_SAMPLE_GRID_SIZE; sj++) {
-                double tx = (sj + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterX;
-                double ty = (si + 0.5) / STAR_SAMPLE_GRID_SIZE + jitterY;
+                double tx = (sj + jitterX+STAR_SAMPLE_BOUNDARY) / STAR_SAMPLE_GRID_SIZE;
+                double ty = (si + jitterY+STAR_SAMPLE_BOUNDARY) / STAR_SAMPLE_GRID_SIZE;
 
                 tx = Math.max(0.0, Math.min(1.0, tx));
                 ty = Math.max(0.0, Math.min(1.0, ty));
@@ -1530,7 +1541,7 @@ public class DendrySampler implements Sampler {
         }
 
         // Phase A: Create initial downstream flows
-        int maxIterations = nodes.size() * 3;  // Safety limit
+        int maxIterations = nodes.size() * nodes.size();  // Safety limit
         int iterations = 0;
 
         // For level 0: Build trunk continuously from highest point
@@ -3418,7 +3429,7 @@ public class DendrySampler implements Sampler {
             Segment3D stitchSegment = new Segment3D(srtPoint, endPoint, 0, tangentSrt, tangentEnd);
 
             // Subdivide using same methodology as createAndDefineSegment for level 0
-            double gridSpacing = 0.5;  // Spaced for next level
+            double gridSpacing = getGridSpacingForLevel(1);  // Level 1 grid spacing for stitches.
             double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
             double segmentLength = srtPoint.projectZ().distanceTo(endPoint.projectZ());
             int divisions = Math.max(1, (int) Math.floor(segmentLength / mergeDistance));

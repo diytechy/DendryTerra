@@ -833,7 +833,8 @@ Now update cell layers and compute for layers?  This should allow for full local
 
 I have made some minor update to "NetworkingRules.md" on the following lines:
 
-- Line 13 to prevent merging on asterisms.
+- Line 63 to 66, this may affect "connectAndDefineSegments" and others who determine which point to link to, as this forces points within merge distance to be connected to with preference, this will inherently only affect level 0
+
 
 1. Fix grid spacing definition for consistency.  There are multiple references to grid-spacing and level-related spacing:
     The spacing of lower-level segments should be defined by a number of divisions per level, like: [3,2,2] indicating there will be 3 levels of division on the first level, 2 on the 2nd, and 2 on the 3rd.
@@ -848,8 +849,12 @@ I have made some minor update to "NetworkingRules.md" on the following lines:
     C. Use "CleanAndNetworkPoints" to create segments between the new points and the lower segment level.
     D. Add additional rules near "probabilisticallyRemovePoints" to start removing points randomly as the points get further away from the segments 1 level below in order to reduce branches / higher level segments from creating an obvious square pattern as they approach the edge of the cell.
 
+################################################################
 
+Are stitches attempting to connect to any segment node?  Or only stars / leafs?  They should evaluate for any node on the segment, not just stars.
+
+Check segment distance for both star segments and for 
 
 FUTURE:
 
-I think the class NetworkNode is uneccessary.  Into a network there are 3d points, and the output is segments.  As long as NetworkNode is intermediary, but my concern is duplicate information.
+I think the class NetworkNode is unnecessary.  Into a network there are 3d points, and the output is segments.  As long as NetworkNode is intermediary, but my concern is duplicate information.
