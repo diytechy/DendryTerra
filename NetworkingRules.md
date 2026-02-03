@@ -28,10 +28,11 @@ Function setup:
             If no connections can be made, consider the trunk complete.
             Else if a connection is made, continue to attempt to extend the trunk from the previous neighbor that was connected.
     IMPORTANT: Add a debug here to exit connections of the points early so that the trunk segment is returned along with 0-length segments for all unconnected points so the initial tree creation can be viewed. (SEGMENT_DEBUGGING==15)
-    B. Now that the initial trunk has been created or points are being networked above level 0, connect / remove remaining points -  While any set of points or segments remain unconnected to the lower level segment (or - for stars - there must be a path from every single star to any other star), build that chain's escape path to the root path / asterism segments:
-        ii. Select the chain with the fewest number of segments that doesn't connect to a lower level segment (including single points).
-            Iterate through all nodes on the chain from the highest to lowest points attempting to create a connection using the "connection rules" below.  Again, the segment should be fully defined using the connection rules below before iterating onto the next point to prevent overlapping connections.
-            If a connection is made to another chain, exit the loop and reassess.  Else if the chain is never able to be connected back to another chain segment, remove the chain with it's segments and points since it has no return path.
+
+    B. Now that the initial trunk has been created or points are being networked above level 0, connect / remove remaining points -  While any set of points or segments remain unconnected to a segment from the previous iteration (level -1) or if at level 0 and any start does not have a path back to the trunk, continue to make connections:
+        i. Get all chains / points that do not have a connection back to the trunk or a node created at a previous level iteration (level-1).
+        ii. Select the group of chain(s) / point(s) with the fewest number of segments.
+        iii. Iterate through the lowest unconnected elevation point on each chain / point building connections using the "connection rules" below.
 
     Now all points have a return path or have been removed if they did not have a return path.
 
@@ -53,7 +54,7 @@ Connection rules (for creating a connection and detailing the segment):
 
     NOTE: It is expected all segments will have a flow direction from the start to the end point, where the start tangent is the angle the segment projects from, and the end tangent is the angle the segment flows into at the end point.
 
-    1. Get all the neighboring point in range (overhead xz distance less than the maximum segment distance) and get their properties:
+    1. Get all the neighboring non-edge points in range (overhead xz distance less than the maximum segment distance) and get their properties:
         Calculate the normalized slope as ((height distance between the current point and the neighbor) / (overhead xz distance between current point and neighbor)^(DistanceFalloffPower)).  Here the DistanceFalloffPower can be 2, and helps to flatten out distant neighbors slopes to prefer tighter connections.
         If the neighbor is already connected to two other points (has a line passing through it), it's slope should be multiplied by BranchEncouragementFactor (Default 2) to encourage points to attach into already existing lines / defined flows.
     1b. If no neighbor is valid, return empty or otherwise communicate to the caller that no valid neighbor is found:

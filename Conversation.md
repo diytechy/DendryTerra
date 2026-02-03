@@ -879,8 +879,11 @@ Make the following updates:
 
 2. Update connectAndDefineSegments and it's related functions so that functions do not attempt to connect to EDGE type segment ends.
 
-3. Update connectAndDefineSegments
+###################################################################
 
+There appears to be a defect in "connectChainsToRoot" causing multiple overlapping segments.  Review NetworkingRules.md part B (starting at line 32) with additional clarifications / augmentations.
+
+IMPORTANT: findRootChain (if it continues to be used after these updates / fixes are applied) may be overly complicated, a path to the interconnected root just means the node needs to have a connection to either a trunk type node or a node that was created 1 level down.
 
 FUTURE:
 

@@ -2633,16 +2633,24 @@ public class DendrySampler implements Sampler {
      * Connect separate chains to form a single connected network.
      * At level 0 (asterisms), all stars must connect - chains are never removed.
      */
+    /**
+     * Connect unconnected nodes/chains back to the root network.
+     *
+     * Per NetworkingRules.md Part B:
+     * - At level 0: Nodes need a path back to a TRUNK node
+     * - At level 1+: Nodes need a connection to a TRUNK node OR a node from previous level
+     *
+     * Algorithm:
+     * 1. Find all nodes not connected to root (no path to TRUNK or previous-level node)
+     * 2. Sort by elevation (lowest first for escape path)
+     * 3. Try to connect each unconnected node
+     * 4. Repeat until all connected or no more connections possible
+     */
     private void connectChainsToRoot(List<NetworkNode> nodes, List<Segment3D> allSegments,
                                       double maxDistSq, double mergeDistSq, int level, int cellX, int cellY,
                                       int[] parent, int[] rank, List<Segment3D> previousLevelSegments) {
-        // Find the root chain (largest chain or chain with lowest elevation point)
-        int rootChain = findRootChain(nodes, parent);
 
-        // Keep connecting until all nodes are in the same chain or no more connections possible
-        boolean connectionMade;
-        // At level 0, we may need more iterations since we can't remove chains
-        int maxIterations = level == 0 ? nodes.size() * 5 : nodes.size() * 2;
+        int maxIterations = nodes.size() * 3;
         int iterations = 0;
 
         // For level 0, try with progressively larger distances if needed
@@ -2650,126 +2658,132 @@ public class DendrySampler implements Sampler {
         int distanceExpansions = 0;
         final int maxDistanceExpansions = 3;
 
+        boolean madeProgress;
         do {
-            connectionMade = false;
+            madeProgress = false;
             iterations++;
 
-            // Find smallest non-root chain
-            int smallestChain = findSmallestNonRootChain(nodes, parent, rootChain);
-            if (smallestChain < 0) break;
+            // Find all nodes not connected to root
+            List<Integer> unconnectedNodes = findUnconnectedNodes(nodes, level);
 
-            // Try to connect this chain to another chain
-            List<Integer> chainNodes = getNodesInChain(nodes, parent, smallestChain);
+            if (unconnectedNodes.isEmpty()) {
+                break;  // All nodes connected
+            }
 
-            // Sort chain nodes by elevation (lowest first for escape path)
-            chainNodes.sort((a, b) -> Double.compare(nodes.get(a).point.z, nodes.get(b).point.z));
+            // Sort by elevation (lowest first for escape path)
+            unconnectedNodes.sort((a, b) -> Double.compare(nodes.get(a).point.z, nodes.get(b).point.z));
 
-            for (int nodeIdx : chainNodes) {
+            // Try to connect each unconnected node
+            for (int nodeIdx : unconnectedNodes) {
+                NetworkNode node = nodes.get(nodeIdx);
+                if (node.removed) continue;
+
+                // Skip if this node became connected (via another connection in this iteration)
+                if (isNodeConnectedToRoot(nodes, nodeIdx, level)) continue;
+
                 int neighborIdx = createAndDefineSegment(nodes, allSegments, nodeIdx,
                                                           currentMaxDistSq, mergeDistSq, level, cellX, cellY,
                                                           parent, rank, previousLevelSegments,
-                                                          false);  // isTrunk = false for chain connections
+                                                          false);  // isTrunk = false
                 if (neighborIdx >= 0) {
-                    connectionMade = true;
-                    // Update root chain
-                    rootChain = findRootChain(nodes, parent);
-                    break;
+                    madeProgress = true;
                 }
             }
 
-            // If chain couldn't connect
-            if (!connectionMade) {
+            // If no progress was made
+            if (!madeProgress) {
                 if (level == 0 && distanceExpansions < maxDistanceExpansions) {
                     // At level 0, expand search distance and try again
                     distanceExpansions++;
-                    currentMaxDistSq *= 2.0;  // Double the search distance
-                    connectionMade = true;  // Force another iteration with expanded distance
+                    currentMaxDistSq *= 2.0;
+                    madeProgress = true;  // Force another iteration
                     LOGGER.debug("Level 0: Expanding search distance (expansion {})", distanceExpansions);
                 } else if (level > 0) {
-                    // At higher levels, remove chains that can't connect
-                    for (int nodeIdx : chainNodes) {
-                        nodes.get(nodeIdx).removed = true;
+                    // At higher levels, remove unconnected nodes
+                    for (int nodeIdx : unconnectedNodes) {
+                        if (!isNodeConnectedToRoot(nodes, nodeIdx, level)) {
+                            nodes.get(nodeIdx).removed = true;
+                        }
                     }
                 } else {
-                    // Level 0 but exhausted distance expansions - log warning
-                    LOGGER.warn("Level 0: Chain with {} nodes could not connect after {} distance expansions",
-                               chainNodes.size(), maxDistanceExpansions);
-                    // Still don't remove at level 0 - just break to avoid infinite loop
+                    // Level 0 but exhausted expansions
+                    LOGGER.warn("Level 0: {} nodes could not connect after {} distance expansions",
+                               unconnectedNodes.size(), maxDistanceExpansions);
                     break;
                 }
             }
 
-        } while (connectionMade && iterations < maxIterations);
+        } while (madeProgress && iterations < maxIterations);
 
-        if (level == 0 && iterations >= maxIterations) {
-            LOGGER.warn("Level 0: connectChainsToRoot reached max iterations ({})", maxIterations);
+        if (iterations >= maxIterations) {
+            LOGGER.warn("connectChainsToRoot reached max iterations ({}) at level {}", maxIterations, level);
         }
     }
 
     /**
-     * Find the root chain (chain with most nodes or lowest elevation).
+     * Find all nodes not connected to root.
+     * A node is connected to root if it has a path (via connections) to:
+     * - A TRUNK type node, OR
+     * - A node from the previous level (sourceLevel < current level)
      */
-    private int findRootChain(List<NetworkNode> nodes, int[] parent) {
-        Map<Integer, Integer> chainSizes = new HashMap<>();
+    private List<Integer> findUnconnectedNodes(List<NetworkNode> nodes, int level) {
+        List<Integer> unconnected = new ArrayList<>();
 
         for (int i = 0; i < nodes.size(); i++) {
-            if (nodes.get(i).removed) continue;
-            if (i >= parent.length) continue;
-            int root = find(parent, i);
-            chainSizes.merge(root, 1, Integer::sum);
-        }
-
-        int largestChain = -1;
-        int largestSize = 0;
-        for (Map.Entry<Integer, Integer> entry : chainSizes.entrySet()) {
-            if (entry.getValue() > largestSize) {
-                largestSize = entry.getValue();
-                largestChain = entry.getKey();
+            NetworkNode node = nodes.get(i);
+            if (node.removed) continue;
+            if (node.pointType == PointType.EDGE) continue;
+            if (node.connections.isEmpty()) {
+                unconnected.add(i);
+            } else if (!isNodeConnectedToRoot(nodes, i, level)) {
+                unconnected.add(i);
             }
         }
 
-        return largestChain;
+        return unconnected;
     }
 
     /**
-     * Find smallest chain that isn't the root chain.
+     * Check if a node has a path to the root network.
+     * Uses BFS to find if there's a path to a TRUNK node or a previous-level node.
      */
-    private int findSmallestNonRootChain(List<NetworkNode> nodes, int[] parent, int rootChain) {
-        Map<Integer, Integer> chainSizes = new HashMap<>();
+    private boolean isNodeConnectedToRoot(List<NetworkNode> nodes, int nodeIdx, int level) {
+        if (nodeIdx < 0 || nodeIdx >= nodes.size()) return false;
 
-        for (int i = 0; i < nodes.size(); i++) {
-            if (nodes.get(i).removed) continue;
-            if (i >= parent.length) continue;
-            int root = find(parent, i);
-            if (root == rootChain) continue;
-            chainSizes.merge(root, 1, Integer::sum);
-        }
+        NetworkNode startNode = nodes.get(nodeIdx);
+        if (startNode.removed) return false;
 
-        int smallestChain = -1;
-        int smallestSize = Integer.MAX_VALUE;
-        for (Map.Entry<Integer, Integer> entry : chainSizes.entrySet()) {
-            if (entry.getValue() < smallestSize) {
-                smallestSize = entry.getValue();
-                smallestChain = entry.getKey();
+        // If this node is itself a TRUNK or from previous level, it's connected
+        if (startNode.pointType == PointType.TRUNK) return true;
+        if (level > 0 && startNode.sourceLevel >= 0 && startNode.sourceLevel < level) return true;
+
+        // BFS to find path to root
+        Set<Integer> visited = new HashSet<>();
+        List<Integer> queue = new ArrayList<>();
+        queue.add(nodeIdx);
+        visited.add(nodeIdx);
+
+        while (!queue.isEmpty()) {
+            int current = queue.remove(0);
+            NetworkNode currentNode = nodes.get(current);
+
+            for (int connIdx : currentNode.connections) {
+                if (visited.contains(connIdx)) continue;
+                if (connIdx >= nodes.size()) continue;
+
+                NetworkNode connNode = nodes.get(connIdx);
+                if (connNode.removed) continue;
+
+                // Check if connected node is root
+                if (connNode.pointType == PointType.TRUNK) return true;
+                if (level > 0 && connNode.sourceLevel >= 0 && connNode.sourceLevel < level) return true;
+
+                visited.add(connIdx);
+                queue.add(connIdx);
             }
         }
 
-        return smallestChain;
-    }
-
-    /**
-     * Get all node indices in a given chain.
-     */
-    private List<Integer> getNodesInChain(List<NetworkNode> nodes, int[] parent, int chainRoot) {
-        List<Integer> result = new ArrayList<>();
-        for (int i = 0; i < nodes.size(); i++) {
-            if (nodes.get(i).removed) continue;
-            if (i >= parent.length) continue;
-            if (find(parent, i) == chainRoot) {
-                result.add(i);
-            }
-        }
-        return result;
+        return false;
     }
 
     /**
