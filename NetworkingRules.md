@@ -1,44 +1,44 @@
 CleanAndNetworkPoints:
 Inputs:
-    - Unique cell location definition (The 3d points, the gridspacing of the cells used to generate the 3d points or similar context giving parameter)
-    - Previous / lower level segments (if applicable, null or similar if called for asterisms, are the lowest level segments)
+    - New point cloud - 3d points generated from the cell grid that need to be linked into the main segment list (The 3d points, the gridspacing of the cells used to generate the 3d points or similar context giving parameter)
+    - The segment list structure (if applicable, null or similar if called for asterisms before the trunk is created)
 Outputs:
     Updated segment definitions
-        Each segment has two 3d points (x,y,z), and two tangents describing the end condition in the x,z coordinates.
+        The updated segment structure list with the relevant points and segments added.
 
 Function setup:
     A. Determine the cell specific merge distance by multiplying "merge point spacing" with the gridspacing of the cells used to generate the points.
     B. Determine the maximum segment distance in a similar manner based on gridspacing.
 
-* Clean any network points: If network points is being performed for level 1 or higher, any points are within the merge distance, merge the points to their average x,z position and resample the control function to determine their y height.
-    Note this won't affect stars, since merging already happened.
+* Clean any points: If network points is being performed for level 1 or higher, any points in the new point cloud should be merged according to mergePointsByDistance.
+    Note this won't affect stars.
 * Then remove all input points that are within the merge point distance of any other segments 1 level below (linear interpolation for segment distance or other alternatives are appropriate)
     Note this won't affect stars, since they are at the lowest level.
-* Now the number of points that must be connected can be summed, and referenced below to determine when all points have a path out of an asterism.  This is the number of points to connect this level.
-* Finally, if not at level 0, loop through each point and deterministically remove a point depending on it's percentage chance of removal according to it's probability of removal (1 - branchesSampler(x,z))
+* Finally, if not at level 0, loop through each point and deterministically remove a point depending on both:
+    1. It's percentage chance of removal according to it's probability of removal (1 - branchesSampler(x,z))
+    2. It's percentage chance of removal according to it's distance from the input list segment structure.
 
 * Now connect all the points (connectAndDefineSegments).
 
-    IMPORTANT: Fetching points to find connections for in CleanAndNetworkPoints includes both the original points into function and points that have already been converted into segments.  Neighbor points / candidates to connect to include any of these points as well as any of the segment points one level below the current level.  After any segment creation operation, new segments should have their points available to connect to and their original points should be omitted or marked or otherwise noted as having a connection.
+    IMPORTANT: Fetching points to find connections for in CleanAndNetworkPoints should only include points from the input new point cloud.  Neighbor points / candidates to connect to only include points from segments already inside the segment list structure except for the first segment creation (only occurs once for a single point).  After any segment creation operation, the point added into the segment must be removed or marked as removed from the input point cloud and added to the segment list structure.  After any subdivision operation, the divided segment must be removed and the new segments and their new points must be added to the segment list structure.
 
     A. If at level 0, build the "trunk" through the point cloud:
     While the trunk is incomplete:
         Starting at the highest elevation point:
-            Attempt to create a connection using the "Connection rules" below to create a segment from the point noting the connection rules should be for a trunk, the segment should be fully defined using the connection rules below before continuing on to prevent overlapping connections.
+            Attempt to create a connection using the "Connection rules" below to create a segment from the point noting the connection rules should be for a trunk, the segment should be fully defined using the connection rules below before continuing on.  The first iteration here will be special in that it will allow the first segment to be created.
             If no connections can be made, consider the trunk complete.
-            Else if a connection is made, continue to attempt to extend the trunk from the previous neighbor that was connected.
+            Else if a connection is made, continue to attempt to extend the trunk from the previous neighbor that was connected.  If the point is added, it should be removed from the input point cloud as the point should now exist inside the segment list structure.
     IMPORTANT: Add a debug here to exit connections of the points early so that the trunk segment is returned along with 0-length segments for all unconnected points so the initial tree creation can be viewed. (SEGMENT_DEBUGGING==15)
 
-    B. Now that the initial trunk has been created or points are being networked above level 0, connect / remove remaining points -  While any set of points or segments remain unconnected to a segment from the previous iteration (level -1) or if at level 0 and any start does not have a path back to the trunk, continue to make connections:
-        i. Get all chains / points that do not have a connection back to the trunk or a node created at a previous level iteration (level-1).
-        ii. Select the group of chain(s) / point(s) with the fewest number of segments.
-        iii. Iterate through the lowest unconnected elevation point on each chain / point building connections using the "connection rules" below.
+    B. Now grow the input segment list structure until there are no points inside the input point cloud:
+        i. Get all points from the input point cloud that are within the maximum segment distance of the points from the input segment list (ignoring any points that are an EDGE type).
+        ii. Select the point that is closest to a segment point, and attempt a connection using "Connection rules" below.  Again, if the point is added, it should be removed from the input point cloud as the point should now exist inside the segment list structure.
 
     Now all points have a return path or have been removed if they did not have a return path.
 
-    If this was performed for level 0 (asterisms), the elevation of all segments should be shifted down to 0.
+    If this was performed for level 0 (asterisms), the elevation of all segment points should be shifted down to 0.
 
-    Any segment points at the current level that are only connected to a single point should be marked / set to a "LEAF" type.
+    Any points that are only assigned to a single segment should be marked / set to a "LEAF" type.
 
     #########################################################
 
@@ -54,20 +54,19 @@ Connection rules (for creating a connection and detailing the segment):
 
     NOTE: It is expected all segments will have a flow direction from the start to the end point, where the start tangent is the angle the segment projects from, and the end tangent is the angle the segment flows into at the end point.
 
-    1. Get all the neighboring non-edge points in range (overhead xz distance less than the maximum segment distance) and get their properties:
+    1. Get all the neighboring non-edge points from the segment list structure that are in range (overhead xz distance less than the maximum segment distance) and get their properties:
         Calculate the normalized slope as ((height distance between the current point and the neighbor) / (overhead xz distance between current point and neighbor)^(DistanceFalloffPower)).  Here the DistanceFalloffPower can be 2, and helps to flatten out distant neighbors slopes to prefer tighter connections.
-        If the neighbor is already connected to two other points (has a line passing through it), it's slope should be multiplied by BranchEncouragementFactor (Default 2) to encourage points to attach into already existing lines / defined flows.
-    1b. If no neighbor is valid, return empty or otherwise communicate to the caller that no valid neighbor is found:
+    2. If no neighbor is valid, return empty or otherwise communicate to the caller that no valid neighbor is found:
         If this is for tree creation, a valid neighbor is only where a normalized slope is negative.
         If this is for level 1 or higher, a valid neighbor is only where a normalized slope is less than lowestSlopeCutoff.
         Else a valid neighbor must exist, if we get to this point, log it since this condition should not be possible.
-    2. Select the neighbor based on the following priority:
-        A. Whose true distance is less than the merge distance.
-        B. The lowest normalized slope that is also NOT connected to the current point through another path.
+    3. Select the neighbor based on the following priority:
+        A. The neighbor with the smallest true distance for any whose true distance is less than the merge distance.
+        B. The lowest normalized slope.
         NOTE: If no neighbor is selected, exit this indicating no new connections were made because all neighbors are interconnected.
-    3. If the selected neighbor is already connected with 3 nodes, or the resulting segment would cross an existing segment, subdivide the closest segment (at the same or 1 level down), and select that new knot from subdivision as the selected neighbor, continuing with the checks below.  Note the new point created by subdividing a segment should inherit the level of the segment that was subdivided and the tangent and the subdivision location, and the point type should be a knot.
-        NOTE: This should be incredibly rare due to subdivisions / displacement already present on the segment.  Would debugs be useful here?
-    4. Else if the selected neighbor already has a line passing through (the neighbor is already connected to 2 or more other points), set a property to indicate it needs to be merged as a branch.
+    4. If the selected neighbor is already connected with 3 nodes (point connection property), or the resulting segment would cross an existing segment, subdivide the closest segment from the segment list structure, and select that new knot from subdivision as the selected neighbor, continuing with the checks below.  Note the new point created by subdividing a segment should inherit the level of the segment that was subdivided and the tangent and the subdivision location, and the point type should be a knot. (This follows the standard subdivision rules / functions that already exist, and it should be reused here if applicable)
+        NOTE: This should be incredibly rare due to subdivisions / displacement already present on the segment.  Add a log entry if this happens.
+    5. Else if the selected neighbor already has a line passing through (the neighbor is already connected to 2 or more other points), set a property to indicate it needs to be merged as a branch which will be passed when creating the segment described below.
 
     If a connection is made when a slope is positive (greater than 0) the greater point and all it's downstream connections from other segments (including all lower levels) must be ratiometrically reduced in elevation so that "upward" flow does not occur, but the ratiometric change cannot reduce below 0.
 

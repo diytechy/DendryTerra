@@ -889,9 +889,57 @@ IMPORTANT: findRootChain (if it continues to be used after these updates / fixes
 
 At level 1 I do not see any segments that return back to the main asterism / points connected to trunk nodes.  The level 1 nodes only connect to each-other.  Is there a bug preventing those segments that connect level 1 nodes to their level 0 parent segments from getting added to the pool or allowing them to be displayed?
 
+##################
 
+Did that bug also affect the first time connectChainsToRoot is called at level 0 after trunk creation, such that trunk nodes / segments weren't available to connect to?
 
+#################
+
+Keep stitches away from eachother.
 
 FUTURE:
 
-I think the class NetworkNode is unnecessary.  Into a network there are 3d points, and the output is segments.  As long as NetworkNode is intermediary, but my concern is duplicate information.
+I would like to make some significant refactoring.  Below I describe core data structures to change with the expectation the NetworkNode type can be removed in it's entirety.
+
+I have also updated "NetworkingRules.md" to reference the modified structure proposal below.
+
+What to do: Remove NetworkNode in it's current form and refactor as necessary to meet updated descriptions below and in "NetworkingRules.md".
+
+Update data information to contain context from NetworkNode:
+    Node / Point3D (or something that includes Point3D):
+        Connections - Add a new integer that contains the number of connections to this point.  Initialized to 0.
+        Index - A key value that other methods or functions can find this point by.  Every newly created point should have a new index.  UInt32 should be sufficient.  The runtime can produce an error if the index exceeds the UInt32 value, as this should never occur.  Index should reset to 0 upon a new evaluate query.
+        PointType - Copy from NetworkNode definition.
+        Level - Indicates the level this point was created at.
+
+    Segment3D
+        The srt and end points should just be an index of a 3d point in a list of 3d points.
+        Remove srtType and endType, as that will be a property of the point data.
+
+
+New structures / packages of data:
+    SegmentList: Intended to contain a list of interconnected / chained segments.
+        Contains:
+            List of points (Node / Point3D from above)
+            List of segments (Segment3D)
+
+    UnconnectedPoints (for new point clouds):
+        Contains:
+            List of Points (Node / Point3D from above) generated for cell level that have not been linked yet.
+
+Looking at the NetworkNode type:
+
+        Point3D point; - This is already carried by the 3dpoint information or is in the segment information.
+        int index;     - This can now be handled by the point index.
+        final List<Integer> connections; - This can now be handled by point connections
+        Vec2D tangent; - This is duplicate, the 3dpoints have tangent / slope information on their points for the control function, and the segments have tangent information on their ends to form splines.
+        boolean isBranchPoint; - Unnecessary, if a node tries to make a connection to another node that already has 2 connections, it must be a branch.
+        int branchIntoNode;  - Unnecessary.
+        boolean removed;  - Unnecessary, if a point is not used for segment creation, it just shouldn't be added to the segment chain structure.
+        int chainId;  - Unnecessary, networking rules have been updated to always grow from a defined segment, either a point is able to attach, or it isn't.
+        boolean isSubdivisionPoint; - This information is already contained in pointType
+        int sourceLevel;  - Level of segment that created this point (for subdivision points)
+        PointType pointType; - This is now handled by the point type.
+
+
+Now any function that performs networking / linking activity is taking points from the new point cloud and directly tying them into the segment list structure, moving the points from the new point cloud to their new location in the segment list structure.  A separate "NetworkNodes" variable becomes unnecessary as node context is either apart of the segment definition, or it just hasn't been added yet.
