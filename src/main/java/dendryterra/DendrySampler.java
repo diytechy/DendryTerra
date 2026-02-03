@@ -2869,6 +2869,340 @@ public class DendrySampler implements Sampler {
         return false;
     }
 
+    // ========== CleanAndNetworkPoints V2 Implementation ==========
+    // New implementation using SegmentList and UnconnectedPoints
+    // Simplified algorithm: single tree growth, no chain tracking needed
+
+    /**
+     * V2: Create network of segments from a list of points.
+     * Uses SegmentList and UnconnectedPoints for cleaner architecture.
+     *
+     * @param cellX X coordinate of cell (constellation index for level 0)
+     * @param cellY Y coordinate of cell
+     * @param level Resolution level (0 for asterisms)
+     * @param points List of points to connect
+     * @return SegmentList containing connected points and segments
+     */
+    private SegmentList CleanAndNetworkPointsV2(int cellX, int cellY, int level, List<Point3D> points) {
+        return CleanAndNetworkPointsV2(cellX, cellY, level, points, null);
+    }
+
+    /**
+     * V2: CleanAndNetworkPoints with previous level SegmentList.
+     *
+     * Algorithm:
+     * 1. Clean points (merge, remove near segments, probabilistic removal)
+     * 2. Create UnconnectedPoints from cleaned points
+     * 3. For level 0: Build trunk from highest point
+     * 4. Grow network: Connect points from UnconnectedPoints to SegmentList
+     * 5. Mark LEAF points
+     */
+    private SegmentList CleanAndNetworkPointsV2(int cellX, int cellY, int level,
+                                                 List<Point3D> points,
+                                                 SegmentList previousLevelSegments) {
+        SegmentList result = new SegmentList();
+        if (points.isEmpty()) return result;
+
+        // Function setup: determine cell-specific distances
+        double gridSpacing = getGridSpacingForLevel(level);
+        double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
+        double maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
+
+        // Step 1: Clean network points - merge points within merge distance (only for level > 0)
+        List<Point3D> cleanedPoints;
+        if (level > 0) {
+            cleanedPoints = cleanAndMergePoints(points, mergeDistance);
+        } else {
+            cleanedPoints = new ArrayList<>(points);
+        }
+
+        // Step 2: Remove points within merge distance of lower-level segments (if not level 0)
+        List<Segment3D> prevSegments = (previousLevelSegments != null)
+            ? previousLevelSegments.getSegments()
+            : new ArrayList<>();
+
+        if (level > 0 && !prevSegments.isEmpty()) {
+            cleanedPoints = removePointsNearSegments(cleanedPoints, prevSegments, mergeDistance);
+        }
+
+        // Step 3: Probabilistically remove points based on branchesSampler and distance from segments
+        if (level > 0) {
+            cleanedPoints = probabilisticallyRemovePoints(cleanedPoints, cellX, cellY,
+                                                          prevSegments, gridSpacing);
+        }
+
+        if (cleanedPoints.isEmpty()) return result;
+
+        // Step 4: Create UnconnectedPoints from cleaned points
+        UnconnectedPoints unconnected = UnconnectedPoints.fromPoints(cleanedPoints, PointType.ORIGINAL, level);
+
+        // Step 5: Initialize SegmentList
+        // For level 0: start empty, build trunk first
+        // For level 1+: copy previous level segments (points already connected)
+        if (level > 0 && previousLevelSegments != null) {
+            result = previousLevelSegments.copy();
+        }
+
+        // Step 6: Connect points using simplified algorithm
+        connectAndDefineSegmentsV2(unconnected, result, maxSegmentDistance, mergeDistance, level, cellX, cellY);
+
+        // Step 7: Mark LEAF points
+        result.markLeafPoints();
+
+        return result;
+    }
+
+    /**
+     * V2: Connect points from UnconnectedPoints to SegmentList.
+     * Simplified algorithm: always grow from existing segments (single tree).
+     */
+    private void connectAndDefineSegmentsV2(UnconnectedPoints unconnected, SegmentList segList,
+                                             double maxSegmentDistance, double mergeDistance,
+                                             int level, int cellX, int cellY) {
+        double maxDistSq = maxSegmentDistance * maxSegmentDistance;
+        double mergeDistSq = mergeDistance * mergeDistance;
+
+        // Phase A: For level 0, build trunk from highest point
+        if (level == 0) {
+            buildTrunkV2(unconnected, segList, maxDistSq, mergeDistSq, level, cellX, cellY);
+
+            // DEBUG: Return after trunk creation
+            if (SEGMENT_DEBUGGING == 15) {
+                // Add 0-length segments for unconnected points for visualization
+                unconnected.forEach(p -> {
+                    int idx = segList.addPoint(p.position, p.pointType, level);
+                    // 0-length segment for visualization
+                    segList.addSegment(idx, idx, level, null, null);
+                });
+                LOGGER.info("SEGMENT_DEBUGGING=15: V2 returning after trunk ({} segments, {} points)",
+                           segList.getSegmentCount(), segList.getPointCount());
+                return;
+            }
+        }
+
+        // Phase B: Grow network from existing segments
+        // Find unconnected points within range and connect them
+        int maxIterations = unconnected.totalSize() * 3;
+        int iterations = 0;
+
+        while (!unconnected.isEmpty() && iterations < maxIterations) {
+            iterations++;
+
+            // Find the unconnected point closest to any point in the SegmentList
+            int[] closest = unconnected.findClosestToSegmentList(segList, maxSegmentDistance);
+            if (closest == null) {
+                // No points within range - remaining points can't connect
+                break;
+            }
+
+            int unconnIdx = closest[0];
+            NetworkPoint unconnPt = unconnected.getPoint(unconnIdx);
+
+            // Find best neighbor in SegmentList for this point
+            int neighborIdx = findBestNeighborV2(unconnPt, segList, maxDistSq, mergeDistSq, level);
+
+            if (neighborIdx < 0) {
+                // No valid neighbor - mark as removed (can't connect)
+                unconnected.markRemoved(unconnIdx);
+                continue;
+            }
+
+            // Create connection: move point to SegmentList and create segment
+            createSegmentV2(unconnected, unconnIdx, segList, neighborIdx, level, cellX, cellY);
+        }
+
+        if (iterations >= maxIterations) {
+            LOGGER.warn("connectAndDefineSegmentsV2 reached max iterations ({}) at level {}", maxIterations, level);
+        }
+    }
+
+    /**
+     * V2: Build trunk for level 0 asterisms.
+     * Starts at highest point and extends downhill until no more connections possible.
+     */
+    private void buildTrunkV2(UnconnectedPoints unconnected, SegmentList segList,
+                               double maxDistSq, double mergeDistSq, int level, int cellX, int cellY) {
+        // Find highest unconnected point to start trunk
+        int startIdx = unconnected.findHighestUnconnected();
+        if (startIdx < 0) return;
+
+        // Add first point to SegmentList as TRUNK
+        NetworkPoint startPt = unconnected.removeAndGet(startIdx);
+        int currentIdx = segList.addPoint(startPt.position, PointType.TRUNK, level);
+
+        int maxIterations = unconnected.totalSize() + 1;
+        int iterations = 0;
+
+        // Extend trunk downhill
+        while (iterations < maxIterations) {
+            iterations++;
+
+            // Find best downhill neighbor from remaining unconnected points
+            int nextUnconnIdx = findBestTrunkNeighborV2(unconnected, segList, currentIdx, maxDistSq, level);
+
+            if (nextUnconnIdx < 0) {
+                break;  // No more downhill connections - trunk complete
+            }
+
+            // Move neighbor to SegmentList and create segment
+            NetworkPoint nextPt = unconnected.removeAndGet(nextUnconnIdx);
+            int nextIdx = segList.addPoint(nextPt.position, PointType.TRUNK, level);
+
+            // Create segment from current to next (with tangents computed later)
+            // For now, create simple segment - tangent computation will be added
+            Vec2D tangent = computeSimpleTangent(segList.getPoint(currentIdx).position,
+                                                  segList.getPoint(nextIdx).position);
+            segList.addSegment(currentIdx, nextIdx, level, tangent, tangent);
+
+            currentIdx = nextIdx;
+        }
+    }
+
+    /**
+     * V2: Find best neighbor in SegmentList for a point.
+     * Uses priority rules: merge distance first, then lowest slope.
+     */
+    private int findBestNeighborV2(NetworkPoint sourcePt, SegmentList segList,
+                                    double maxDistSq, double mergeDistSq, int level) {
+        Point2D sourcePos = sourcePt.position.projectZ();
+
+        double bestSlopeWithinMerge = Double.MAX_VALUE;
+        int bestNeighborWithinMerge = -1;
+        double bestSlopeOverall = Double.MAX_VALUE;
+        int bestNeighborOverall = -1;
+
+        for (int i = 0; i < segList.getPointCount(); i++) {
+            NetworkPoint candidate = segList.getPoint(i);
+            if (candidate.pointType == PointType.EDGE) continue;
+
+            // Skip if already has 3+ connections (full)
+            if (candidate.connections >= 3) continue;
+
+            Point2D candidatePos = candidate.position.projectZ();
+            double distSq = sourcePos.distanceSquaredTo(candidatePos);
+
+            if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
+
+            // Calculate normalized slope with DistanceFalloffPower
+            double dist = Math.sqrt(distSq);
+            double heightDiff = candidate.position.z - sourcePt.position.z;
+            double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+
+            // Level 1+ has slope cutoff
+            if (level > 0 && normalizedSlope > lowestSlopeCutoff) {
+                continue;
+            }
+
+            // Apply branch encouragement if candidate has 2+ connections
+            double effectiveSlope = normalizedSlope;
+            if (candidate.connections >= 2) {
+                effectiveSlope *= BRANCH_ENCOURAGEMENT_FACTOR;
+            }
+
+            // Priority A: Prefer neighbors within merge distance
+            if (distSq <= mergeDistSq) {
+                if (effectiveSlope < bestSlopeWithinMerge) {
+                    bestSlopeWithinMerge = effectiveSlope;
+                    bestNeighborWithinMerge = i;
+                }
+            }
+
+            // Priority B: Track overall best
+            if (effectiveSlope < bestSlopeOverall) {
+                bestSlopeOverall = effectiveSlope;
+                bestNeighborOverall = i;
+            }
+        }
+
+        return (bestNeighborWithinMerge >= 0) ? bestNeighborWithinMerge : bestNeighborOverall;
+    }
+
+    /**
+     * V2: Find best trunk neighbor (must be downhill).
+     */
+    private int findBestTrunkNeighborV2(UnconnectedPoints unconnected, SegmentList segList,
+                                         int currentSegListIdx, double maxDistSq, int level) {
+        NetworkPoint currentPt = segList.getPoint(currentSegListIdx);
+        Point2D currentPos = currentPt.position.projectZ();
+
+        double bestSlope = 0;  // Must be negative (downhill)
+        int bestUnconnIdx = -1;
+
+        List<Integer> remaining = unconnected.getRemainingIndices();
+        for (int unconnIdx : remaining) {
+            NetworkPoint candidate = unconnected.getPoint(unconnIdx);
+            if (candidate.pointType == PointType.EDGE) continue;
+
+            Point2D candidatePos = candidate.position.projectZ();
+            double distSq = currentPos.distanceSquaredTo(candidatePos);
+
+            if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
+
+            // Calculate slope
+            double dist = Math.sqrt(distSq);
+            double heightDiff = candidate.position.z - currentPt.position.z;
+            double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+
+            // Trunk requires downhill (negative slope)
+            if (normalizedSlope >= 0) continue;
+
+            if (normalizedSlope < bestSlope) {
+                bestSlope = normalizedSlope;
+                bestUnconnIdx = unconnIdx;
+            }
+        }
+
+        return bestUnconnIdx;
+    }
+
+    /**
+     * V2: Create a segment connecting an unconnected point to a SegmentList point.
+     */
+    private void createSegmentV2(UnconnectedPoints unconnected, int unconnIdx,
+                                  SegmentList segList, int neighborIdx,
+                                  int level, int cellX, int cellY) {
+        // Move point from UnconnectedPoints to SegmentList
+        NetworkPoint unconnPt = unconnected.removeAndGet(unconnIdx);
+        int newIdx = segList.addPoint(unconnPt.position, unconnPt.pointType, level);
+
+        NetworkPoint neighborPt = segList.getPoint(neighborIdx);
+
+        // Determine flow direction based on elevation
+        int srtIdx, endIdx;
+        if (unconnPt.position.z > neighborPt.position.z) {
+            // New point is higher - it's the source
+            srtIdx = newIdx;
+            endIdx = neighborIdx;
+        } else {
+            // Neighbor is higher - it's the source
+            srtIdx = neighborIdx;
+            endIdx = newIdx;
+        }
+
+        // Compute simple tangents
+        Point3D srtPos = segList.getPoint(srtIdx).position;
+        Point3D endPos = segList.getPoint(endIdx).position;
+        Vec2D tangent = computeSimpleTangent(srtPos, endPos);
+
+        // Create segment
+        segList.addSegment(srtIdx, endIdx, level, tangent, tangent);
+
+        // TODO: Add subdivision logic here (subdivideAndAddPointsV2)
+    }
+
+    /**
+     * Compute a simple tangent from start to end point.
+     */
+    private Vec2D computeSimpleTangent(Point3D srt, Point3D end) {
+        double dx = end.x - srt.x;
+        double dy = end.y - srt.y;
+        double len = Math.sqrt(dx * dx + dy * dy);
+        if (len < MathUtils.EPSILON) {
+            return new Vec2D(1, 0);  // Default tangent
+        }
+        return new Vec2D(dx / len, dy / len);
+    }
+
     /**
      * Shift all segment elevations down so minimum is at 0 (for level 0 asterisms).
      */

@@ -308,6 +308,92 @@ public class SegmentList {
         }
     }
 
+    // ========== Conversion Methods ==========
+
+    /**
+     * Convert to old format: List<Segment3D> with Point3D srt/end.
+     * Used for backward compatibility with existing code that expects Point3D-based segments.
+     */
+    public List<Segment3D> toSegment3DList() {
+        List<Segment3D> result = new ArrayList<>();
+
+        for (Segment3D seg : segments) {
+            if (seg.isPointBased()) {
+                // Already has Point3D - use as-is
+                result.add(seg);
+            } else {
+                // Index-based - resolve to Point3D
+                NetworkPoint srtPt = points.get(seg.srtIdx);
+                NetworkPoint endPt = points.get(seg.endIdx);
+
+                result.add(new Segment3D(
+                    srtPt.position, endPt.position, seg.level,
+                    seg.tangentSrt, seg.tangentEnd,
+                    srtPt.pointType, endPt.pointType
+                ));
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Create a SegmentList from an existing List<Segment3D>.
+     * Used to import legacy segments into the new structure.
+     */
+    public static SegmentList fromSegment3DList(List<Segment3D> segments, int level) {
+        SegmentList result = new SegmentList();
+
+        // Build a map of positions to point indices to avoid duplicates
+        Map<Long, Integer> positionToIndex = new HashMap<>();
+
+        for (Segment3D seg : segments) {
+            if (!seg.isPointBased()) {
+                throw new IllegalArgumentException("Cannot import index-based segments");
+            }
+
+            // Get or create point for srt
+            int srtIdx = getOrCreatePointIndex(result, positionToIndex, seg.srt, seg.srtType, level);
+
+            // Get or create point for end
+            int endIdx = getOrCreatePointIndex(result, positionToIndex, seg.end, seg.endType, level);
+
+            // Add segment using indices
+            result.addSegment(srtIdx, endIdx, level, seg.tangentSrt, seg.tangentEnd);
+        }
+
+        return result;
+    }
+
+    /**
+     * Helper to get or create a point index for a position.
+     */
+    private static int getOrCreatePointIndex(SegmentList list, Map<Long, Integer> positionToIndex,
+                                              Point3D pos, PointType type, int level) {
+        // Quantize position for lookup
+        long key = quantizePosition(pos);
+
+        Integer existingIdx = positionToIndex.get(key);
+        if (existingIdx != null) {
+            return existingIdx;
+        }
+
+        // Create new point
+        int idx = list.addPoint(pos, type, level);
+        positionToIndex.put(key, idx);
+        return idx;
+    }
+
+    /**
+     * Quantize a position to a long key for deduplication.
+     */
+    private static long quantizePosition(Point3D pos) {
+        // Use high precision to avoid false matches
+        long qx = Math.round(pos.x * 100000);
+        long qy = Math.round(pos.y * 100000);
+        return (qx << 32) | (qy & 0xFFFFFFFFL);
+    }
+
     @Override
     public String toString() {
         return String.format("SegmentList(points=%d, segments=%d)", points.size(), segments.size());
