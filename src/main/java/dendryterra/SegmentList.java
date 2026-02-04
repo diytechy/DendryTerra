@@ -108,6 +108,34 @@ public class SegmentList {
         points.set(srtIdx, srt.incrementConnections());
         points.set(endIdx, end.incrementConnections());
     }
+                //    int idx = segList.addPoint(p.position, p.pointType, level);
+                //    // 0-length segment for visualization
+                //    segList.addSegment(idx, idx, level, null, null);
+
+    /**
+     * Add a segment using new network point to known existing point in segment.
+     * Automatically computes tangent and segmentation.
+     */
+    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level) {
+    
+        int srtIdx = addPoint(srtNetPnt);
+        NetworkPoint srt = points.get(srtIdx);
+        NetworkPoint end = points.get(endIdx);
+
+        // Create Segment3D (using current Point3D-based format)
+        Vec2D tangentSrt = null;
+        Vec2D tangentEnd = null;
+        addSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
+    }
+    
+    /**
+     * Add a segment to with two new network points, only used for trunk initialization.
+     */
+    public void addSegment(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level) {
+
+        int endIdx = addPoint(endNetPnt);
+        addSegment(srtNetPnt, endIdx, level);
+    }
 
     /**
      * Remove a segment by index and decrement connection counts.
