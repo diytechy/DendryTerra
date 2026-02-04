@@ -15,14 +15,37 @@ public class SegmentList {
     private final List<NetworkPoint> points;
     private final List<Segment3D> segments;
     private int nextIndex;  // For generating unique indices
+    private long salt;  // Global salt for deterministic randomness
 
     public SegmentList() {
         this.points = new ArrayList<>();
         this.segments = new ArrayList<>();
         this.nextIndex = 0;
+        this.salt = 12345; // Default salt value
+    }
+    
+    public SegmentList(long salt) {
+        this.points = new ArrayList<>();
+        this.segments = new ArrayList<>();
+        this.nextIndex = 0;
+        this.salt = salt;
     }
 
     // ========== Point Operations ==========
+    
+    /**
+     * Get the global salt value used for deterministic randomness.
+     */
+    public long getSalt() {
+        return salt;
+    }
+    
+    /**
+     * Set the global salt value used for deterministic randomness.
+     */
+    public void setSalt(long salt) {
+        this.salt = salt;
+    }
 
     /**
      * Add a new point with the given position, type, and level.
@@ -154,14 +177,14 @@ public class SegmentList {
      */
     public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentDistance,
                            boolean useSplines, double curvature, double curvatureFalloff, 
-                           double tangentStrength, double tangentAngle, long salt) {
+                           double tangentStrength, double tangentAngle) {
         
         // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
         
         // Call the full implementation
         addSegmentWithFullImplementation(srtIdx, endIdx, level, maxSegmentDistance, useSplines, curvature, 
-                 curvatureFalloff, tangentStrength, tangentAngle, salt);
+                 curvatureFalloff, tangentStrength, tangentAngle);
     }
     
     /**
@@ -170,14 +193,14 @@ public class SegmentList {
      */
     public void addSegmentWithFullImplementation(int srtIdx, int endIdx, int level, double maxSegmentDistance,
                            boolean useSplines, double curvature, double curvatureFalloff, 
-                           double tangentStrength, double tangentAngle, long salt) {
+                           double tangentStrength, double tangentAngle) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
         
         // Step 1: Compute tangents based on connection patterns
         Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, useSplines, curvature, 
-                                                         curvatureFalloff, tangentStrength, tangentAngle, salt);
+                                                         curvatureFalloff, tangentStrength, tangentAngle);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
         
@@ -191,7 +214,7 @@ public class SegmentList {
         } else {
             // Multiple segments - create intermediate points and connect them
             createSubdividedSegments(srtIdx, endIdx, level, numDivisions, maxSegmentDistance,
-                                   useSplines, curvature, curvatureFalloff, tangentStrength, salt);
+                                   useSplines, curvature, curvatureFalloff, tangentStrength);
         }
     }
     
@@ -201,7 +224,7 @@ public class SegmentList {
     public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level, double maxSegmentDistance) {
 
         int endIdx = addPoint(endNetPnt);
-        addSegment(srtNetPnt, endIdx, level, maxSegmentDistance, false, 0, 0, 0, 0, 0);
+        addSegment(srtNetPnt, endIdx, level, maxSegmentDistance, false, 0, 0, 0, 0);
     }
     
     /**
@@ -226,7 +249,7 @@ public class SegmentList {
      */
     private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, boolean useSplines, 
                                                double curvature, double curvatureFalloff, 
-                                               double tangentStrength, double tangentAngle, long salt) {
+                                               double tangentStrength, double tangentAngle) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
@@ -241,8 +264,8 @@ public class SegmentList {
         }
         
         // Compute tangents based on connection patterns
-        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true, tangentAngle, salt);
-        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false, tangentAngle, salt);
+        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true, tangentAngle);
+        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false, tangentAngle);
         
         return new Vec2D[] { tangentSrt, tangentEnd };
     }
@@ -252,7 +275,7 @@ public class SegmentList {
      * References the logic from computeNodeTangent in DendrySampler.
      */
     private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, 
-                                     double tangentAngle, long salt) {
+                                     double tangentAngle) {
         
         NetworkPoint point = points.get(pointIdx);
         NetworkPoint target = points.get(targetIdx);
@@ -321,14 +344,14 @@ public class SegmentList {
     private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions, 
                                          double maxSegmentDistance, boolean useSplines,
                                          double curvature, double curvatureFalloff, 
-                                         double tangentStrength, long salt) {
+                                         double tangentStrength) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
         
         // Compute initial tangents
         Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, useSplines, curvature, 
-                                                       curvatureFalloff, tangentStrength, 0, salt);
+                                                       curvatureFalloff, tangentStrength, 0.0);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
         
