@@ -665,7 +665,15 @@ public class SegmentList {
      * Used to import legacy segments into the new structure.
      */
     public static SegmentList fromSegment3DList(List<Segment3D> segments, int level) {
-        SegmentList result = new SegmentList();
+        return fromSegment3DList(segments, level, 12345); // Default salt
+    }
+    
+    /**
+     * Create a SegmentList from an existing List<Segment3D> with specified salt.
+     * Used to import legacy segments into the new structure.
+     */
+    public static SegmentList fromSegment3DList(List<Segment3D> segments, int level, long salt) {
+        SegmentList result = new SegmentList(salt);
 
         // Build a map of positions to point indices to avoid duplicates
         Map<Long, Integer> positionToIndex = new HashMap<>();

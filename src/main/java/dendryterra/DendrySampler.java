@@ -447,7 +447,7 @@ public class DendrySampler implements Sampler {
         // Level 1+: Higher resolution refinement using loop
         // Each level generates points for the query cell and connects them using CleanAndNetworkPointsV2
         // Convert initial segments to SegmentList for V2 method
-        SegmentList previousSegList = SegmentList.fromSegment3DList(allSegments, 0);
+        SegmentList previousSegList = SegmentList.fromSegment3DList(allSegments, 0, salt);
 
         for (int level = 1; level <= resolution; level++) {
             // Get the cell at this level's resolution
@@ -466,7 +466,7 @@ public class DendrySampler implements Sampler {
             if (!levelSegments.isEmpty()) {
                 allSegments.addAll(levelSegments);
                 // Update previous level SegmentList for next iteration
-                previousSegList = SegmentList.fromSegment3DList(allSegments, level);
+                previousSegList = SegmentList.fromSegment3DList(allSegments, level, salt);
             }
         }
 
@@ -1196,7 +1196,7 @@ public class DendrySampler implements Sampler {
             // Use quantized center coordinates for cell reference
             int cellRefX = (int) Math.floor(constInfo.centerX);
             int cellRefY = (int) Math.floor(constInfo.centerY);
-            SegmentList segList = CleanAndNetworkPointsV2(cellRefX, cellRefY, 0, stars);
+            SegmentList segList = CleanAndNetworkPointsV2(cellRefX, cellRefY, 0, stars, null);
             List<Segment3D> segments = segList.toSegment3DList();
 
             constellationStars.put(constKey, stars);
@@ -1722,7 +1722,7 @@ public class DendrySampler implements Sampler {
     private SegmentList CleanAndNetworkPointsV2(int cellX, int cellY, int level,
                                                  List<Point3D> points,
                                                  SegmentList previousLevelSegments) {
-        SegmentList result = new SegmentList();
+        SegmentList result = new SegmentList(salt);
         if (points.isEmpty()) return result;
 
         // Function setup: determine cell-specific distances
