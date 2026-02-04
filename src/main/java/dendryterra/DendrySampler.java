@@ -41,7 +41,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 0;
+    private static final int SEGMENT_DEBUGGING = 15;
 
     // Configuration parameters
     private final int resolution;
@@ -1845,7 +1845,7 @@ public class DendrySampler implements Sampler {
     private void buildTrunkV2(UnconnectedPoints unconnected, SegmentList segList,
                                double maxDistSq, double mergeDistSq, int level, int cellX, int cellY) {
         // Find highest unconnected point to start trunk
-        int startIdx = unconnected.findHighestUnconnected();
+        int startIdx = unconnected.findLowestUnconnected();
         if (startIdx < 0) return;
 
         // Add first point to SegmentList as TRUNK
@@ -1907,7 +1907,7 @@ public class DendrySampler implements Sampler {
 
             // Calculate normalized slope with DistanceFalloffPower
             double dist = Math.sqrt(distSq);
-            double heightDiff = candidate.position.z - sourcePt.position.z;
+            double heightDiff = sourcePt.position.z - candidate.position.z;
             double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
 
             // Level 1+ has slope cutoff

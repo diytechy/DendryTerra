@@ -943,3 +943,46 @@ Looking at the NetworkNode type:
 
 
 Now any function that performs networking / linking activity is taking points from the new point cloud and directly tying them into the segment list structure, moving the points from the new point cloud to their new location in the segment list structure.  A separate "NetworkNodes" variable becomes unnecessary as node context is either apart of the segment definition, or it just hasn't been added yet.
+
+########################################################
+
+Traversal tracking will not be necessary.  A single segment list structure carries all linked / connected segments and new points are only added to that base segment structure.  That is - the base segment grows from a single tree - so independent chain creation, tracking, and integration is unnecessary.
+
+The initial base segment list structure is created by merging all the the constellations and their stitching segments before proceeding to level 1+ segment creation.
+
+
+###################################3
+
+Post refactor notes:
+
+1. Tree segments do not have curvature, are not splined with the right segment subdivision.
+    A. When creating cell points, maybe give boundary?  Or make sure stitches happen along the center 80% of the boundary?
+2. Branching is causing substantial cross-over, and doesn't appear to be targeting closest nodes at all?
+
+#########################################
+
+Is "buildTrunkV2" necessary in it's segment complexity?
+
+Can findBestTrunkNeighborV2 be converted to findBestNeighborV2?  Just add 0 length segment to lowest point on trunk before running subsequent run?
+
+Note, merge these into common function: 
+
+    private int findBestNeighborV2(NetworkPoint sourcePt, SegmentList segList,double maxDistSq, double mergeDistSq, int level) 
+
+
+    private int findBestTrunkNeighborV2(UnconnectedPoints unconnected, SegmentList segList, int currentSegListIdx, double maxDistSq, int level)
+
+Add function variants (SegmentList.java - addSegment):
+
+public void addSegment(NetworkPoint srtNetPoint, int endIdx, int level, double MinimumSegmentLength)
+    Adds the start point to the list, uses it's index to add the segment.
+
+public void addSegment(NetworkPoint srtNetPoint, NetworkPoint endNetPoint, int level, double MinimumSegmentLength)
+    Adds the end point to the list, uses it's index to call the previous method
+
+public void addSegment(int srtIdx, int endIdx, int level, double MinimumSegmentLength)
+    Updated to compute tangent, maybe this needs twist magnification element.
+
+
+Then createSegmentV2 can possibly be removed entirely?  Or does it call the addSegment method?
+createSegmentV2(UnconnectedPoints unconnected, int unconnIdx, SegmentList segList, int neighborIdx, int level, int cellX, int cellY)

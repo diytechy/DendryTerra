@@ -1,4 +1,4 @@
-DendryTerra is a plugin for Terra to generate Dendry noise.
+DendryTerra is a plugin for Terra to generate Dendry-like "noise".
 
 ## Design outline
 
@@ -12,7 +12,7 @@ Dendry noise construction is detailed in "Gaillard19I3D.pdf"
 
 ## Building
 
-DendryTerra is built using gradlew, and can be triggered by calling gradlew.bat in windows environments to gather dependencies and build the final addon jar file.
+DendryTerra is built using gradlew, and can be triggered by calling ".\gradlew.bat build" in windows powershell terminal from the project root to gather dependencies and build the final addon jar file.
 
 ## Installation and use
 
@@ -50,6 +50,24 @@ Where:
 The code is expected to follow the Terra plugin conventions, and utilize Seismic for optimized math libraries where applicable.
 
 Some of the addons for Terra and there dependencies are available here: "https://maven.solo-studios.ca/#/releases/com/dfsek", and may have application to this project.
+
+## Flow breakdown
+
+
+This addon generates infinitely tileable river-like structures across an x,z plane, utilizing a control function (normally elevation) to push structures to their lowest level (like water flowing to lower elevations).  A core interconnected river array connects to each cell (gridsize) to ensure available flow to each grid.
+
+The flow is as follows:
+
+1. The Terra tool requests a value from the sampler (x/z)
+2. The Dendry sampler calculates the grid-sized cell based on the x/z coordinate being queried.
+3. If the queried cell and result is cached, the sampler immediately responds with the cached value.
+4. Otherwise the sampler continues on to resolve the queried point:
+    A. First, the sampler determines how to construct the interconnected river array, details can be found NetworkingRules.md:
+        i. First, asterisms are created by interconnecting stars produced in each cell (ConstellationRules.md), interconnecting those by common networking rules to reduce obvious obvious grid-like patterns that would occur in a pure grid construction.
+            a) Stars are drafted by sampling 9 points in the cell array (with a slight boundary on the outside) and selecting the point with the lowest value (elevation) from the control function.
+        ii. Next, the interconnected asterisms are further connected by stitches to ensure that all asterisms are connected into one large river network.
+        iii. Finally, per cell, rivers are permitted to spread up from the river network to other sampled points.
+            b) Points are drafted per level before being connected to their lower level network using a grid pattern in the cell, chaining points upward on the control function.
 
 ### Notes for "AI" (Machine learned / LLM) assistants
 
@@ -114,7 +132,6 @@ Some of the addons for Terra and there dependencies are available here: "https:/
 * This is a terra plugin, additional context can be referenced at the following locations:
 
 - "C:\Projects\Terra\common\addons\config-noise-function\src\main\java\com\dfsek\terra\addons\noise" contains Terra and the path to the config-noise addon that might be a good reference.
-** 
 - "C:\Projects\NoiseTool" contains the noise tool and it's source code that -like other Terra inclusive tools- will be capable of loading this addon.
 - "https://terra.polydev.org/api/index.html" contains indexes around the Terra API.  This information is outdated but likely still relevant.
 - "C:\Projects\DendryNoise" contains the source code to the initial draft to simulate Dendry noise using CPP, but for java this may need to be reverse engineered and reformed for java compatible bytecode.

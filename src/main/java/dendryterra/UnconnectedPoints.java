@@ -115,6 +115,27 @@ public class UnconnectedPoints {
     }
 
     /**
+     * Find the highest unconnected point (for trunk building at level 0).
+     * Skips EDGE points.
+     * @return Local index of highest point, or -1 if none remain
+     */
+    public int findLowestUnconnected() {
+        int bestIdx = -1;
+        double bestZ = Double.POSITIVE_INFINITY;
+
+        for (int i = 0; i < points.size(); i++) {
+            if (removedIndices.contains(i)) continue;
+            NetworkPoint p = points.get(i);
+            if (p.pointType == PointType.EDGE) continue;
+
+            if (p.position.z < bestZ) {
+                bestZ = p.position.z;
+                bestIdx = i;
+            }
+        }
+        return bestIdx;
+    }
+    /**
      * Find all points within the given horizontal distance of any point in the SegmentList.
      * Returns local indices of matching unconnected points.
      */
