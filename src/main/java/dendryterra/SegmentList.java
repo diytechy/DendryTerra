@@ -152,10 +152,47 @@ public class SegmentList {
      * Add a segment using new network point to known existing point in segment.
      * Automatically computes tangent and segmentation.
      */
-    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentDistance) {
-    
+    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentDistance,
+                           boolean useSplines, double curvature, double curvatureFalloff, 
+                           double tangentStrength, double tangentAngle, long salt) {
+        
+        // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
-        addSegmentWithDivisions(srtIdx, endIdx, level, maxSegmentDistance);
+        
+        // Call the full implementation
+        addSegmentWithFullImplementation(srtIdx, endIdx, level, maxSegmentDistance, useSplines, curvature, 
+                 curvatureFalloff, tangentStrength, tangentAngle, salt);
+    }
+    
+    /**
+     * Add a segment with full implementation including tangent computation and subdivision.
+     * This is the main implementation that creates multiple connected segments from a single call.
+     */
+    public void addSegmentWithFullImplementation(int srtIdx, int endIdx, int level, double maxSegmentDistance,
+                           boolean useSplines, double curvature, double curvatureFalloff, 
+                           double tangentStrength, double tangentAngle, long salt) {
+        
+        NetworkPoint srt = points.get(srtIdx);
+        NetworkPoint end = points.get(endIdx);
+        
+        // Step 1: Compute tangents based on connection patterns
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, useSplines, curvature, 
+                                                         curvatureFalloff, tangentStrength, tangentAngle, salt);
+        Vec2D tangentSrt = tangents[0];
+        Vec2D tangentEnd = tangents[1];
+        
+        // Step 2: Subdivide long segments if needed
+        double distance = srt.position.distanceTo(end.position);
+        int numDivisions = (int) Math.ceil(distance / maxSegmentDistance);
+        
+        if (numDivisions <= 1) {
+            // Single segment - add directly
+            addSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
+        } else {
+            // Multiple segments - create intermediate points and connect them
+            createSubdividedSegments(srtIdx, endIdx, level, numDivisions, maxSegmentDistance,
+                                   useSplines, curvature, curvatureFalloff, tangentStrength, salt);
+        }
     }
     
     /**
@@ -164,7 +201,212 @@ public class SegmentList {
     public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level, double maxSegmentDistance) {
 
         int endIdx = addPoint(endNetPnt);
-        addSegmentWithDivisions(srtNetPnt, endIdx, level, maxSegmentDistance);
+        addSegment(srtNetPnt, endIdx, level, maxSegmentDistance, false, 0, 0, 0, 0, 0);
+    }
+    
+    /**
+     * Helper method to rotate a vector by an angle.
+     */
+    private Vec2D rotateVector(Vec2D v, double angle) {
+        double cos = Math.cos(angle);
+        double sin = Math.sin(angle);
+        return new Vec2D(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+    }
+    
+    /**
+     * Helper method to create a vector from an angle.
+     */
+    private Vec2D createVectorFromAngle(double angle) {
+        return new Vec2D(Math.cos(angle), Math.sin(angle));
+    }
+    
+    /**
+     * Compute tangents for a connection based on existing connectivity patterns.
+     * References computeNodeTangent logic from DendrySampler.
+     */
+    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, boolean useSplines, 
+                                               double curvature, double curvatureFalloff, 
+                                               double tangentStrength, double tangentAngle, long salt) {
+        
+        NetworkPoint srt = points.get(srtIdx);
+        NetworkPoint end = points.get(endIdx);
+        
+        // For straight segments or when splines are disabled, use simple direction
+        if (!useSplines || curvature <= 0) {
+            Vec2D direction = new Vec2D(srt.position.projectZ(), end.position.projectZ());
+            if (direction.lengthSquared() > MathUtils.EPSILON) {
+                direction = direction.normalize();
+            }
+            return new Vec2D[] { direction, direction };
+        }
+        
+        // Compute tangents based on connection patterns
+        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true, tangentAngle, salt);
+        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false, tangentAngle, salt);
+        
+        return new Vec2D[] { tangentSrt, tangentEnd };
+    }
+    
+    /**
+     * Compute tangent for a specific point based on its connections.
+     * References the logic from computeNodeTangent in DendrySampler.
+     */
+    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, 
+                                     double tangentAngle, long salt) {
+        
+        NetworkPoint point = points.get(pointIdx);
+        NetworkPoint target = points.get(targetIdx);
+        
+        // Base direction toward target
+        Vec2D toTarget = new Vec2D(point.position.projectZ(), target.position.projectZ());
+        if (toTarget.lengthSquared() < MathUtils.EPSILON) {
+            return new Vec2D(1, 0); // Default direction
+        }
+        toTarget = toTarget.normalize();
+        
+        // Adjust based on connection count
+        if (point.connections == 0) {
+            // No existing connections - use flow direction with twist
+            double twist = (isStart ? 1 : -1) * tangentAngle;
+            return rotateVector(toTarget, twist);
+        } else if (point.connections == 1) {
+            // One existing connection - check if aligned with target
+            Vec2D existingDir = getExistingConnectionDirection(pointIdx);
+            if (existingDir != null) {
+                double alignment = toTarget.dot(existingDir);
+                if (alignment > 0.7) {
+                    // Aligned - use existing for continuity
+                    return isStart ? existingDir : existingDir.negate();
+                }
+            }
+            // Not aligned - use direction to target with small offset
+            double offset = (Math.random() - 0.5) * tangentAngle * 0.5;
+            return rotateVector(toTarget, offset);
+        } else {
+            // Multiple connections - compute offset tangent
+            Vec2D existingDir = getExistingConnectionDirection(pointIdx);
+            if (existingDir != null) {
+                // Offset 20-70 degrees on the side of the target
+                double angleToTarget = Math.atan2(toTarget.y, toTarget.x);
+                double offsetAngle = tangentAngle * (0.4 + Math.random() * 0.3); // 20-70 degrees
+                return createVectorFromAngle(angleToTarget + offsetAngle);
+            }
+            return toTarget;
+        }
+    }
+    
+    /**
+     * Get the direction of existing connections from a point.
+     */
+    private Vec2D getExistingConnectionDirection(int pointIdx) {
+        NetworkPoint point = points.get(pointIdx);
+        Point3D pointPos = point.position;
+        
+        // Find segments connected to this point
+        for (Segment3D seg : segments) {
+            if (seg.srt.distanceSquaredTo(pointPos) < MathUtils.EPSILON) {
+                return new Vec2D(pointPos.projectZ(), seg.end.projectZ()).normalize();
+            }
+            if (seg.end.distanceSquaredTo(pointPos) < MathUtils.EPSILON) {
+                return new Vec2D(pointPos.projectZ(), seg.srt.projectZ()).normalize();
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Create subdivided segments between two points using spline or linear interpolation.
+     * References subdivideWithSpline and subdivideAndAddPoints logic from DendrySampler.
+     */
+    private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions, 
+                                         double maxSegmentDistance, boolean useSplines,
+                                         double curvature, double curvatureFalloff, 
+                                         double tangentStrength, long salt) {
+        
+        NetworkPoint srt = points.get(srtIdx);
+        NetworkPoint end = points.get(endIdx);
+        
+        // Compute initial tangents
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, useSplines, curvature, 
+                                                       curvatureFalloff, tangentStrength, 0, salt);
+        Vec2D tangentSrt = tangents[0];
+        Vec2D tangentEnd = tangents[1];
+        
+        // Create intermediate points
+        int prevIdx = srtIdx;
+        Random rng = new Random(salt + srtIdx * 1000 + endIdx);
+        
+        for (int i = 1; i < numDivisions; i++) {
+            double t = (double) i / numDivisions;
+            Point3D intermediatePoint;
+            
+            if (useSplines && curvature > 0) {
+                // Use cubic Hermite spline interpolation
+                intermediatePoint = interpolateHermiteSpline(srt.position, end.position, 
+                                                           tangentSrt, tangentEnd, t, tangentStrength);
+            } else {
+                // Use linear interpolation with jitter
+                intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, rng);
+            }
+            
+            // Add intermediate point
+            int intermediateIdx = addPoint(intermediatePoint, PointType.KNOT, level);
+            
+            // Create segment from previous to intermediate
+            addSegment(prevIdx, intermediateIdx, level, 
+                      prevIdx == srtIdx ? tangentSrt : null,
+                      intermediateIdx == endIdx ? tangentEnd : null);
+            
+            prevIdx = intermediateIdx;
+        }
+        
+        // Create final segment to end point
+        addSegment(prevIdx, endIdx, level, 
+                  prevIdx == srtIdx ? tangentSrt : null,
+                  tangentEnd);
+    }
+    
+    /**
+     * Cubic Hermite spline interpolation.
+     * References subdivideWithSpline logic from DendrySampler.
+     */
+    private Point3D interpolateHermiteSpline(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd, 
+                                             double t, double tangentStrength) {
+        double t2 = t * t;
+        double t3 = t2 * t;
+        double h00 = 2 * t3 - 3 * t2 + 1;
+        double h10 = t3 - 2 * t2 + t;
+        double h01 = -2 * t3 + 3 * t2;
+        double h11 = t3 - t2;
+        
+        double segLength = srt.projectZ().distanceTo(end.projectZ());
+        double tangentScale = segLength * tangentStrength;
+        
+        double x = h00 * srt.x + h10 * (tangentSrt != null ? tangentSrt.x * tangentScale : 0)
+                 + h01 * end.x + h11 * (tangentEnd != null ? tangentEnd.x * tangentScale : 0);
+        double y = h00 * srt.y + h10 * (tangentSrt != null ? tangentSrt.y * tangentScale : 0)
+                 + h01 * end.y + h11 * (tangentEnd != null ? tangentEnd.y * tangentScale : 0);
+        double z = MathUtils.lerp(srt.z, end.z, t);  // Linear interpolation for elevation
+        
+        return new Point3D(x, y, z);
+    }
+    
+    /**
+     * Linear interpolation with deterministic jitter.
+     * References jitter application logic from DendrySampler.
+     */
+    private Point3D interpolateLinearWithJitter(Point3D srt, Point3D end, double t, Random rng) {
+        // Linear interpolation
+        double x = MathUtils.lerp(srt.x, end.x, t);
+        double y = MathUtils.lerp(srt.y, end.y, t);
+        double z = MathUtils.lerp(srt.z, end.z, t);
+        
+        // Add small deterministic jitter for natural appearance
+        double jitterMagnitude = 0.01; // Small jitter
+        double jitterX = (rng.nextDouble() - 0.5) * jitterMagnitude;
+        double jitterY = (rng.nextDouble() - 0.5) * jitterMagnitude;
+        
+        return new Point3D(x + jitterX, y + jitterY, z);
     }
 
     /**

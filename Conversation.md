@@ -986,3 +986,14 @@ public void addSegment(int srtIdx, int endIdx, int level, double MinimumSegmentL
 
 Then createSegmentV2 can possibly be removed entirely?  Or does it call the addSegment method?
 createSegmentV2(UnconnectedPoints unconnected, int unconnIdx, SegmentList segList, int neighborIdx, int level, int cellX, int cellY)
+
+########################################################333
+
+Update "addSegment(NetworkPoint srtNetPnt, int endIdx, int level)" in "SegmentList.java" to add content to the function and add inputs if needed, specifically so that it creates multiple connected segments from a single call to this function.
+
+Follow the placeholder comments in the function.  More computation details can be derived from various functions in DendrySamplerOld.java:
+    - Tangent computation should reference computeNodeTangent
+    - Spline creation can reference connectAndDefineSegments
+    - tangent computation, jitter application can also reference subdivideAndAddPoints 
+
+- Compute that tangent as a property of the of the point information
