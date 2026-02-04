@@ -112,29 +112,48 @@ public class SegmentList {
                 //    // 0-length segment for visualization
                 //    segList.addSegment(idx, idx, level, null, null);
 
+
+    /**
+     * Add a segment directly using point indices.
+     * Creates a Segment3D internally.
+     */
+    public void addSegmentWithDivisions(int srtIdx, int endIdx, int level) {
+        //Get points
+        NetworkPoint srt = points.get(srtIdx);
+        NetworkPoint end = points.get(endIdx);
+
+        // Placeholders for tangents for initial segment, to be divided.
+        Vec2D tangentSrt = null;
+        Vec2D tangentEnd = null;
+
+        // Placeholder to subdivide long segments, points created here should be added with 
+        // Vectors should actually be a loop
+        int srtIdxSub = srtIdx;
+        int endIdxSub = endIdx;
+        Vec2D tangentSrtSub = null;
+        Vec2D tangentEndSub = null;
+
+
+        // Placeholder (likely for loop) to add each subdivided segment back into the main segment group.
+        addSegment(srtIdxSub, endIdxSub, level,tangentSrtSub,tangentEndSub);
+    }
     /**
      * Add a segment using new network point to known existing point in segment.
      * Automatically computes tangent and segmentation.
      */
-    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level) {
+    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level) {
     
         int srtIdx = addPoint(srtNetPnt);
-        NetworkPoint srt = points.get(srtIdx);
-        NetworkPoint end = points.get(endIdx);
-
-        // Create Segment3D (using current Point3D-based format)
-        Vec2D tangentSrt = null;
-        Vec2D tangentEnd = null;
-        addSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
+        addSegmentWithDivisions(srtIdx, endIdx, level);
     }
     
     /**
      * Add a segment to with two new network points, only used for trunk initialization.
      */
-    public void addSegment(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level) {
+    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level) {
 
         int endIdx = addPoint(endNetPnt);
-        addSegment(srtNetPnt, endIdx, level);
+        addSegmentWithDivisions(srtNetPnt, endIdx, level);
     }
 
     /**
