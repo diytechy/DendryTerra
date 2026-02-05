@@ -1722,7 +1722,14 @@ public class DendrySampler implements Sampler {
     private SegmentList CleanAndNetworkPointsV2(int cellX, int cellY, int level,
                                                  List<Point3D> points,
                                                  SegmentList previousLevelSegments) {
-        SegmentList result = new SegmentList(salt);
+        // Create SegmentList with full configuration
+        SegmentListConfig config = new SegmentListConfig(salt)
+            .withSplines(useSplines)
+            .withCurvature(curvature)
+            .withTangentStrength(tangentStrength)
+            .withMaxTwistAngle(tangentAngle)
+            .withSlopeWithoutTwist(slopeWhenStraight);
+        SegmentList result = new SegmentList(config);
         if (points.isEmpty()) return result;
 
         // Function setup: determine cell-specific distances

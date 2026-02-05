@@ -365,18 +365,21 @@ public class SegmentList {
      * Uses global configuration parameters.
      */
     private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions) {
-        
+
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
-        
+
+        // Create RNG for deterministic randomness
+        long seed = (541L * (srt.position.hashCode() + end.position.hashCode()) + config.salt) & 0x7FFFFFFFL;
+        Random rng = new Random(seed);
+
         // Compute initial tangents using global config
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx);
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, rng);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
-        
+
         // Create intermediate points
         int prevIdx = srtIdx;
-        Random rng = new Random(config.salt + srtIdx * 1000 + endIdx);
         
         for (int i = 1; i < numDivisions; i++) {
             double t = (double) i / numDivisions;
@@ -611,7 +614,7 @@ public class SegmentList {
      * Create a copy of this SegmentList.
      */
     public SegmentList copy() {
-        SegmentList copy = new SegmentList();
+        SegmentList copy = new SegmentList(this.config);
         copy.nextIndex = this.nextIndex;
         for (NetworkPoint p : this.points) {
             copy.points.add(p);  // NetworkPoint is immutable
