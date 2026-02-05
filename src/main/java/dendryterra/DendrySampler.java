@@ -1961,7 +1961,7 @@ public class DendrySampler implements Sampler {
 
         // Function setup: determine cell-specific distances
         double gridSpacing = getGridSpacingForLevel(level);
-        double mergeDistance = MERGE_POINT_SPACING * gridSpacing;
+        double mergeDistance = MERGE_POINT_SPACING * getGridSpacingForLevel(level+1);
         double maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
 
         // Step 1: Clean network points - merge points within merge distance (only for level > 0)

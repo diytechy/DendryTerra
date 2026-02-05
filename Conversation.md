@@ -1013,3 +1013,12 @@ Subsequent level creation should use a similar path to branch creation.
 ###########################################################
 
 In SEGMENT_DEBUGGING set to 15, I am not seeing the tree segments or any others normal segments appear.  I do see stars, which implies 0-length segments are getting created and rendered, but it seems something is preventing longer / typical segments from getting rendered or created.
+
+##############################################################
+
+Issues:
+
+1. Segments should be smaller for level 0, since it should use merge distance from 1 level down.
+2. Discontinuities are present on trunk, something is causing segments to not get created deterministically.
+3. The trunk does not continue upward from every newly created point, instead it is branching out, which is not expected behavior.
+4. combineConstellationSegmentLists appears very complicated.  Can't 
