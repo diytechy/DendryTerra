@@ -288,14 +288,24 @@ public class SegmentList {
         
         NetworkPoint point = points.get(pointIdx);
         NetworkPoint target = points.get(targetIdx);
-        
+        //Initialize point variables that determine tangent and twist.
+        double angle = 0;
+        double slope = 0;
         // Base direction toward target
         Vec2D toTarget = new Vec2D(point.position.projectZ(), target.position.projectZ());
         if (toTarget.lengthSquared() < MathUtils.EPSILON) {
             return new Vec2D(1, 0); // Default direction
         }
         toTarget = toTarget.normalize();
-        
+        // Get slope tangent trajectory based on point:
+        if (isStart) {
+            angle = point.position.getTangent();
+            slope = Math.abs(point.position.getSlope());
+        }
+        else {
+            angle = target.position.getTangent();
+            slope = Math.abs(point.position.getSlope());
+        }
         // Adjust based on connection count
         if (point.connections == 0) {
             // No existing connections - use flow direction with twist
