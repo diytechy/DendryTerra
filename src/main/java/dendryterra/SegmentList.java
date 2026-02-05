@@ -209,32 +209,40 @@ public class SegmentList {
      * This is the main implementation that creates multiple connected segments from a single call.
      */
     public void addSegmentWithFullImplementation(int A, int B, int level) {
-        if (points.get(A).connections > 0 && points.get(B).connections == 0) {
-            //Side B has no connections, it should the start for consistency.
+        // Fetch points once and cache hash codes to avoid duplicate calculations
+        NetworkPoint ptA = points.get(A);
+        NetworkPoint ptB = points.get(B);
+        int hashA = ptA.position.hashCode();
+        int hashB = ptB.position.hashCode();
+
+        // Determine start/end ordering for consistent spline generation
+        int srtIdx, endIdx;
+        if (ptA.connections > 0 && ptB.connections == 0) {
+            // Side B has no connections, it should be the start for consistency
             srtIdx = B;
             endIdx = A;
-        }
-        else if (points.get(B).connections > 0 && points.get(A).connections == 0) {
-            //Side A has no connections, it should be the start for consistency.
+        } else if (ptB.connections > 0 && ptA.connections == 0) {
+            // Side A has no connections, it should be the start for consistency
             srtIdx = A;
             endIdx = B;
-        }
-        else {
-            //Both sides have connections or both have none, order them according to hash for consistency in spline generation.
-            if (points.get(A).position.hashCode() < points.get(B).position.hashCode()) {
+        } else {
+            // Both sides have connections or both have none, order by hash for consistency
+            if (hashA < hashB) {
                 srtIdx = A;
                 endIdx = B;
-            }
-            else {
+            } else {
                 srtIdx = B;
                 endIdx = A;
             }
         }
-        NetworkPoint srt = points.get(srtIdx);
-        NetworkPoint end = points.get(endIdx);
 
-        // Instantiate a random generator for consistent "random" artifacts per segment:
-        long seed = (541L * (srt.position.hashCode() + end.position.hashCode()) + config.salt) & 0x7FFFFFFFL;
+        NetworkPoint srt = (srtIdx == A) ? ptA : ptB;
+        NetworkPoint end = (endIdx == A) ? ptA : ptB;
+        int hashSrt = (srtIdx == A) ? hashA : hashB;
+        int hashEnd = (endIdx == A) ? hashA : hashB;
+
+        // Instantiate a random generator for consistent "random" artifacts per segment
+        long seed = (541L * (hashSrt + hashEnd) + config.salt) & 0x7FFFFFFFL;
         Random rng = new Random(seed);
 
         // Step 1: Compute tangents based on connection patterns using global config
