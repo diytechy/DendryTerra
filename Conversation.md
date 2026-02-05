@@ -997,3 +997,15 @@ Follow the placeholder comments in the function.  More computation details can b
     - tangent computation, jitter application can also reference subdivideAndAddPoints 
 
 - Compute that tangent as a property of the of the point information
+
+####################################################################
+
+Now update DendrySampler.java to use the new addSegment methods from SegmentList.java.
+
+Trunk creation should create the first segment by calling the new addSegment method with two new points, then call the new addSegment method with a new point and the previous index to create the rest of the trunk segments.
+
+Branch creation should create each growing segment by calling addSegment method with a new point and the index found existing in the segment list.
+
+Asterism stitching should be created by call addSegment method using the two point indexes for the points that are going to be combined.
+
+Subsequent level creation should use a similar path to branch creation.

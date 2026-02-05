@@ -1168,8 +1168,8 @@ public class DendrySampler implements Sampler {
         // Find the 4 closest constellations to the query cell
         List<ConstellationInfo> closestConstellations = findClosestConstellations(queryCell1);
 
-        // Generate asterism segments for each constellation
-        Map<Long, List<Segment3D>> constellationSegments = new HashMap<>();
+        // Generate asterism SegmentLists for each constellation
+        Map<Long, SegmentList> constellationSegmentLists = new HashMap<>();
         Map<Long, List<Point3D>> constellationStars = new HashMap<>();
 
         // Initialize star segments for debugging (needs to be outside if block for scope)
@@ -1197,13 +1197,13 @@ public class DendrySampler implements Sampler {
             int cellRefX = (int) Math.floor(constInfo.centerX);
             int cellRefY = (int) Math.floor(constInfo.centerY);
             SegmentList segList = CleanAndNetworkPointsV2(cellRefX, cellRefY, 0, stars, null);
-            List<Segment3D> segments = segList.toSegment3DList();
 
             constellationStars.put(constKey, stars);
-            constellationSegments.put(constKey, segments);
+            constellationSegmentLists.put(constKey, segList);
 
             // DEBUG: Return after first constellation only
             if (SEGMENT_DEBUGGING == 10 && firstConstellation) {
+                List<Segment3D> segments = segList.toSegment3DList();
                 LOGGER.info("SEGMENT_DEBUGGING=10: Returning first constellation segments only ({} segments)", segments.size());
                 return segments;
             }
@@ -1213,8 +1213,8 @@ public class DendrySampler implements Sampler {
         // DEBUG: Return all constellation segments before stitching
         if ((SEGMENT_DEBUGGING == 20)||(SEGMENT_DEBUGGING == 15)) {
             List<Segment3D> allSegments = new ArrayList<>();
-            for (List<Segment3D> segs : constellationSegments.values()) {
-                allSegments.addAll(segs);
+            for (SegmentList segList : constellationSegmentLists.values()) {
+                allSegments.addAll(segList.toSegment3DList());
             }
             LOGGER.info("SEGMENT_DEBUGGING=20or15: Returning all constellation segments before stitching ({} segments)", allSegments.size());
             return allSegments;
@@ -1224,27 +1224,254 @@ public class DendrySampler implements Sampler {
             return starSegments;
         }
 
-        // Stitch adjacent constellations together at their boundaries
-        // Uses segment endpoints only (not stars) for valid connection points
-        List<Segment3D> stitchSegments = stitchConstellations(closestConstellations, constellationSegments);
+        // Combine all constellation SegmentLists into a single combined SegmentList
+        SegmentList combinedSegList = combineConstellationSegmentLists(constellationSegmentLists);
 
-        // Combine all asterism segments
-        List<Segment3D> allSegments = new ArrayList<>();
-        for (List<Segment3D> segs : constellationSegments.values()) {
-            allSegments.addAll(segs);
-        }
-        allSegments.addAll(stitchSegments);
+        // Stitch adjacent constellations together using point indices in the combined SegmentList
+        int stitchCount = stitchConstellationsV2(closestConstellations, constellationSegmentLists, combinedSegList);
 
-        // Now shift all elevations to 0 (after stitching decisions are made)
-        allSegments = shiftElevationsToZero(allSegments);
+        // Normalize elevations after stitching
+        combinedSegList.normalizeElevations();
+
+        // Convert to List<Segment3D> for return
+        List<Segment3D> allSegments = combinedSegList.toSegment3DList();
 
         // DEBUG: Return all segments including stitching
         if (SEGMENT_DEBUGGING == 30) {
-            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", allSegments.size(), stitchSegments.size());
+            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", allSegments.size(), stitchCount);
             return allSegments;
         }
 
         return allSegments;
+    }
+
+    /**
+     * Combine multiple constellation SegmentLists into a single SegmentList.
+     * Points are re-indexed, and a position-to-index map is maintained.
+     */
+    private SegmentList combineConstellationSegmentLists(Map<Long, SegmentList> constellationSegmentLists) {
+        // Use the config from the first constellation (they should all be the same)
+        SegmentListConfig config = null;
+        for (SegmentList segList : constellationSegmentLists.values()) {
+            config = segList.getConfig();
+            break;
+        }
+        SegmentList combined = new SegmentList(config != null ? config : new SegmentListConfig(salt));
+
+        // Map from original position to new index in combined list
+        Map<Long, Integer> positionToIndex = new HashMap<>();
+
+        for (SegmentList segList : constellationSegmentLists.values()) {
+            // Add all points, tracking position-to-index mapping
+            Map<Integer, Integer> oldToNewIndex = new HashMap<>();
+
+            for (int i = 0; i < segList.getPointCount(); i++) {
+                NetworkPoint pt = segList.getPoint(i);
+                long posKey = quantizePositionForCombine(pt.position);
+
+                Integer existingIdx = positionToIndex.get(posKey);
+                if (existingIdx != null) {
+                    // Point already exists in combined list
+                    oldToNewIndex.put(i, existingIdx);
+                } else {
+                    // Add new point
+                    int newIdx = combined.addPoint(pt.position, pt.pointType, pt.level);
+                    // Update connection count to match original
+                    if (pt.connections > 0) {
+                        NetworkPoint updatedPt = combined.getPoint(newIdx).withConnections(pt.connections);
+                        combined.updatePoint(newIdx, updatedPt);
+                    }
+                    positionToIndex.put(posKey, newIdx);
+                    oldToNewIndex.put(i, newIdx);
+                }
+            }
+
+            // Add all segments using new indices
+            for (Segment3D seg : segList.getSegments()) {
+                // Find indices in combined list by position
+                int srtIdx = findPointIndexByPosition(combined, seg.srt);
+                int endIdx = findPointIndexByPosition(combined, seg.end);
+
+                if (srtIdx >= 0 && endIdx >= 0) {
+                    // Add segment directly without subdivision (already subdivided)
+                    combined.addSegment(srtIdx, endIdx, seg.level, seg.tangentSrt, seg.tangentEnd);
+                }
+            }
+        }
+
+        return combined;
+    }
+
+    /**
+     * Find point index in a SegmentList by position.
+     */
+    private int findPointIndexByPosition(SegmentList segList, Point3D pos) {
+        return segList.findPointByPosition(pos, MathUtils.EPSILON);
+    }
+
+    /**
+     * Quantize position for combining SegmentLists (high precision).
+     */
+    private long quantizePositionForCombine(Point3D pos) {
+        long qx = Math.round(pos.x * 100000);
+        long qy = Math.round(pos.y * 100000);
+        return (qx << 32) | (qy & 0xFFFFFFFFL);
+    }
+
+    /**
+     * Stitch constellations together using point indices in the combined SegmentList.
+     * Returns the number of stitch segments created.
+     */
+    private int stitchConstellationsV2(List<ConstellationInfo> constellations,
+                                        Map<Long, SegmentList> constellationSegmentLists,
+                                        SegmentList combinedSegList) {
+        int stitchCount = 0;
+
+        if (constellations.size() < 2) {
+            return stitchCount;
+        }
+
+        double adjacencyThreshold = getAdjacentConstellationThreshold();
+        double adjacencyThresholdSq = adjacencyThreshold * adjacencyThreshold;
+
+        // Compute max segment length for stitching (using level 1 grid spacing)
+        double gridSpacing = getGridSpacingForLevel(1);
+        double maxSegmentLength = MERGE_POINT_SPACING * gridSpacing;
+
+        // Find all pairs of adjacent constellations
+        Set<Long> processedPairs = new HashSet<>();
+        List<int[]> adjacentPairs = new ArrayList<>();
+
+        for (int i = 0; i < constellations.size(); i++) {
+            ConstellationInfo constI = constellations.get(i);
+            for (int j = i + 1; j < constellations.size(); j++) {
+                ConstellationInfo constJ = constellations.get(j);
+
+                double dx = constI.centerX - constJ.centerX;
+                double dy = constI.centerY - constJ.centerY;
+                double distSq = dx * dx + dy * dy;
+
+                if (distSq < adjacencyThresholdSq) {
+                    long keyI = constI.getKey();
+                    long keyJ = constJ.getKey();
+                    long pairKey = (keyI < keyJ) ? (keyI ^ (keyJ << 1)) : (keyJ ^ (keyI << 1));
+
+                    if (!processedPairs.contains(pairKey)) {
+                        processedPairs.add(pairKey);
+                        adjacentPairs.add(new int[]{i, j});
+                    }
+                }
+            }
+        }
+
+        // Sort pairs deterministically
+        adjacentPairs.sort((a, b) -> {
+            ConstellationInfo aI = constellations.get(a[0]);
+            ConstellationInfo aJ = constellations.get(a[1]);
+            ConstellationInfo bI = constellations.get(b[0]);
+            ConstellationInfo bJ = constellations.get(b[1]);
+            double aMinX = Math.min(aI.centerX, aJ.centerX);
+            double bMinX = Math.min(bI.centerX, bJ.centerX);
+            if (Math.abs(aMinX - bMinX) > MathUtils.EPSILON) {
+                return Double.compare(aMinX, bMinX);
+            }
+            double aMinY = Math.min(aI.centerY, aJ.centerY);
+            double bMinY = Math.min(bI.centerY, bJ.centerY);
+            return Double.compare(aMinY, bMinY);
+        });
+
+        // Process each adjacent pair
+        for (int[] pair : adjacentPairs) {
+            ConstellationInfo constI = constellations.get(pair[0]);
+            ConstellationInfo constJ = constellations.get(pair[1]);
+
+            SegmentList segListI = constellationSegmentLists.get(constI.getKey());
+            SegmentList segListJ = constellationSegmentLists.get(constJ.getKey());
+
+            if (segListI == null || segListI.isEmpty()) continue;
+            if (segListJ == null || segListJ.isEmpty()) continue;
+
+            // Extract unique endpoints from each constellation's segments
+            List<Point3D> endpointsI = extractUniqueEndpointsFromSegmentList(segListI);
+            List<Point3D> endpointsJ = extractUniqueEndpointsFromSegmentList(segListJ);
+
+            if (endpointsI.isEmpty() || endpointsJ.isEmpty()) continue;
+
+            // Find best pair to connect (closest distance, then lowest max elevation)
+            List<double[]> candidatePairs = new ArrayList<>();
+
+            for (int pi = 0; pi < endpointsI.size(); pi++) {
+                Point3D pI = endpointsI.get(pi);
+                for (int pj = 0; pj < endpointsJ.size(); pj++) {
+                    Point3D pJ = endpointsJ.get(pj);
+                    double distSq = pI.projectZ().distanceSquaredTo(pJ.projectZ());
+                    if (distSq < MathUtils.EPSILON) continue;
+
+                    double maxElevation = Math.max(pI.z, pJ.z);
+                    candidatePairs.add(new double[]{distSq, pi, pj, maxElevation});
+                }
+            }
+
+            candidatePairs.sort((a, b) -> Double.compare(a[0], b[0]));
+            int pairsToConsider = Math.min(6, candidatePairs.size());
+
+            if (pairsToConsider == 0) continue;
+
+            // Select the one with lowest max elevation from closest 6
+            double[] bestPair = null;
+            double lowestMaxElevation = Double.MAX_VALUE;
+            for (int k = 0; k < pairsToConsider; k++) {
+                double[] candidate = candidatePairs.get(k);
+                if (candidate[3] < lowestMaxElevation) {
+                    lowestMaxElevation = candidate[3];
+                    bestPair = candidate;
+                }
+            }
+
+            if (bestPair == null) continue;
+
+            Point3D bestI = endpointsI.get((int) bestPair[1]);
+            Point3D bestJ = endpointsJ.get((int) bestPair[2]);
+
+            // Find indices in combined SegmentList
+            int idxI = combinedSegList.findPointByPosition(bestI, MathUtils.EPSILON);
+            int idxJ = combinedSegList.findPointByPosition(bestJ, MathUtils.EPSILON);
+
+            if (idxI < 0 || idxJ < 0) {
+                LOGGER.warn("Stitch point not found in combined SegmentList: I={}, J={}", idxI, idxJ);
+                continue;
+            }
+
+            // Create stitch segment using addSegmentWithDivisions
+            combinedSegList.addSegmentWithDivisions(idxI, idxJ, 0, maxSegmentLength);
+            stitchCount++;
+        }
+
+        return stitchCount;
+    }
+
+    /**
+     * Extract unique endpoints from a SegmentList's segments.
+     */
+    private List<Point3D> extractUniqueEndpointsFromSegmentList(SegmentList segList) {
+        List<Point3D> endpoints = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
+
+        for (Segment3D seg : segList.getSegments()) {
+            long srtKey = quantizePositionForCombine(seg.srt);
+            if (!seen.contains(srtKey)) {
+                seen.add(srtKey);
+                endpoints.add(seg.srt);
+            }
+
+            long endKey = quantizePositionForCombine(seg.end);
+            if (!seen.contains(endKey)) {
+                seen.add(endKey);
+                endpoints.add(seg.end);
+            }
+        }
+
+        return endpoints;
     }
 
     /**
@@ -1793,7 +2020,7 @@ public class DendrySampler implements Sampler {
 
         // Phase A: For level 0, build trunk from highest point
         if (level == 0) {
-            buildTrunkV2(unconnected, segList, maxDistSq, mergeDistSq, level, cellX, cellY);
+            buildTrunkV2(unconnected, segList, maxSegmentDistance, mergeDistance, level, cellX, cellY);
 
             // DEBUG: Return after trunk creation
             if (SEGMENT_DEBUGGING == 15) {
@@ -1837,7 +2064,7 @@ public class DendrySampler implements Sampler {
             }
 
             // Create connection: move point to SegmentList and create segment
-            createSegmentV2(unconnected, unconnIdx, segList, neighborIdx, level, cellX, cellY);
+            createSegmentV2(unconnected, unconnIdx, segList, neighborIdx, level, mergeDistance);
         }
 
         if (iterations >= maxIterations) {
@@ -1850,41 +2077,98 @@ public class DendrySampler implements Sampler {
      * Starts at highest point and extends downhill until no more connections possible.
      */
     private void buildTrunkV2(UnconnectedPoints unconnected, SegmentList segList,
-                               double maxDistSq, double mergeDistSq, int level, int cellX, int cellY) {
+                               double maxSegmentDistance, double mergeDistance, int level, int cellX, int cellY) {
+        double maxDistSq = maxSegmentDistance * maxSegmentDistance;
+
         // Find highest unconnected point to start trunk
         int startIdx = unconnected.findLowestUnconnected();
         if (startIdx < 0) return;
 
-        // Add first point to SegmentList as TRUNK
+        // Get first trunk point
         NetworkPoint startPt = unconnected.removeAndGet(startIdx);
-        int currentIdx = segList.addPoint(startPt.position, PointType.TRUNK, level);
+        NetworkPoint trunkStartPt = new NetworkPoint(startPt.position, -1, PointType.TRUNK, level);
 
         int maxIterations = unconnected.totalSize() + 1;
         int iterations = 0;
+        boolean firstSegment = true;
+        int currentIdx = -1;
 
         // Extend trunk downhill
         while (iterations < maxIterations) {
             iterations++;
 
-            // Find best downhill neighbor from remaining unconnected points
-            int nextUnconnIdx = findBestTrunkNeighborV2(unconnected, segList, currentIdx, maxDistSq, level);
-
-            if (nextUnconnIdx < 0) {
-                break;  // No more downhill connections - trunk complete
+            // For first segment, find neighbor from unconnected points based on startPt position
+            // For subsequent, use currentIdx in segList
+            int nextUnconnIdx;
+            if (firstSegment) {
+                nextUnconnIdx = findBestTrunkNeighborFromPoint(unconnected, trunkStartPt.position, maxDistSq, level);
+            } else {
+                nextUnconnIdx = findBestTrunkNeighborV2(unconnected, segList, currentIdx, maxDistSq, level);
             }
 
-            // Move neighbor to SegmentList and create segment
+            if (nextUnconnIdx < 0) {
+                // No more downhill connections
+                if (firstSegment) {
+                    // No neighbor found for first point - just add it alone
+                    segList.addPoint(trunkStartPt.position, PointType.TRUNK, level);
+                }
+                break;
+            }
+
+            // Get next trunk point
             NetworkPoint nextPt = unconnected.removeAndGet(nextUnconnIdx);
-            int nextIdx = segList.addPoint(nextPt.position, PointType.TRUNK, level);
+            NetworkPoint trunkNextPt = new NetworkPoint(nextPt.position, -1, PointType.TRUNK, level);
 
-            // Create segment from current to next (with tangents computed later)
-            // For now, create simple segment - tangent computation will be added
-            Vec2D tangent = computeSimpleTangent(segList.getPoint(currentIdx).position,
-                                                  segList.getPoint(nextIdx).position);
-            segList.addSegment(currentIdx, nextIdx, level, tangent, tangent);
-
-            currentIdx = nextIdx;
+            if (firstSegment) {
+                // First segment: use addSegmentWithDivisions with two new NetworkPoints
+                segList.addSegmentWithDivisions(trunkStartPt, trunkNextPt, level, mergeDistance);
+                // The end point is now the last point added, find it
+                currentIdx = segList.getPointCount() - 1;
+                firstSegment = false;
+            } else {
+                // Subsequent segments: use addSegment with new NetworkPoint and existing index
+                segList.addSegment(trunkNextPt, currentIdx, level, mergeDistance);
+                // Update currentIdx to the newly added point
+                currentIdx = segList.getPointCount() - 1;
+            }
         }
+    }
+
+    /**
+     * Find best trunk neighbor from a position (for first trunk segment).
+     */
+    private int findBestTrunkNeighborFromPoint(UnconnectedPoints unconnected, Point3D currentPos,
+                                                double maxDistSq, int level) {
+        Point2D currentPos2D = currentPos.projectZ();
+
+        double bestSlope = 0;  // Must be negative (downhill)
+        int bestUnconnIdx = -1;
+
+        List<Integer> remaining = unconnected.getRemainingIndices();
+        for (int unconnIdx : remaining) {
+            NetworkPoint candidate = unconnected.getPoint(unconnIdx);
+            if (candidate.pointType == PointType.EDGE) continue;
+
+            Point2D candidatePos = candidate.position.projectZ();
+            double distSq = currentPos2D.distanceSquaredTo(candidatePos);
+
+            if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
+
+            // Calculate slope
+            double dist = Math.sqrt(distSq);
+            double heightDiff = candidate.position.z - currentPos.z;
+            double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+
+            // Trunk requires downhill (negative slope)
+            if (normalizedSlope >= 0) continue;
+
+            if (normalizedSlope < bestSlope) {
+                bestSlope = normalizedSlope;
+                bestUnconnIdx = unconnIdx;
+            }
+        }
+
+        return bestUnconnIdx;
     }
 
     /**
@@ -1986,37 +2270,16 @@ public class DendrySampler implements Sampler {
 
     /**
      * V2: Create a segment connecting an unconnected point to a SegmentList point.
+     * Uses SegmentList.addSegment which handles point addition, tangent computation, and subdivision.
      */
     private void createSegmentV2(UnconnectedPoints unconnected, int unconnIdx,
                                   SegmentList segList, int neighborIdx,
-                                  int level, int cellX, int cellY) {
-        // Move point from UnconnectedPoints to SegmentList
+                                  int level, double mergeDistance) {
+        // Get the unconnected point
         NetworkPoint unconnPt = unconnected.removeAndGet(unconnIdx);
-        int newIdx = segList.addPoint(unconnPt.position, unconnPt.pointType, level);
 
-        NetworkPoint neighborPt = segList.getPoint(neighborIdx);
-
-        // Determine flow direction based on elevation
-        int srtIdx, endIdx;
-        if (unconnPt.position.z > neighborPt.position.z) {
-            // New point is higher - it's the source
-            srtIdx = newIdx;
-            endIdx = neighborIdx;
-        } else {
-            // Neighbor is higher - it's the source
-            srtIdx = neighborIdx;
-            endIdx = newIdx;
-        }
-
-        // Compute simple tangents
-        Point3D srtPos = segList.getPoint(srtIdx).position;
-        Point3D endPos = segList.getPoint(endIdx).position;
-        Vec2D tangent = computeSimpleTangent(srtPos, endPos);
-
-        // Create segment
-        segList.addSegment(srtIdx, endIdx, level, tangent, tangent);
-
-        // TODO: Add subdivision logic here (subdivideAndAddPointsV2)
+        // Use addSegment which adds the point, computes tangents, and subdivides as needed
+        segList.addSegment(unconnPt, neighborIdx, level, mergeDistance);
     }
 
     /**
