@@ -196,19 +196,19 @@ public class SegmentList {
      * Add a segment using new network point to known existing point in segment.
      * Uses global configuration parameters.
      */
-    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level) {
+    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength) {
         // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
         
         // Call full implementation using global config
-        addSegmentWithFullImplementation(srtIdx, endIdx, level);
+        addSegmentWithFullImplementation(srtIdx, endIdx, level, maxSegmentLength);
     }
     
     /**
      * Add a segment with full implementation using global configuration.
      * This is the main implementation that creates multiple connected segments from a single call.
      */
-    public void addSegmentWithFullImplementation(int A, int B, int level) {
+    public void addSegmentWithFullImplementation(int A, int B, int level, double maxSegmentLength) {
         // Fetch points once and cache hash codes to avoid duplicate calculations
         NetworkPoint ptA = points.get(A);
         NetworkPoint ptB = points.get(B);
@@ -250,10 +250,10 @@ public class SegmentList {
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
 
-        // Step 2: Subdivide long segments if needed using global config
+        
+        // Step 2: Subdivide long segments if needed using provided maxSegmentLength
         double distance = srt.position.distanceTo(end.position);
-        int numDivisions = (int) Math.ceil(distance / 2.0); // Fixed max segment distance of 2.0
-
+        int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
         if (numDivisions <= 1) {
             // Single segment - add directly
             addSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
@@ -266,10 +266,10 @@ public class SegmentList {
     /**
      * Add a segment to with two new network points, only used for trunk initialization.
      */
-    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level) {
+    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level, double maxSegmentLength) {
 
         int endIdx = addPoint(endNetPnt);
-        addSegment(srtNetPnt, endIdx, level);
+        addSegment(srtNetPnt, endIdx, level, maxSegmentLength);
     }
     
     /**
