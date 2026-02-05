@@ -161,6 +161,7 @@ public class SegmentList {
      * Add a segment directly using point indices.
      * Creates a Segment3D internally.
      */
+    /* 
     public void addSegmentWithDivisions(int srtIdx, int endIdx, int level, double maxSegmentDistance) {
         //Hardcoded jitter factor:
         double jitter = 0.5;
@@ -192,6 +193,7 @@ public class SegmentList {
         // Placeholder (likely for loop) to add each subdivided segment back into the main segment group.
         addSegment(srtIdxSub, endIdxSub, level,tangentSrtSub,tangentEndSub);
     }
+        */
     /**
      * Add a segment using new network point to known existing point in segment.
      * Uses global configuration parameters.
@@ -201,14 +203,14 @@ public class SegmentList {
         int srtIdx = addPoint(srtNetPnt);
         
         // Call full implementation using global config
-        addSegmentWithFullImplementation(srtIdx, endIdx, level, maxSegmentLength);
+        addSegmentWithDivisions(srtIdx, endIdx, level, maxSegmentLength);
     }
     
     /**
      * Add a segment with full implementation using global configuration.
      * This is the main implementation that creates multiple connected segments from a single call.
      */
-    public void addSegmentWithFullImplementation(int A, int B, int level, double maxSegmentLength) {
+    public void addSegmentWithDivisions(int A, int B, int level, double maxSegmentLength) {
         // Fetch points once and cache hash codes to avoid duplicate calculations
         NetworkPoint ptA = points.get(A);
         NetworkPoint ptB = points.get(B);
