@@ -135,7 +135,7 @@ public class SegmentList {
      * Add a segment directly using point indices.
      * Creates a Segment3D internally.
      */
-    public void addSegment(int srtIdx, int endIdx, int level,
+    public void addBasicSegment(int srtIdx, int endIdx, int level,
                            Vec2D tangentSrt, Vec2D tangentEnd) {
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
@@ -157,7 +157,7 @@ public class SegmentList {
      * Add a segment using new network point to known existing point in segment.
      * Uses global configuration parameters.
      */
-    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength) {
+    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength) {
         // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
         
@@ -217,7 +217,7 @@ public class SegmentList {
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
         if (numDivisions <= 1) {
             // Single segment - add directly
-            addSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
+            addBasicSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
         } else {
             // Multiple segments - pass computed tangents and RNG to avoid recomputation
             createSubdividedSegments(srtIdx, endIdx, level, numDivisions, tangentSrt, tangentEnd, rng);
@@ -230,7 +230,7 @@ public class SegmentList {
     public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level, double maxSegmentLength) {
 
         int endIdx = addPoint(endNetPnt);
-        addSegment(srtNetPnt, endIdx, level, maxSegmentLength);
+        addSegmentWithDivisions(srtNetPnt, endIdx, level, maxSegmentLength);
     }
     
     /**
@@ -387,7 +387,7 @@ public class SegmentList {
             int intermediateIdx = addPoint(intermediatePoint, PointType.KNOT, level);
 
             // Create segment from previous to intermediate
-            addSegment(prevIdx, intermediateIdx, level,
+            addBasicSegment(prevIdx, intermediateIdx, level,
                       prevIdx == srtIdx ? tangentSrt : null,
                       null);
 
@@ -395,7 +395,7 @@ public class SegmentList {
         }
 
         // Create final segment to end point
-        addSegment(prevIdx, endIdx, level,
+        addBasicSegment(prevIdx, endIdx, level,
                   null,
                   tangentEnd);
     }
@@ -714,8 +714,8 @@ public class SegmentList {
             // Get or create point for end
             int endIdx = getOrCreatePointIndex(result, positionToIndex, seg.end, seg.endType, level);
 
-            // Add segment using indices
-            result.addSegment(srtIdx, endIdx, level, seg.tangentSrt, seg.tangentEnd);
+            // Add segment using indices (preserving original tangents, no subdivision)
+            result.addBasicSegment(srtIdx, endIdx, level, seg.tangentSrt, seg.tangentEnd);
         }
 
         return result;

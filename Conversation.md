@@ -1009,3 +1009,7 @@ Branch creation should create each growing segment by calling addSegment method 
 Asterism stitching should be created by call addSegment method using the two point indexes for the points that are going to be combined.
 
 Subsequent level creation should use a similar path to branch creation.
+
+###########################################################
+
+In SEGMENT_DEBUGGING is set to 15, I am not seeing the tree segments or any others normal segments appear.

@@ -1294,7 +1294,7 @@ public class DendrySampler implements Sampler {
 
                 if (srtIdx >= 0 && endIdx >= 0) {
                     // Add segment directly without subdivision (already subdivided)
-                    combined.addSegment(srtIdx, endIdx, seg.level, seg.tangentSrt, seg.tangentEnd);
+                    combined.addBasicSegment(srtIdx, endIdx, seg.level, seg.tangentSrt, seg.tangentEnd);
                 }
             }
         }
@@ -1953,7 +1953,7 @@ public class DendrySampler implements Sampler {
                 unconnected.forEach(p -> {
                     int idx = segList.addPoint(p.position, p.pointType, level);
                     // 0-length segment for visualization
-                    segList.addSegment(idx, idx, level, null, null);
+                    segList.addBasicSegment(idx, idx, level, null, null);
                 });
                 LOGGER.info("SEGMENT_DEBUGGING=15: V2 returning after trunk ({} segments, {} points)",
                            segList.getSegmentCount(), segList.getPointCount());
@@ -2051,8 +2051,8 @@ public class DendrySampler implements Sampler {
                 currentIdx = segList.getPointCount() - 1;
                 firstSegment = false;
             } else {
-                // Subsequent segments: use addSegment with new NetworkPoint and existing index
-                segList.addSegment(trunkNextPt, currentIdx, level, mergeDistance);
+                // Subsequent segments: use addSegmentWithDivisions with new NetworkPoint and existing index
+                segList.addSegmentWithDivisions(trunkNextPt, currentIdx, level, mergeDistance);
                 // Update currentIdx to the newly added point
                 currentIdx = segList.getPointCount() - 1;
             }
@@ -2203,8 +2203,8 @@ public class DendrySampler implements Sampler {
         // Get the unconnected point
         NetworkPoint unconnPt = unconnected.removeAndGet(unconnIdx);
 
-        // Use addSegment which adds the point, computes tangents, and subdivides as needed
-        segList.addSegment(unconnPt, neighborIdx, level, mergeDistance);
+        // Use addSegmentWithDivisions which adds the point, computes tangents, and subdivides as needed
+        segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
     }
 
     /**
