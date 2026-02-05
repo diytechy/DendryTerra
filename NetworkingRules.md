@@ -24,7 +24,7 @@ Function setup:
 
     A. If at level 0, build the "trunk" through the point cloud:
     While the trunk is incomplete:
-        Starting at the highest elevation point:
+        Starting at the lowest elevation point:
             Attempt to create a connection using the "Connection rules" below to create a segment from the point noting the connection rules should be for a trunk, the segment should be fully defined using the connection rules below before continuing on.  The first iteration here will be special in that it will allow the first segment to be created.
             If no connections can be made, consider the trunk complete.
             Else if a connection is made, continue to attempt to extend the trunk from the previous neighbor that was connected.  If the point is added, it should be removed from the input point cloud as the point should now exist inside the segment list structure.

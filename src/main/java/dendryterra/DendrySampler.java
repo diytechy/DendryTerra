@@ -941,6 +941,78 @@ public class DendrySampler implements Sampler {
         }
     }
 
+    /**
+     * Compute slopes for a list of points based on their neighbors.
+     * Unlike grid-based slope computation, this considers all other points as potential neighbors.
+     * Uses the same algorithm: find 2 closest neighbors at least 30 degrees apart.
+     */
+    private List<Point3D> computeSlopesForPoints(List<Point3D> points) {
+        if (points.size() < 3) {
+            // Not enough points to compute meaningful slopes
+            return new ArrayList<>(points);
+        }
+
+        List<Point3D> result = new ArrayList<>();
+        for (int i = 0; i < points.size(); i++) {
+            Point3D center = points.get(i);
+
+            // Collect all neighbors with their distances and angles
+            List<NeighborInfo> neighbors = new ArrayList<>();
+            for (int j = 0; j < points.size(); j++) {
+                if (i == j) continue;
+                Point3D neighbor = points.get(j);
+                double dx = neighbor.x - center.x;
+                double dy = neighbor.y - center.y;
+                double dz = neighbor.z - center.z;
+                double dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < MathUtils.EPSILON) continue; // Skip coincident points
+                double angle = Math.atan2(dy, dx);
+                neighbors.add(new NeighborInfo(dx, dy, dz, dist, angle));
+            }
+
+            // Sort by distance (closest first)
+            neighbors.sort((a, b) -> Double.compare(a.dist, b.dist));
+
+            // Find closest 2 neighbors that are at least 30 degrees apart
+            NeighborInfo n1 = null;
+            NeighborInfo n2 = null;
+            for (int k = 0; k < neighbors.size() && n2 == null; k++) {
+                NeighborInfo candidate = neighbors.get(k);
+                if (n1 == null) {
+                    n1 = candidate;
+                } else {
+                    double angleDiff = Math.abs(candidate.angle - n1.angle);
+                    // Normalize to [0, PI]
+                    if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+                    if (angleDiff >= MIN_NEIGHBOR_ANGLE_RAD) {
+                        n2 = candidate;
+                    }
+                }
+            }
+
+            // If we couldn't find 2 suitable neighbors, keep point without slope
+            if (n1 == null || n2 == null) {
+                result.add(center);
+                continue;
+            }
+
+            // Solve 2x2 linear system to find slopeX and slopeY
+            double det = n1.dx * n2.dy - n2.dx * n1.dy;
+            if (Math.abs(det) < MathUtils.EPSILON) {
+                // Neighbors are collinear, can't solve
+                result.add(center);
+                continue;
+            }
+
+            double slopeX = (n1.dz * n2.dy - n2.dz * n1.dy) / det;
+            double slopeY = (n1.dx * n2.dz - n2.dx * n1.dz) / det;
+
+            result.add(center.withSlopes(slopeX, slopeY));
+        }
+
+        return result;
+    }
+
     // ========== Asterism (Level 0) Network Generation ==========
     //
     // Terminology:
@@ -1526,6 +1598,9 @@ public class DendrySampler implements Sampler {
         // Step 4: Merge stars that are closer than MERGE_POINT_SPACING
         List<Point3D> mergedStars = mergeCloseStars(boundedStars);
 
+        // Step 5: Compute slopes for each star based on neighboring stars
+        List<Point3D> starsWithSlopes = computeSlopesForPoints(mergedStars);
+
         // Debug logging for star counts
         if (SEGMENT_DEBUGGING > 0) {
             // Calculate bounding box of drafted stars
@@ -1538,14 +1613,14 @@ public class DendrySampler implements Sampler {
                 maxY = Math.max(maxY, star.y);
             }
             LOGGER.info("  -> drafted={}, bounded={}, merged={} stars (size={}, halfMerge={}, center=({},{}), draftBounds=[{},{} to {},{}])",
-                draftedStars.size(), boundedStars.size(), mergedStars.size(),
+                draftedStars.size(), boundedStars.size(), starsWithSlopes.size(),
                 String.format("%.3f", size), String.format("%.3f", halfMergeSpacing),
                 String.format("%.2f", center.x), String.format("%.2f", center.y),
                 String.format("%.2f", minX), String.format("%.2f", minY),
                 String.format("%.2f", maxX), String.format("%.2f", maxY));
         }
 
-        return mergedStars;
+        return starsWithSlopes;
     }
 
     /**
@@ -1999,13 +2074,13 @@ public class DendrySampler implements Sampler {
 
     /**
      * V2: Build trunk for level 0 asterisms.
-     * Starts at highest point and extends downhill until no more connections possible.
+     * Starts at lowest point and extends uphill until no more connections possible.
      */
     private void buildTrunkV2(UnconnectedPoints unconnected, SegmentList segList,
                                double maxSegmentDistance, double mergeDistance, int level, int cellX, int cellY) {
         double maxDistSq = maxSegmentDistance * maxSegmentDistance;
 
-        // Find highest unconnected point to start trunk
+        // Find lowest unconnected point to start trunk
         int startIdx = unconnected.findLowestUnconnected();
         if (startIdx < 0) return;
 
@@ -2018,7 +2093,7 @@ public class DendrySampler implements Sampler {
         boolean firstSegment = true;
         int currentIdx = -1;
 
-        // Extend trunk downhill
+        // Extend trunk uphill
         while (iterations < maxIterations) {
             iterations++;
 
@@ -2032,7 +2107,7 @@ public class DendrySampler implements Sampler {
             }
 
             if (nextUnconnIdx < 0) {
-                // No more downhill connections
+                // No more uphill connections
                 if (firstSegment) {
                     // No neighbor found for first point - just add it alone
                     segList.addPoint(trunkStartPt.position, PointType.TRUNK, level);
@@ -2061,12 +2136,13 @@ public class DendrySampler implements Sampler {
 
     /**
      * Find best trunk neighbor from a position (for first trunk segment).
+     * Looks for uphill neighbors (positive slope).
      */
     private int findBestTrunkNeighborFromPoint(UnconnectedPoints unconnected, Point3D currentPos,
                                                 double maxDistSq, int level) {
         Point2D currentPos2D = currentPos.projectZ();
 
-        double bestSlope = 0;  // Must be negative (downhill)
+        double bestSlope = 0;  // Must be positive (uphill)
         int bestUnconnIdx = -1;
 
         List<Integer> remaining = unconnected.getRemainingIndices();
@@ -2084,10 +2160,10 @@ public class DendrySampler implements Sampler {
             double heightDiff = candidate.position.z - currentPos.z;
             double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
 
-            // Trunk requires downhill (negative slope)
-            if (normalizedSlope >= 0) continue;
+            // Trunk requires uphill (positive slope)
+            if (normalizedSlope <= 0) continue;
 
-            if (normalizedSlope < bestSlope) {
+            if (normalizedSlope > bestSlope) {
                 bestSlope = normalizedSlope;
                 bestUnconnIdx = unconnIdx;
             }
@@ -2156,14 +2232,14 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * V2: Find best trunk neighbor (must be downhill).
+     * V2: Find best trunk neighbor (must be uphill).
      */
     private int findBestTrunkNeighborV2(UnconnectedPoints unconnected, SegmentList segList,
                                          int currentSegListIdx, double maxDistSq, int level) {
         NetworkPoint currentPt = segList.getPoint(currentSegListIdx);
         Point2D currentPos = currentPt.position.projectZ();
 
-        double bestSlope = 0;  // Must be negative (downhill)
+        double bestSlope = 0;  // Must be positive (uphill)
         int bestUnconnIdx = -1;
 
         List<Integer> remaining = unconnected.getRemainingIndices();
@@ -2181,10 +2257,10 @@ public class DendrySampler implements Sampler {
             double heightDiff = candidate.position.z - currentPt.position.z;
             double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
 
-            // Trunk requires downhill (negative slope)
-            if (normalizedSlope >= 0) continue;
+            // Trunk requires uphill (positive slope)
+            if (normalizedSlope <= 0) continue;
 
-            if (normalizedSlope < bestSlope) {
+            if (normalizedSlope > bestSlope) {
                 bestSlope = normalizedSlope;
                 bestUnconnIdx = unconnIdx;
             }

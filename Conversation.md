@@ -1012,4 +1012,4 @@ Subsequent level creation should use a similar path to branch creation.
 
 ###########################################################
 
-In SEGMENT_DEBUGGING is set to 15, I am not seeing the tree segments or any others normal segments appear.
+In SEGMENT_DEBUGGING set to 15, I am not seeing the tree segments or any others normal segments appear.  I do see stars, which implies 0-length segments are getting created and rendered, but it seems something is preventing longer / typical segments from getting rendered or created.
