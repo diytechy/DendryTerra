@@ -212,25 +212,25 @@ public class SegmentList {
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
 
-        // Instantiate a random generator for consistent "random"artifacts per segment:
-        long seed = (541L *(srt.position.hashCode() + end.position.hashCode()) + config.salt) & 0x7FFFFFFFL;
-        Random NoiseGen = new Random(seed);
-        
+        // Instantiate a random generator for consistent "random" artifacts per segment:
+        long seed = (541L * (srt.position.hashCode() + end.position.hashCode()) + config.salt) & 0x7FFFFFFFL;
+        Random rng = new Random(seed);
+
         // Step 1: Compute tangents based on connection patterns using global config
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, NoiseGen);
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, rng);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
-        
+
         // Step 2: Subdivide long segments if needed using global config
         double distance = srt.position.distanceTo(end.position);
         int numDivisions = (int) Math.ceil(distance / 2.0); // Fixed max segment distance of 2.0
-        
+
         if (numDivisions <= 1) {
             // Single segment - add directly
             addSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
         } else {
-            // Multiple segments - create intermediate points and connect them
-            createSubdividedSegments(srtIdx, endIdx, level, numDivisions);
+            // Multiple segments - pass computed tangents and RNG to avoid recomputation
+            createSubdividedSegments(srtIdx, endIdx, level, numDivisions, tangentSrt, tangentEnd, rng);
         }
     }
     
@@ -363,77 +363,90 @@ public class SegmentList {
     /**
      * Create subdivided segments between two points using spline or linear interpolation.
      * Uses global configuration parameters.
+     *
+     * @param srtIdx Start point index
+     * @param endIdx End point index
+     * @param level Resolution level
+     * @param numDivisions Number of divisions to create
+     * @param tangentSrt Pre-computed tangent at start point
+     * @param tangentEnd Pre-computed tangent at end point
+     * @param rng Random number generator for deterministic jitter
      */
-    private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions) {
-
+    private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions,
+                                          Vec2D tangentSrt, Vec2D tangentEnd, Random rng) {
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
 
-        // Create RNG for deterministic randomness
-        long seed = (541L * (srt.position.hashCode() + end.position.hashCode()) + config.salt) & 0x7FFFFFFFL;
-        Random rng = new Random(seed);
-
-        // Compute initial tangents using global config
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, rng);
-        Vec2D tangentSrt = tangents[0];
-        Vec2D tangentEnd = tangents[1];
-
         // Create intermediate points
         int prevIdx = srtIdx;
-        
+
         for (int i = 1; i < numDivisions; i++) {
             double t = (double) i / numDivisions;
             Point3D intermediatePoint;
-            
+
             if (config.useSplines && config.curvature > 0) {
-                // Use cubic Hermite spline interpolation
-                intermediatePoint = interpolateHermiteSpline(srt.position, end.position, 
-                                                           tangentSrt, tangentEnd, t, config.tangentStrength);
+                // Use cubic Hermite spline interpolation with jitter
+                intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
+                                                           tangentSrt, tangentEnd, t, config.tangentStrength, rng);
             } else {
                 // Use linear interpolation with jitter
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, rng);
             }
-            
+
             // Add intermediate point
             int intermediateIdx = addPoint(intermediatePoint, PointType.KNOT, level);
-            
+
             // Create segment from previous to intermediate
-            addSegment(prevIdx, intermediateIdx, level, 
+            addSegment(prevIdx, intermediateIdx, level,
                       prevIdx == srtIdx ? tangentSrt : null,
-                      intermediateIdx == endIdx ? tangentEnd : null);
-            
+                      null);
+
             prevIdx = intermediateIdx;
         }
-        
+
         // Create final segment to end point
-        addSegment(prevIdx, endIdx, level, 
-                  prevIdx == srtIdx ? tangentSrt : null,
+        addSegment(prevIdx, endIdx, level,
+                  null,
                   tangentEnd);
     }
     
     /**
-     * Cubic Hermite spline interpolation.
+     * Cubic Hermite spline interpolation with deterministic jitter.
      * References subdivideWithSpline logic from DendrySampler.
+     *
+     * @param srt Start point position
+     * @param end End point position
+     * @param tangentSrt Tangent at start point
+     * @param tangentEnd Tangent at end point
+     * @param t Interpolation parameter [0, 1]
+     * @param tangentStrength Scale factor for tangent magnitudes
+     * @param rng Random number generator for jitter
+     * @return Interpolated point with jitter applied
      */
-    private Point3D interpolateHermiteSpline(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd, 
-                                             double t, double tangentStrength) {
+    private Point3D interpolateHermiteSpline(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd,
+                                             double t, double tangentStrength, Random rng) {
         double t2 = t * t;
         double t3 = t2 * t;
         double h00 = 2 * t3 - 3 * t2 + 1;
         double h10 = t3 - 2 * t2 + t;
         double h01 = -2 * t3 + 3 * t2;
         double h11 = t3 - t2;
-        
+
         double segLength = srt.projectZ().distanceTo(end.projectZ());
         double tangentScale = segLength * tangentStrength;
-        
+
         double x = h00 * srt.x + h10 * (tangentSrt != null ? tangentSrt.x * tangentScale : 0)
                  + h01 * end.x + h11 * (tangentEnd != null ? tangentEnd.x * tangentScale : 0);
         double y = h00 * srt.y + h10 * (tangentSrt != null ? tangentSrt.y * tangentScale : 0)
                  + h01 * end.y + h11 * (tangentEnd != null ? tangentEnd.y * tangentScale : 0);
         double z = MathUtils.lerp(srt.z, end.z, t);  // Linear interpolation for elevation
-        
-        return new Point3D(x, y, z);
+
+        // Add small deterministic jitter for natural appearance (intermediate points only)
+        double jitterMagnitude = segLength * 0.02; // 2% of segment length
+        double jitterX = (rng.nextDouble() - 0.5) * jitterMagnitude;
+        double jitterY = (rng.nextDouble() - 0.5) * jitterMagnitude;
+
+        return new Point3D(x + jitterX, y + jitterY, z);
     }
     
     /**
