@@ -15,36 +15,57 @@ public class SegmentList {
     private final List<NetworkPoint> points;
     private final List<Segment3D> segments;
     private int nextIndex;  // For generating unique indices
-    private long salt;  // Global salt for deterministic randomness
+    private SegmentListConfig config;  // Global configuration
 
     public SegmentList() {
         this.points = new ArrayList<>();
         this.segments = new ArrayList<>();
         this.nextIndex = 0;
-        this.salt = 12345; // Default salt value
+        this.config = new SegmentListConfig();
     }
     
     public SegmentList(long salt) {
         this.points = new ArrayList<>();
         this.segments = new ArrayList<>();
         this.nextIndex = 0;
-        this.salt = salt;
+        this.config = new SegmentListConfig(salt);
+    }
+    
+    public SegmentList(SegmentListConfig config) {
+        this.points = new ArrayList<>();
+        this.segments = new ArrayList<>();
+        this.nextIndex = 0;
+        this.config = config;
     }
 
     // ========== Point Operations ==========
     
     /**
-     * Get the global salt value used for deterministic randomness.
+     * Get the global configuration.
      */
-    public long getSalt() {
-        return salt;
+    public SegmentListConfig getConfig() {
+        return config;
     }
     
     /**
-     * Set the global salt value used for deterministic randomness.
+     * Set the global configuration.
+     */
+    public void setConfig(SegmentListConfig config) {
+        this.config = config;
+    }
+    
+    /**
+     * Get global salt value used for deterministic randomness.
+     */
+    public long getSalt() {
+        return config.salt;
+    }
+    
+    /**
+     * Set global salt value used for deterministic randomness.
      */
     public void setSalt(long salt) {
-        this.salt = salt;
+        config.salt = salt;
     }
 
     /**
@@ -173,58 +194,49 @@ public class SegmentList {
     }
     /**
      * Add a segment using new network point to known existing point in segment.
-     * Automatically computes tangent and segmentation.
+     * Uses global configuration parameters.
      */
-    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentDistance,
-                           boolean useSplines, double curvature, double curvatureFalloff, 
-                           double tangentStrength, double tangentAngle) {
-        
+    public void addSegment(NetworkPoint srtNetPnt, int endIdx, int level) {
         // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
         
-        // Call the full implementation
-        addSegmentWithFullImplementation(srtIdx, endIdx, level, maxSegmentDistance, useSplines, curvature, 
-                 curvatureFalloff, tangentStrength, tangentAngle);
+        // Call full implementation using global config
+        addSegmentWithFullImplementation(srtIdx, endIdx, level);
     }
     
     /**
-     * Add a segment with full implementation including tangent computation and subdivision.
+     * Add a segment with full implementation using global configuration.
      * This is the main implementation that creates multiple connected segments from a single call.
      */
-    public void addSegmentWithFullImplementation(int srtIdx, int endIdx, int level, double maxSegmentDistance,
-                           boolean useSplines, double curvature, double curvatureFalloff, 
-                           double tangentStrength, double tangentAngle) {
-        
+    public void addSegmentWithFullImplementation(int srtIdx, int endIdx, int level) {
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
         
-        // Step 1: Compute tangents based on connection patterns
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, useSplines, curvature, 
-                                                         curvatureFalloff, tangentStrength, tangentAngle);
+        // Step 1: Compute tangents based on connection patterns using global config
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
         
-        // Step 2: Subdivide long segments if needed
+        // Step 2: Subdivide long segments if needed using global config
         double distance = srt.position.distanceTo(end.position);
-        int numDivisions = (int) Math.ceil(distance / maxSegmentDistance);
+        int numDivisions = (int) Math.ceil(distance / config.maxSegmentDistance);
         
         if (numDivisions <= 1) {
             // Single segment - add directly
             addSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
         } else {
             // Multiple segments - create intermediate points and connect them
-            createSubdividedSegments(srtIdx, endIdx, level, numDivisions, maxSegmentDistance,
-                                   useSplines, curvature, curvatureFalloff, tangentStrength);
+            createSubdividedSegments(srtIdx, endIdx, level, numDivisions);
         }
     }
     
     /**
      * Add a segment to with two new network points, only used for trunk initialization.
      */
-    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level, double maxSegmentDistance) {
+    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level) {
 
         int endIdx = addPoint(endNetPnt);
-        addSegment(srtNetPnt, endIdx, level, maxSegmentDistance, false, 0, 0, 0, 0);
+        addSegment(srtNetPnt, endIdx, level);
     }
     
     /**
@@ -245,17 +257,15 @@ public class SegmentList {
     
     /**
      * Compute tangents for a connection based on existing connectivity patterns.
-     * References computeNodeTangent logic from DendrySampler.
+     * Uses global configuration parameters.
      */
-    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, boolean useSplines, 
-                                               double curvature, double curvatureFalloff, 
-                                               double tangentStrength, double tangentAngle) {
+    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
         
         // For straight segments or when splines are disabled, use simple direction
-        if (!useSplines || curvature <= 0) {
+        if (!config.useSplines || config.curvature <= 0) {
             Vec2D direction = new Vec2D(srt.position.projectZ(), end.position.projectZ());
             if (direction.lengthSquared() > MathUtils.EPSILON) {
                 direction = direction.normalize();
@@ -264,18 +274,17 @@ public class SegmentList {
         }
         
         // Compute tangents based on connection patterns
-        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true, tangentAngle);
-        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false, tangentAngle);
+        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true);
+        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false);
         
         return new Vec2D[] { tangentSrt, tangentEnd };
     }
     
     /**
      * Compute tangent for a specific point based on its connections.
-     * References the logic from computeNodeTangent in DendrySampler.
+     * Uses global configuration parameters.
      */
-    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, 
-                                     double tangentAngle) {
+    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart) {
         
         NetworkPoint point = points.get(pointIdx);
         NetworkPoint target = points.get(targetIdx);
@@ -290,7 +299,7 @@ public class SegmentList {
         // Adjust based on connection count
         if (point.connections == 0) {
             // No existing connections - use flow direction with twist
-            double twist = (isStart ? 1 : -1) * tangentAngle;
+            double twist = (isStart ? 1 : -1) * config.tangentAngle;
             return rotateVector(toTarget, twist);
         } else if (point.connections == 1) {
             // One existing connection - check if aligned with target
@@ -303,7 +312,7 @@ public class SegmentList {
                 }
             }
             // Not aligned - use direction to target with small offset
-            double offset = (Math.random() - 0.5) * tangentAngle * 0.5;
+            double offset = (Math.random() - 0.5) * config.tangentAngle * 0.5;
             return rotateVector(toTarget, offset);
         } else {
             // Multiple connections - compute offset tangent
@@ -311,7 +320,7 @@ public class SegmentList {
             if (existingDir != null) {
                 // Offset 20-70 degrees on the side of the target
                 double angleToTarget = Math.atan2(toTarget.y, toTarget.x);
-                double offsetAngle = tangentAngle * (0.4 + Math.random() * 0.3); // 20-70 degrees
+                double offsetAngle = config.tangentAngle * (0.4 + Math.random() * 0.3); // 20-70 degrees
                 return createVectorFromAngle(angleToTarget + offsetAngle);
             }
             return toTarget;
@@ -339,34 +348,30 @@ public class SegmentList {
     
     /**
      * Create subdivided segments between two points using spline or linear interpolation.
-     * References subdivideWithSpline and subdivideAndAddPoints logic from DendrySampler.
+     * Uses global configuration parameters.
      */
-    private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions, 
-                                         double maxSegmentDistance, boolean useSplines,
-                                         double curvature, double curvatureFalloff, 
-                                         double tangentStrength) {
+    private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
         
-        // Compute initial tangents
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, useSplines, curvature, 
-                                                       curvatureFalloff, tangentStrength, 0.0);
+        // Compute initial tangents using global config
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
         
         // Create intermediate points
         int prevIdx = srtIdx;
-        Random rng = new Random(salt + srtIdx * 1000 + endIdx);
+        Random rng = new Random(config.salt + srtIdx * 1000 + endIdx);
         
         for (int i = 1; i < numDivisions; i++) {
             double t = (double) i / numDivisions;
             Point3D intermediatePoint;
             
-            if (useSplines && curvature > 0) {
+            if (config.useSplines && config.curvature > 0) {
                 // Use cubic Hermite spline interpolation
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position, 
-                                                           tangentSrt, tangentEnd, t, tangentStrength);
+                                                           tangentSrt, tangentEnd, t, config.tangentStrength);
             } else {
                 // Use linear interpolation with jitter
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, rng);
