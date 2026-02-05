@@ -10,8 +10,8 @@ public class SegmentListConfig {
     public double curvature = 0.0;
     public double curvatureFalloff = 0.0;
     public double tangentStrength = 1.0;
-    public double tangentAngle = 0.5;
-    public double maxSegmentDistance = 1.0;
+    public double maxTwistAngle = 1.0;
+    public double SlopeWithoutTwist = 0.5;
     
     public SegmentListConfig() {}
     
@@ -39,8 +39,12 @@ public class SegmentListConfig {
         return this;
     }
     
-    public SegmentListConfig withMaxSegmentDistance(double maxSegmentDistance) {
-        this.maxSegmentDistance = maxSegmentDistance;
+    public SegmentListConfig withMaxTwistAngle(double maxTwistAngle) {
+        this.maxTwistAngle = maxTwistAngle;
+        return this;
+    }
+    public SegmentListConfig withSlopeWithoutTwist(double SlopeWithoutTwist) {
+        this.SlopeWithoutTwist = SlopeWithoutTwist;
         return this;
     }
 }

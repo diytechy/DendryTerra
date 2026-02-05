@@ -219,7 +219,7 @@ public class SegmentList {
         
         // Step 2: Subdivide long segments if needed using global config
         double distance = srt.position.distanceTo(end.position);
-        int numDivisions = (int) Math.ceil(distance / config.maxSegmentDistance);
+        int numDivisions = (int) Math.ceil(distance / 2.0); // Fixed max segment distance of 2.0
         
         if (numDivisions <= 1) {
             // Single segment - add directly
@@ -303,13 +303,13 @@ public class SegmentList {
             slope = Math.abs(point.position.getSlope());
         }
         else {
-            angle = target.position.getTangent();
+            angle = -target.position.getTangent();
             slope = Math.abs(point.position.getSlope());
         }
         // Adjust based on connection count
         if (point.connections == 0) {
             // No existing connections - use flow direction with twist
-            double twist = (isStart ? 1 : -1) * config.tangentAngle;
+            double twist = (isStart ? 1 : -1) * Math.min(slope/config.SlopeWithoutTwist, 1) * config.maxTwistAngle;
             return rotateVector(toTarget, twist);
         } else if (point.connections == 1) {
             // One existing connection - check if aligned with target
@@ -322,7 +322,7 @@ public class SegmentList {
                 }
             }
             // Not aligned - use direction to target with small offset
-            double offset = (Math.random() - 0.5) * config.tangentAngle * 0.5;
+            double offset = (Math.random() - 0.5) * config.SlopeWithoutTwist * 0.5;
             return rotateVector(toTarget, offset);
         } else {
             // Multiple connections - compute offset tangent
@@ -330,7 +330,7 @@ public class SegmentList {
             if (existingDir != null) {
                 // Offset 20-70 degrees on the side of the target
                 double angleToTarget = Math.atan2(toTarget.y, toTarget.x);
-                double offsetAngle = config.tangentAngle * (0.4 + Math.random() * 0.3); // 20-70 degrees
+                double offsetAngle = config.SlopeWithoutTwist * (0.4 + Math.random() * 0.3); // 20-70 degrees
                 return createVectorFromAngle(angleToTarget + offsetAngle);
             }
             return toTarget;
