@@ -208,7 +208,28 @@ public class SegmentList {
      * Add a segment with full implementation using global configuration.
      * This is the main implementation that creates multiple connected segments from a single call.
      */
-    public void addSegmentWithFullImplementation(int srtIdx, int endIdx, int level) {
+    public void addSegmentWithFullImplementation(int A, int B, int level) {
+        if (points.get(A).connections > 0 && points.get(B).connections == 0) {
+            //Side B has no connections, it should the start for consistency.
+            srtIdx = B;
+            endIdx = A;
+        }
+        else if (points.get(B).connections > 0 && points.get(A).connections == 0) {
+            //Side A has no connections, it should be the start for consistency.
+            srtIdx = A;
+            endIdx = B;
+        }
+        else {
+            //Both sides have connections or both have none, order them according to hash for consistency in spline generation.
+            if (points.get(A).position.hashCode() < points.get(B).position.hashCode()) {
+                srtIdx = A;
+                endIdx = B;
+            }
+            else {
+                srtIdx = B;
+                endIdx = A;
+            }
+        }
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
 
