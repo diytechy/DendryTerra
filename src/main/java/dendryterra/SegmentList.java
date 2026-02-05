@@ -152,48 +152,7 @@ public class SegmentList {
         points.set(srtIdx, srt.incrementConnections());
         points.set(endIdx, end.incrementConnections());
     }
-                //    int idx = segList.addPoint(p.position, p.pointType, level);
-                //    // 0-length segment for visualization
-                //    segList.addSegment(idx, idx, level, null, null);
 
-
-    /**
-     * Add a segment directly using point indices.
-     * Creates a Segment3D internally.
-     */
-    /* 
-    public void addSegmentWithDivisions(int srtIdx, int endIdx, int level, double maxSegmentDistance) {
-        //Hardcoded jitter factor:
-        double jitter = 0.5;
-        //Get points, the point tangent and slope information is available from points
-        NetworkPoint srt = points.get(srtIdx);
-        NetworkPoint end = points.get(endIdx);
-
-        // Placeholders for tangents for initial segment, to be divided.
-        // If splines with curves are being used (useSplines && curvature > 0):
-            // Derive if the point is connected as it affects tangent calculation.
-            // Connections = 0 -> No connection, compute nominal from slope an flow path + twist amount, and clamp (clampTangentToSegmentDirection).
-            // Connections = 1 -> Tangent already exists, to give continuity use existing tangent if the paths align (start to end connection or end to start connection), otherwise the tangent needs to be flipped / inverted.
-            // Connections = 2+ -> Multiple connections, compute offset tangent from existing tangent direction. Find the connecting point with the matching point (If this is a start point, find the segments already connected to this point as a start, or vice-versa for end point), and offset the tangent angle 20 to 70 degrees on the side of the end index 
-        // Otherwise, for straight segments, tangents are null.
-        Vec2D tangentSrt = null;
-        Vec2D tangentEnd = null;
-
-        // Placeholder to subdivide long segments, points created here should likely be created with a for loop, but other methods could be used.
-        // If distance between srt and end > maxSegmentDistance, computer the number of samples to create, create points in between using linear interpolation, and then add deterministic jitter between segments.
-        double distance = srt.position.distanceTo(end.position);
-        int numDivisions = (int)Math.ceil(distance / maxSegmentDistance);
-        // Use shared helper for Hermite interpolation if splines are being used, else just use straight linear interpolation.
-        int srtIdxSub = srtIdx;
-        int endIdxSub = endIdx;
-        Vec2D tangentSrtSub = null;
-        Vec2D tangentEndSub = null;
-
-
-        // Placeholder (likely for loop) to add each subdivided segment back into the main segment group.
-        addSegment(srtIdxSub, endIdxSub, level,tangentSrtSub,tangentEndSub);
-    }
-        */
     /**
      * Add a segment using new network point to known existing point in segment.
      * Uses global configuration parameters.
