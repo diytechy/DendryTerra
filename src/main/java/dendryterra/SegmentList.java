@@ -211,9 +211,13 @@ public class SegmentList {
     public void addSegmentWithFullImplementation(int srtIdx, int endIdx, int level) {
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
+
+        // Instantiate a random generator for consistent "random"artifacts per segment:
+        long seed = (541L *(srt.position.hashCode() + end.position.hashCode()) + config.salt) & 0x7FFFFFFFL;
+        Random NoiseGen = new Random(seed);
         
         // Step 1: Compute tangents based on connection patterns using global config
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx);
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, NoiseGen);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
         
@@ -259,7 +263,7 @@ public class SegmentList {
      * Compute tangents for a connection based on existing connectivity patterns.
      * Uses global configuration parameters.
      */
-    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx) {
+    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, Random NoiseGen) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
@@ -274,8 +278,8 @@ public class SegmentList {
         }
         
         // Compute tangents based on connection patterns
-        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true);
-        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false);
+        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true,NoiseGen);
+        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false,NoiseGen);
         
         return new Vec2D[] { tangentSrt, tangentEnd };
     }
@@ -284,12 +288,12 @@ public class SegmentList {
      * Compute tangent for a specific point based on its connections.
      * Uses global configuration parameters.
      */
-    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart) {
+    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, Random NoiseGen) {
         
         NetworkPoint point = points.get(pointIdx);
         NetworkPoint target = points.get(targetIdx);
         //Initialize point variables that determine tangent and twist.
-        double angle = 0;
+        Vec2D angle = new Vec2D(0,0);
         double slope = 0;
         // Base direction toward target
         Vec2D toTarget = new Vec2D(point.position.projectZ(), target.position.projectZ());
@@ -299,18 +303,18 @@ public class SegmentList {
         toTarget = toTarget.normalize();
         // Get slope tangent trajectory based on point:
         if (isStart) {
-            angle = point.position.getTangent();
+            angle = point.position.getTangentVector();
             slope = Math.abs(point.position.getSlope());
         }
         else {
-            angle = -target.position.getTangent();
+            angle = target.position.getTangentVector().negate();
             slope = Math.abs(point.position.getSlope());
         }
         // Adjust based on connection count
         if (point.connections == 0) {
-            // No existing connections - use flow direction with twist
-            double twist = (isStart ? 1 : -1) * Math.min(slope/config.SlopeWithoutTwist, 1) * config.maxTwistAngle;
-            return rotateVector(toTarget, twist);
+            // No existing connections - use flow direction with deterministic twist
+            double twist = (NoiseGen.nextFloat() * 2.0 * Math.min(slope/config.SlopeWithoutTwist, 1.0) - 1.0) * config.maxTwistAngle;
+            return rotateVector(angle, twist);
         } else if (point.connections == 1) {
             // One existing connection - check if aligned with target
             Vec2D existingDir = getExistingConnectionDirection(pointIdx);

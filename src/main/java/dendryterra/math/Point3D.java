@@ -65,6 +65,23 @@ public final class Point3D {
     }
 
     /**
+     * Get the tangent as a 2D vector (direction of steepest descent).
+     * Returns a normalized Vec2D pointing in the downhill direction.
+     * Returns null if slopes are not computed.
+     */
+    public Vec2D getTangentVector() {
+        if (!hasSlope()) return null;
+        // Gradient points uphill; tangent for flow is downhill (negative gradient)
+        double tangentX = -slopeX;
+        double tangentY = -slopeY;
+        double length = Math.sqrt(tangentX * tangentX + tangentY * tangentY);
+        if (length < MathUtils.EPSILON) {
+            return new Vec2D(0, 0);
+        }
+        return new Vec2D(tangentX / length, tangentY / length);
+    }
+
+    /**
      * Get the slope magnitude along the tangent direction.
      * This is the steepness in the direction of steepest descent.
      * Returns NaN if slopes are not computed.
