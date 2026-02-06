@@ -1319,7 +1319,7 @@ public class DendrySampler implements Sampler {
 
     /**
      * Combine multiple constellation SegmentLists into a single SegmentList.
-     * Points are re-indexed, and a position-to-index map is maintained.
+     * Points are de-duplicated by position, segments are copied directly.
      */
     private SegmentList combineConstellationSegmentLists(Map<Long, SegmentList> constellationSegmentLists) {
         // Use the config from the first constellation (they should all be the same)
@@ -1330,55 +1330,38 @@ public class DendrySampler implements Sampler {
         }
         SegmentList combined = new SegmentList(config != null ? config : new SegmentListConfig(salt));
 
-        // Map from original position to new index in combined list
+        // Map from quantized position to new index in combined list
         Map<Long, Integer> positionToIndex = new HashMap<>();
 
+        // First pass: add all unique points from all constellations
         for (SegmentList segList : constellationSegmentLists.values()) {
-            // Add all points, tracking position-to-index mapping
-            Map<Integer, Integer> oldToNewIndex = new HashMap<>();
-
             for (int i = 0; i < segList.getPointCount(); i++) {
                 NetworkPoint pt = segList.getPoint(i);
                 long posKey = quantizePositionForCombine(pt.position);
 
-                Integer existingIdx = positionToIndex.get(posKey);
-                if (existingIdx != null) {
-                    // Point already exists in combined list
-                    oldToNewIndex.put(i, existingIdx);
-                } else {
-                    // Add new point
+                if (!positionToIndex.containsKey(posKey)) {
                     int newIdx = combined.addPoint(pt.position, pt.pointType, pt.level);
-                    // Update connection count to match original
-                    if (pt.connections > 0) {
-                        NetworkPoint updatedPt = combined.getPoint(newIdx).withConnections(pt.connections);
-                        combined.updatePoint(newIdx, updatedPt);
-                    }
                     positionToIndex.put(posKey, newIdx);
-                    oldToNewIndex.put(i, newIdx);
                 }
             }
+        }
 
-            // Add all segments using new indices
+        // Second pass: add all segments using position map for index lookup
+        for (SegmentList segList : constellationSegmentLists.values()) {
             for (Segment3D seg : segList.getSegments()) {
-                // Find indices in combined list by position
-                int srtIdx = findPointIndexByPosition(combined, seg.srt);
-                int endIdx = findPointIndexByPosition(combined, seg.end);
+                long srtKey = quantizePositionForCombine(seg.srt);
+                long endKey = quantizePositionForCombine(seg.end);
 
-                if (srtIdx >= 0 && endIdx >= 0) {
-                    // Add segment directly without subdivision (already subdivided)
+                Integer srtIdx = positionToIndex.get(srtKey);
+                Integer endIdx = positionToIndex.get(endKey);
+
+                if (srtIdx != null && endIdx != null) {
                     combined.addBasicSegment(srtIdx, endIdx, seg.level, seg.tangentSrt, seg.tangentEnd);
                 }
             }
         }
 
         return combined;
-    }
-
-    /**
-     * Find point index in a SegmentList by position.
-     */
-    private int findPointIndexByPosition(SegmentList segList, Point3D pos) {
-        return segList.findPointByPosition(pos, MathUtils.EPSILON);
     }
 
     /**
@@ -2121,15 +2104,13 @@ public class DendrySampler implements Sampler {
 
             if (firstSegment) {
                 // First segment: use addSegmentWithDivisions with two new NetworkPoints
-                segList.addSegmentWithDivisions(trunkStartPt, trunkNextPt, level, mergeDistance);
-                // The end point is now the last point added, find it
-                currentIdx = segList.getPointCount() - 1;
+                // Returns the index of trunkNextPt (the uphill endpoint for continuation)
+                currentIdx = segList.addSegmentWithDivisions(trunkStartPt, trunkNextPt, level, mergeDistance);
                 firstSegment = false;
             } else {
                 // Subsequent segments: use addSegmentWithDivisions with new NetworkPoint and existing index
-                segList.addSegmentWithDivisions(trunkNextPt, currentIdx, level, mergeDistance);
-                // Update currentIdx to the newly added point
-                currentIdx = segList.getPointCount() - 1;
+                // Returns the index of trunkNextPt (the new point for continuation)
+                currentIdx = segList.addSegmentWithDivisions(trunkNextPt, currentIdx, level, mergeDistance);
             }
         }
     }

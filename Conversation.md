@@ -1018,7 +1018,6 @@ In SEGMENT_DEBUGGING set to 15, I am not seeing the tree segments or any others 
 
 Issues:
 
-1. Segments should be smaller for level 0, since it should use merge distance from 1 level down.
-2. Discontinuities are present on trunk, something is causing segments to not get created deterministically.
-3. The trunk does not continue upward from every newly created point, instead it is branching out, which is not expected behavior.
-4. combineConstellationSegmentLists appears very complicated.  Can't 
+1. Discontinuities are present on trunk, something is causing segments to not get created deterministically.
+2. The trunk does not continue upward from every newly created point, instead it is branching out, which is not expected behavior (checked with SEGMENT_DEBUGGING=15).  The trunk should be non-branching, is the newly created index point used as the connection point for the next iteration?
+3. combineConstellationSegmentLists appears very complicated.  Please make sure new constellation points get their index continued from the last created point from the previous index, that way the points and segments do not need to be reindexed, and should be able to be copied over directly.

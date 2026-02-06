@@ -156,13 +156,17 @@ public class SegmentList {
     /**
      * Add a segment using new network point to known existing point in segment.
      * Uses global configuration parameters.
+     * @return The index of the newly added point (srtNetPnt)
      */
-    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength) {
+    public int addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength) {
         // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
-        
+
         // Call full implementation using global config
         addSegmentWithDivisions(srtIdx, endIdx, level, maxSegmentLength);
+
+        // Return the index of the new point
+        return srtIdx;
     }
     
     /**
@@ -225,12 +229,16 @@ public class SegmentList {
     }
     
     /**
-     * Add a segment to with two new network points, only used for trunk initialization.
+     * Add a segment with two new network points, only used for trunk initialization.
+     * @return The index of endNetPnt (the "far end" for trunk continuation)
      */
-    public void addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level, double maxSegmentLength) {
-
+    public int addSegmentWithDivisions(NetworkPoint srtNetPnt, NetworkPoint endNetPnt, int level, double maxSegmentLength) {
+        // Add end point first to get its index (this is the continuation point for trunk)
         int endIdx = addPoint(endNetPnt);
+        // Add start point and create segment(s)
         addSegmentWithDivisions(srtNetPnt, endIdx, level, maxSegmentLength);
+        // Return the end point index (the trunk continuation point)
+        return endIdx;
     }
     
     /**
