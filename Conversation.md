@@ -1040,4 +1040,18 @@ Some subdivided nodes appear much closer tto the original point than I would exp
 ################################################################################
 
 
-Make changes if necessary so that the tangent derivation in computePointTangent at (point.connections == 1) is properly rotating / negating the attached tangent so that the new segment is continuous.  If connected point is an end point and it's connected to the end point of the segment being created, or if the connected point is an start point and it's connected to the start point of the segment being created, the tangent must be negated / rotated 180 degrees so that the constructed splines aligned.  Otherwise the tangent should be taken directly.
+Make changes if necessary so that the tangent derivation in computePointTangent at (point.connections == 1) is properly compensating the tangent for the new segment for continuous flow / derivative along the full segment chain.  If connected point is an end point and it's connected to the end point of the segment being created, or if the connected point is an start point and it's connected to the start point of the segment being created, the tangent must be negated / rotated 180 degrees so that the constructed splines align.  Otherwise the tangent should be taken directly.
+
+############################################################################
+
+Make changes if necessary to ensure points are appropriately categorized:
+
+KNOT - Points created during subdivision that were not for trunk segments.
+
+TRUNK - Points created during subdivision that were for trunk segments.
+
+LEAF - Points that only have 1 connection after all segments have been created for a specific level or constellation.
+
+ORIGINAL - The original points or stars created as a starting point to be connected through subdivided splines,
+
+EDGE - Points that were created as a result of clipping a segment at a cell boundary.

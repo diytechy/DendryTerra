@@ -466,6 +466,12 @@ public class SegmentList {
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
 
+        // Determine intermediate point type based on endpoint types
+        // If both endpoints are TRUNK, intermediate points should also be TRUNK
+        PointType intermediateType = (srt.pointType == PointType.TRUNK && end.pointType == PointType.TRUNK)
+            ? PointType.TRUNK
+            : PointType.KNOT;
+
         // Create intermediate points
         int prevIdx = srtIdx;
 
@@ -482,8 +488,8 @@ public class SegmentList {
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, rng);
             }
 
-            // Add intermediate point
-            int intermediateIdx = addPoint(intermediatePoint, PointType.KNOT, level);
+            // Add intermediate point with appropriate type
+            int intermediateIdx = addPoint(intermediatePoint, intermediateType, level);
 
             // Create segment from previous to intermediate
             addBasicSegment(prevIdx, intermediateIdx, level,

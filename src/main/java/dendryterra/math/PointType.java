@@ -5,31 +5,31 @@ package dendryterra.math;
  * Used for debug visualization and tracking point provenance.
  */
 public enum PointType {
-    /**
-     * Point was originally created as a star or initial network point.
-     */
-    ORIGINAL(0),
-
-    /**
-     * Point was part of the original trunk creation (main flow path).
-     */
-    TRUNK(1),
 
     /**
      * Point was created as a part of segment subdivision (knot point).
      */
-    KNOT(2),
+    KNOT(0),
+
+    /**
+     * Point was part of the original trunk creation (main flow path).
+     */
+    TRUNK(2),
 
     /**
      * Point exists at the end of a branch on its level.
      */
     LEAF(3),
+    /**
+     * Point was originally created as a star or initial network point.
+     */
+    ORIGINAL(4),
 
     /**
      * Point was created by clipping a segment at a cell boundary.
      * Edge points should not be connected to by subsequent levels.
      */
-    EDGE(4);
+    EDGE(5);
 
     private final int value;
 

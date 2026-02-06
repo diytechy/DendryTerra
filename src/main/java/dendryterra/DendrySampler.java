@@ -3477,8 +3477,13 @@ public class DendrySampler implements Sampler {
                     if (px >= 0 && px < pixelGridSize && py >= 0 && py < pixelGridSize) {
                         float elevation = (float) pt.z;
                         byte level = (byte) seg.level;
+                        if (isDebugMode) {
+                        // pointType 1 = segment line only (no special point)
+                        cache.setPixel(px, py, elevation, level, (byte) 1);
+                        }else{
                         // pointType -1 = segment line only (no special point)
                         cache.setPixel(px, py, elevation, level, (byte) -1);
+                        }
                     }
                 }
             }
