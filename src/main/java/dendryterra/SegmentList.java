@@ -389,7 +389,8 @@ public class SegmentList {
             if (existingTangent == null) {
                 // Fallback: direction from start toward end
                 NetworkPoint point = points.get(pointIdx);
-                existingTangent = new Vec2D(point.position.projectZ(), seg.end.projectZ()).normalize();
+                Point3D endPos = seg.getEnd(this);
+                existingTangent = new Vec2D(point.position.projectZ(), endPos.projectZ()).normalize();
             }
         } else {
             // Point is at existing segment's END
@@ -397,7 +398,8 @@ public class SegmentList {
             if (existingTangent == null) {
                 // Fallback: direction from start toward end (same as tangent direction)
                 NetworkPoint point = points.get(pointIdx);
-                existingTangent = new Vec2D(seg.srt.projectZ(), point.position.projectZ()).normalize();
+                Point3D srtPos = seg.getSrt(this);
+                existingTangent = new Vec2D(srtPos.projectZ(), point.position.projectZ()).normalize();
             }
         }
 
@@ -437,7 +439,8 @@ public class SegmentList {
             }
             // Fallback to computed direction if no tangent stored
             NetworkPoint point = points.get(pointIdx);
-            return new Vec2D(point.position.projectZ(), seg.end.projectZ()).normalize();
+            Point3D endPos = seg.getEnd(this);
+            return new Vec2D(point.position.projectZ(), endPos.projectZ()).normalize();
         } else {
             // Point is at segment end - return the end tangent
             if (seg.tangentEnd != null) {
@@ -445,7 +448,8 @@ public class SegmentList {
             }
             // Fallback to computed direction if no tangent stored
             NetworkPoint point = points.get(pointIdx);
-            return new Vec2D(seg.srt.projectZ(), point.position.projectZ()).normalize();
+            Point3D srtPos = seg.getSrt(this);
+            return new Vec2D(srtPos.projectZ(), point.position.projectZ()).normalize();
         }
     }
     
@@ -628,19 +632,12 @@ public class SegmentList {
 
     /**
      * Check if two points are already connected by a segment.
-     * Uses position matching since current Segment3D uses Point3D.
+     * Uses index-based lookup for O(1) performance.
      */
     public boolean areConnected(int idx1, int idx2) {
-        Point3D pos1 = points.get(idx1).position;
-        Point3D pos2 = points.get(idx2).position;
-        double epsilon = 1e-9;
-
         for (Segment3D seg : segments) {
-            boolean match1 = seg.srt.distanceSquaredTo(pos1) < epsilon &&
-                             seg.end.distanceSquaredTo(pos2) < epsilon;
-            boolean match2 = seg.srt.distanceSquaredTo(pos2) < epsilon &&
-                             seg.end.distanceSquaredTo(pos1) < epsilon;
-            if (match1 || match2) {
+            if ((seg.srtIdx == idx1 && seg.endIdx == idx2) ||
+                (seg.srtIdx == idx2 && seg.endIdx == idx1)) {
                 return true;
             }
         }
@@ -705,17 +702,7 @@ public class SegmentList {
             points.set(i, p.withPosition(newPos));
         }
 
-        // Also shift segments (they contain Point3D)
-        List<Segment3D> shiftedSegments = new ArrayList<>();
-        for (Segment3D seg : segments) {
-            Point3D newSrt = new Point3D(seg.srt.x, seg.srt.y, seg.srt.z - minZ);
-            Point3D newEnd = new Point3D(seg.end.x, seg.end.y, seg.end.z - minZ);
-            shiftedSegments.add(new Segment3D(newSrt, newEnd, seg.level,
-                                               seg.tangentSrt, seg.tangentEnd,
-                                               seg.srtType, seg.endType));
-        }
-        segments.clear();
-        segments.addAll(shiftedSegments);
+        // Note: Segments are index-based and automatically reflect updated point positions
     }
 
     /**
@@ -789,6 +776,21 @@ public class SegmentList {
                     srtPt.pointType, endPt.pointType
                 ));
             }
+        }
+
+        return result;
+    }
+
+    /**
+     * Convert to List<Segment2D> by projecting all segments to 2D (dropping z coordinates).
+     * Useful for 2D geometric operations and visualization.
+     */
+    public List<Segment2D> toSegment2DList() {
+        List<Segment2D> result = new ArrayList<>();
+
+        for (Segment3D seg : segments) {
+            // Use the SegmentList resolution to get Point3D positions, then project to 2D
+            result.add(seg.projectZ(this));
         }
 
         return result;

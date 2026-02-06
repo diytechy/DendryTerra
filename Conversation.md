@@ -1055,3 +1055,29 @@ LEAF - Points that only have 1 connection after all segments have been created f
 ORIGINAL - The original points or stars created as a starting point to be connected through subdivided splines,
 
 EDGE - Points that were created as a result of clipping a segment at a cell boundary.
+
+####################################################3
+
+There are many places where Segment3D is being used where SegmentList should be used instead so that the number of connections is easily detectable per point and to reduce duplicate point definitions between segments.
+
+1. Remove the information which will not be necessary from Segment3D
+public final PointType srtType;
+public final PointType endType;
+public final Point3D srt;
+public final Point3D end;
+
+2. In "generateAllSegments" update the following functions and their assigned variables to return SegmentList types instead of Segment3D:
+
+generateAllSegments
+generateAsterism
+pruneSegmentsToCell
+
+3. In "evaluate" the returned SegmentList from generateAllSegments can be converted to Segment2D for compatibility with computeResult, computeResult can be updated to only use Segment2D.
+
+4. In "computeAllSegmentsForCell" it should also return a SegmentList.
+
+5. "sampleSegmentsToPixelCache" should be updated to use SegmentList inputs, populating pixels by each segment solved using their tangents and end point indexes, followed by marking points according to their type.
+
+Note "allSegments" that is returned from "generateAllSegments" should not occur until all levels are complete to ensure the correct 
+
+This should simplify, if changes are resulting in additional or more complex code, it is likely something is being misinterpreted.

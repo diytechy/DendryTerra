@@ -417,8 +417,9 @@ public class DendrySampler implements Sampler {
 
     private double evaluate(long seed, double x, double y) {
         Cell cell1 = getCell(x, y, 1);
-        List<Segment3D> allSegments = generateAllSegments(cell1, x, y);
-        return computeResult(x, y, allSegments);
+        SegmentList allSegments = generateAllSegments(cell1, x, y);
+        // Convert to List<Segment3D> for backward compatibility with computeResult
+        return computeResult(x, y, allSegments.toSegment3DList());
     }
 
     /**
@@ -430,24 +431,22 @@ public class DendrySampler implements Sampler {
      * @param queryY Query Y coordinate in normalized space (for higher resolution cell lookup)
      * @return List of all generated segments
      */
-    private List<Segment3D> generateAllSegments(Cell cell1, double queryX, double queryY) {
+    private SegmentList generateAllSegments(Cell cell1, double queryX, double queryY) {
         // Displacement factor for level 1 (levels 2+ handled in CleanAndNetworkPoints)
         double displacementLevel1 = delta;
 
         // Asterism (Level 0): Generate and process
-        List<Segment3D> asterismBase = generateAsterism(cell1);
+        SegmentList asterismBase = generateAsterism(cell1);
         // Prune asterism to query cell - clips segments at cell boundary with EDGE points
-        List<Segment3D> asterismPruned = pruneSegmentsToCell(asterismBase, cell1);
+        SegmentList asterismPruned = pruneSegmentsToCell(asterismBase, cell1);
 
         if (resolution == 0) {
             return asterismPruned;
         }
-        List<Segment3D> allSegments = new ArrayList<>(asterismPruned);
 
         // Level 1+: Higher resolution refinement using loop
         // Each level generates points for the query cell and connects them using CleanAndNetworkPointsV2
-        // Convert initial segments to SegmentList for V2 method
-        SegmentList previousSegList = SegmentList.fromSegment3DList(allSegments, 0, salt);
+        SegmentList previousSegList = asterismPruned;
 
         for (int level = 1; level <= resolution; level++) {
             // Get the cell at this level's resolution
@@ -462,15 +461,11 @@ public class DendrySampler implements Sampler {
             SegmentList levelSegList = CleanAndNetworkPointsV2(
                 levelCell.x, levelCell.y, level, levelPoints, previousSegList);
 
-            List<Segment3D> levelSegments = levelSegList.toSegment3DList();
-            if (!levelSegments.isEmpty()) {
-                allSegments.addAll(levelSegments);
-                // Update previous level SegmentList for next iteration
-                previousSegList = SegmentList.fromSegment3DList(allSegments, level, salt);
-            }
+            // Update previousSegList for next iteration
+            previousSegList = levelSegList;
         }
 
-        return allSegments;
+        return previousSegList;
     }
 
     private static class Cell {
@@ -501,8 +496,11 @@ public class DendrySampler implements Sampler {
      * @param cell The cell to prune to (level 1 cell)
      * @return List of pruned segments with EDGE points at boundaries
      */
-    private List<Segment3D> pruneSegmentsToCell(List<Segment3D> segments, Cell cell) {
-        List<Segment3D> result = new ArrayList<>();
+    private SegmentList pruneSegmentsToCell(SegmentList segmentList, Cell cell) {
+        SegmentList result = new SegmentList(segmentList.getConfig());
+
+        // Map from original point index to new point index in result
+        Map<Integer, Integer> pointIndexMap = new HashMap<>();
 
         // Cell bounds (level 1 cells are 1x1 in normalized space)
         double minX = cell.x;
@@ -510,32 +508,47 @@ public class DendrySampler implements Sampler {
         double minY = cell.y;
         double maxY = cell.y + 1.0;
 
-        for (Segment3D seg : segments) {
-            boolean srtInside = isPointInCell(seg.srt, minX, maxX, minY, maxY);
-            boolean endInside = isPointInCell(seg.end, minX, maxX, minY, maxY);
+        for (Segment3D seg : segmentList.getSegments()) {
+            Point3D srtPos = seg.getSrt(segmentList);
+            Point3D endPos = seg.getEnd(segmentList);
+
+            boolean srtInside = isPointInCell(srtPos, minX, maxX, minY, maxY);
+            boolean endInside = isPointInCell(endPos, minX, maxX, minY, maxY);
 
             if (srtInside && endInside) {
-                // Both ends inside - keep segment as-is
-                result.add(seg);
+                // Both ends inside - copy points and segment
+                int newSrtIdx = copyPointToResult(segmentList, seg.srtIdx, result, pointIndexMap);
+                int newEndIdx = copyPointToResult(segmentList, seg.endIdx, result, pointIndexMap);
+                result.addBasicSegment(newSrtIdx, newEndIdx, seg.level, seg.tangentSrt, seg.tangentEnd);
             } else if (srtInside || endInside) {
                 // One end inside, one outside - clip at boundary
-                Segment3D clipped = clipSegmentToCell(seg, minX, maxX, minY, maxY, srtInside);
-                if (clipped != null) {
-                    result.add(clipped);
-                }
+                clipSegmentToCell(segmentList, seg, result, pointIndexMap, minX, maxX, minY, maxY, srtInside);
             }
             // If neither end is inside, check if segment crosses the cell
-            else if (segmentCrossesCell(seg, minX, maxX, minY, maxY)) {
+            else if (segmentCrossesCell(segmentList, seg, minX, maxX, minY, maxY)) {
                 // Segment crosses through cell - clip both ends
-                Segment3D clipped = clipSegmentBothEnds(seg, minX, maxX, minY, maxY);
-                if (clipped != null) {
-                    result.add(clipped);
-                }
+                clipSegmentBothEnds(segmentList, seg, result, minX, maxX, minY, maxY);
             }
             // Otherwise segment is entirely outside - skip it
         }
 
         return result;
+    }
+
+    /**
+     * Copy a point from source SegmentList to result, using pointIndexMap to avoid duplicates.
+     * @return The index in the result SegmentList
+     */
+    private int copyPointToResult(SegmentList source, int sourceIdx, SegmentList result, Map<Integer, Integer> pointIndexMap) {
+        Integer existingIdx = pointIndexMap.get(sourceIdx);
+        if (existingIdx != null) {
+            return existingIdx;
+        }
+
+        NetworkPoint pt = source.getPoint(sourceIdx);
+        int newIdx = result.addPoint(pt.position, pt.pointType, pt.level);
+        pointIndexMap.put(sourceIdx, newIdx);
+        return newIdx;
     }
 
     /**
@@ -549,54 +562,69 @@ public class DendrySampler implements Sampler {
      * Clip a segment where one end is inside the cell.
      * The outside end is clipped to the cell boundary and marked as EDGE.
      */
-    private Segment3D clipSegmentToCell(Segment3D seg, double minX, double maxX, double minY, double maxY,
-                                         boolean srtInside) {
-        Point3D insidePoint = srtInside ? seg.srt : seg.end;
-        Point3D outsidePoint = srtInside ? seg.end : seg.srt;
-        PointType insideType = srtInside ? seg.srtType : seg.endType;
+    private void clipSegmentToCell(SegmentList source, Segment3D seg, SegmentList result, Map<Integer, Integer> pointIndexMap,
+                                    double minX, double maxX, double minY, double maxY, boolean srtInside) {
+        Point3D srtPos = seg.getSrt(source);
+        Point3D endPos = seg.getEnd(source);
+        PointType srtType = seg.getSrtType(source);
+        PointType endType = seg.getEndType(source);
+
+        Point3D insidePoint = srtInside ? srtPos : endPos;
+        Point3D outsidePoint = srtInside ? endPos : srtPos;
+        PointType insideType = srtInside ? srtType : endType;
         Vec2D insideTangent = srtInside ? seg.tangentSrt : seg.tangentEnd;
         Vec2D outsideTangent = srtInside ? seg.tangentEnd : seg.tangentSrt;
 
         // Find intersection with cell boundary
         Point3D clippedPoint = findCellBoundaryIntersection(insidePoint, outsidePoint, minX, maxX, minY, maxY);
         if (clippedPoint == null) {
-            return null;
+            return;
         }
 
         // Create clipped segment with EDGE type at boundary
         if (srtInside) {
-            return new Segment3D(seg.srt, clippedPoint, seg.level, seg.tangentSrt, outsideTangent,
-                                 seg.srtType, PointType.EDGE);
+            int insideIdx = copyPointToResult(source, seg.srtIdx, result, pointIndexMap);
+            int clipIdx = result.addPoint(clippedPoint, PointType.EDGE, seg.level);
+            result.addBasicSegment(insideIdx, clipIdx, seg.level, seg.tangentSrt, outsideTangent);
         } else {
-            return new Segment3D(clippedPoint, seg.end, seg.level, outsideTangent, seg.tangentEnd,
-                                 PointType.EDGE, seg.endType);
+            int clipIdx = result.addPoint(clippedPoint, PointType.EDGE, seg.level);
+            int insideIdx = copyPointToResult(source, seg.endIdx, result, pointIndexMap);
+            result.addBasicSegment(clipIdx, insideIdx, seg.level, outsideTangent, seg.tangentEnd);
         }
     }
 
     /**
      * Clip a segment where both ends are outside but the segment crosses through the cell.
      */
-    private Segment3D clipSegmentBothEnds(Segment3D seg, double minX, double maxX, double minY, double maxY) {
+    private void clipSegmentBothEnds(SegmentList source, Segment3D seg, SegmentList result,
+                                      double minX, double maxX, double minY, double maxY) {
+        Point3D srtPos = seg.getSrt(source);
+        Point3D endPos = seg.getEnd(source);
+
         // Find both intersection points
-        Point3D entry = findCellBoundaryIntersection(seg.srt, seg.end, minX, maxX, minY, maxY);
-        Point3D exit = findCellBoundaryIntersection(seg.end, seg.srt, minX, maxX, minY, maxY);
+        Point3D entry = findCellBoundaryIntersection(srtPos, endPos, minX, maxX, minY, maxY);
+        Point3D exit = findCellBoundaryIntersection(endPos, srtPos, minX, maxX, minY, maxY);
 
         if (entry == null || exit == null) {
-            return null;
+            return;
         }
 
         // Both endpoints are EDGE type
-        return new Segment3D(entry, exit, seg.level, seg.tangentSrt, seg.tangentEnd,
-                             PointType.EDGE, PointType.EDGE);
+        int entryIdx = result.addPoint(entry, PointType.EDGE, seg.level);
+        int exitIdx = result.addPoint(exit, PointType.EDGE, seg.level);
+        result.addBasicSegment(entryIdx, exitIdx, seg.level, seg.tangentSrt, seg.tangentEnd);
     }
 
     /**
      * Check if a segment crosses through a cell (both ends outside but line passes through).
      */
-    private boolean segmentCrossesCell(Segment3D seg, double minX, double maxX, double minY, double maxY) {
+    private boolean segmentCrossesCell(SegmentList source, Segment3D seg, double minX, double maxX, double minY, double maxY) {
+        Point3D srtPos = seg.getSrt(source);
+        Point3D endPos = seg.getEnd(source);
+
         // Use line-box intersection test
-        Point2D p1 = seg.srt.projectZ();
-        Point2D p2 = seg.end.projectZ();
+        Point2D p1 = srtPos.projectZ();
+        Point2D p2 = endPos.projectZ();
 
         // Check intersection with each edge of the cell
         return lineIntersectsBox(p1.x, p1.y, p2.x, p2.y, minX, maxX, minY, maxY);
@@ -1236,7 +1264,7 @@ public class DendrySampler implements Sampler {
      * Computes the 4 closest constellations, generates stars within each,
      * merges close stars, builds networks, and stitches them together.
      */
-    private List<Segment3D> generateAsterism(Cell queryCell1) {
+    private SegmentList generateAsterism(Cell queryCell1) {
         // Find the 4 closest constellations to the query cell
         List<ConstellationInfo> closestConstellations = findClosestConstellations(queryCell1);
 
@@ -1244,8 +1272,8 @@ public class DendrySampler implements Sampler {
         Map<Long, SegmentList> constellationSegmentLists = new HashMap<>();
         Map<Long, List<Point3D>> constellationStars = new HashMap<>();
 
-        // Initialize star segments for debugging (needs to be outside if block for scope)
-        List<Segment3D> starSegments = new ArrayList<>();
+        // Initialize star segment list for debugging (needs to be outside if block for scope)
+        SegmentList starSegmentList = new SegmentList(new SegmentListConfig(salt));
 
         boolean firstConstellation = true;
         for (ConstellationInfo constInfo : closestConstellations) {
@@ -1257,12 +1285,13 @@ public class DendrySampler implements Sampler {
             // DEBUG: Collect stars as zero-length segments for visualization
             if (SEGMENT_DEBUGGING == 5 || SEGMENT_DEBUGGING == 6) {
                 for (Point3D star : stars) {
-                    starSegments.add(new Segment3D(star, star, 0));
+                    int starIdx = starSegmentList.addPoint(star, PointType.ORIGINAL, 0);
+                    starSegmentList.addBasicSegment(starIdx, starIdx, 0, null, null);
                 }
             }
             if (SEGMENT_DEBUGGING == 5) {
                 LOGGER.info("SEGMENT_DEBUGGING=5: Returning stars only for first constellation ({})", stars.size());
-                return starSegments;
+                return starSegmentList;
             }
             // Build network within constellation using CleanAndNetworkPointsV2
             // Use quantized center coordinates for cell reference
@@ -1275,25 +1304,21 @@ public class DendrySampler implements Sampler {
 
             // DEBUG: Return after first constellation only
             if (SEGMENT_DEBUGGING == 10 && firstConstellation) {
-                List<Segment3D> segments = segList.toSegment3DList();
-                LOGGER.info("SEGMENT_DEBUGGING=10: Returning first constellation segments only ({} segments)", segments.size());
-                return segments;
+                LOGGER.info("SEGMENT_DEBUGGING=10: Returning first constellation segments only ({} segments)", segList.getSegmentCount());
+                return segList;
             }
             firstConstellation = false;
         }
 
         // DEBUG: Return all constellation segments before stitching
         if ((SEGMENT_DEBUGGING == 20)||(SEGMENT_DEBUGGING == 15)) {
-            List<Segment3D> allSegments = new ArrayList<>();
-            for (SegmentList segList : constellationSegmentLists.values()) {
-                allSegments.addAll(segList.toSegment3DList());
-            }
-            LOGGER.info("SEGMENT_DEBUGGING=20or15: Returning all constellation segments before stitching ({} segments)", allSegments.size());
-            return allSegments;
+            SegmentList combined = combineConstellationSegmentLists(constellationSegmentLists);
+            LOGGER.info("SEGMENT_DEBUGGING=20or15: Returning all constellation segments before stitching ({} segments)", combined.getSegmentCount());
+            return combined;
         }
         if (SEGMENT_DEBUGGING == 6) {
-            LOGGER.info("SEGMENT_DEBUGGING=6: Returning all constellation stars: ({} stars)", starSegments.size());
-            return starSegments;
+            LOGGER.info("SEGMENT_DEBUGGING=6: Returning all constellation stars: ({} stars)", starSegmentList.getPointCount());
+            return starSegmentList;
         }
 
         // Combine all constellation SegmentLists into a single combined SegmentList
@@ -1305,16 +1330,13 @@ public class DendrySampler implements Sampler {
         // Normalize elevations after stitching
         combinedSegList.normalizeElevations();
 
-        // Convert to List<Segment3D> for return
-        List<Segment3D> allSegments = combinedSegList.toSegment3DList();
-
         // DEBUG: Return all segments including stitching
         if (SEGMENT_DEBUGGING == 30) {
-            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", allSegments.size(), stitchCount);
-            return allSegments;
+            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", combinedSegList.getSegmentCount(), stitchCount);
+            return combinedSegList;
         }
 
-        return allSegments;
+        return combinedSegList;
     }
 
     /**
@@ -1349,8 +1371,12 @@ public class DendrySampler implements Sampler {
         // Second pass: add all segments using position map for index lookup
         for (SegmentList segList : constellationSegmentLists.values()) {
             for (Segment3D seg : segList.getSegments()) {
-                long srtKey = quantizePositionForCombine(seg.srt);
-                long endKey = quantizePositionForCombine(seg.end);
+                // Resolve Point3D positions from indices
+                Point3D srtPos = seg.getSrt(segList);
+                Point3D endPos = seg.getEnd(segList);
+
+                long srtKey = quantizePositionForCombine(srtPos);
+                long endKey = quantizePositionForCombine(endPos);
 
                 Integer srtIdx = positionToIndex.get(srtKey);
                 Integer endIdx = positionToIndex.get(endKey);
@@ -1956,18 +1982,14 @@ public class DendrySampler implements Sampler {
         }
 
         // Step 2: Remove points within merge distance of lower-level segments (if not level 0)
-        List<Segment3D> prevSegments = (previousLevelSegments != null)
-            ? previousLevelSegments.getSegments()
-            : new ArrayList<>();
-
-        if (level > 0 && !prevSegments.isEmpty()) {
-            cleanedPoints = removePointsNearSegments(cleanedPoints, prevSegments, mergeDistance);
+        if (level > 0 && previousLevelSegments != null && !previousLevelSegments.isEmpty()) {
+            cleanedPoints = removePointsNearSegments(cleanedPoints, previousLevelSegments, mergeDistance);
         }
 
         // Step 3: Probabilistically remove points based on branchesSampler and distance from segments
-        if (level > 0) {
+        if (level > 0 && previousLevelSegments != null) {
             cleanedPoints = probabilisticallyRemovePoints(cleanedPoints, cellX, cellY,
-                                                          prevSegments, gridSpacing);
+                                                          previousLevelSegments, gridSpacing);
         }
 
         if (cleanedPoints.isEmpty()) return result;
@@ -2298,7 +2320,7 @@ public class DendrySampler implements Sampler {
     /**
      * Remove points that are within merge distance of any lower-level segment.
      */
-    private List<Point3D> removePointsNearSegments(List<Point3D> points, List<Segment3D> segments, double mergeDistance) {
+    private List<Point3D> removePointsNearSegments(List<Point3D> points, SegmentList segmentList, double mergeDistance) {
         List<Point3D> result = new ArrayList<>();
         double mergeDistSq = mergeDistance * mergeDistance;
 
@@ -2306,10 +2328,12 @@ public class DendrySampler implements Sampler {
             boolean tooClose = false;
             Point2D p2d = point.projectZ();
 
-            for (Segment3D seg : segments) {
+            for (Segment3D seg : segmentList.getSegments()) {
                 // Find closest point on segment using linear interpolation
-                Point2D segA = seg.srt.projectZ();
-                Point2D segB = seg.end.projectZ();
+                Point3D srtPos = seg.getSrt(segmentList);
+                Point3D endPos = seg.getEnd(segmentList);
+                Point2D segA = srtPos.projectZ();
+                Point2D segB = endPos.projectZ();
                 double distSq = pointToSegmentDistanceSquared(p2d, segA, segB);
 
                 if (distSq < mergeDistSq) {
@@ -2367,7 +2391,7 @@ public class DendrySampler implements Sampler {
      * @return Filtered list of points
      */
     private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points, int cellX, int cellY,
-                                                         List<Segment3D> previousLevelSegments,
+                                                         SegmentList previousLevelSegments,
                                                          double gridSpacing) {
         List<Point3D> result = new ArrayList<>();
 
@@ -2391,8 +2415,10 @@ public class DendrySampler implements Sampler {
                 double minDistSq = Double.MAX_VALUE;
                 Point2D point2D = point.projectZ();
 
-                for (Segment3D seg : previousLevelSegments) {
-                    double distSq = pointToSegmentDistanceSquared(point2D, seg.srt.projectZ(), seg.end.projectZ());
+                for (Segment3D seg : previousLevelSegments.getSegments()) {
+                    Point3D srtPos = seg.getSrt(previousLevelSegments);
+                    Point3D endPos = seg.getEnd(previousLevelSegments);
+                    double distSq = pointToSegmentDistanceSquared(point2D, srtPos.projectZ(), endPos.projectZ());
                     if (distSq < minDistSq) {
                         minDistSq = distSq;
                     }
@@ -2421,7 +2447,7 @@ public class DendrySampler implements Sampler {
      * Probabilistically remove points based on branchesSampler only (legacy overload).
      */
     private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points, int cellX, int cellY) {
-        return probabilisticallyRemovePoints(points, cellX, cellY, new ArrayList<>(), 1.0);
+        return probabilisticallyRemovePoints(points, cellX, cellY, new SegmentList(new SegmentListConfig(salt)), 1.0);
     }
 
 
@@ -3411,17 +3437,23 @@ public class DendrySampler implements Sampler {
      * Walks along each segment and marks pixels it crosses.
      * For PIXEL_DEBUG mode, also marks endpoint positions with appropriate point types.
      */
-    private void sampleSegmentsToPixelCache(List<Segment3D> segments, CellPixelData cache) {
+    private void sampleSegmentsToPixelCache(SegmentList segmentList, CellPixelData cache) {
         double cellX = cache.cellX;
         double cellY = cache.cellY;
         boolean isDebugMode = (returnType == DendryReturnType.PIXEL_DEBUG);
 
-        for (Segment3D seg : segments) {
+        for (Segment3D seg : segmentList.getSegments()) {
+            // Resolve segment endpoints from SegmentList
+            Point3D srtPos = seg.getSrt(segmentList);
+            Point3D endPos = seg.getEnd(segmentList);
+            PointType srtType = seg.getSrtType(segmentList);
+            PointType endType = seg.getEndType(segmentList);
+
             // Get segment bounds in cell-local coordinates
-            double ax = seg.srt.x - cellX;
-            double ay = seg.srt.y - cellY;
-            double bx = seg.end.x - cellX;
-            double by = seg.end.y - cellY;
+            double ax = srtPos.x - cellX;
+            double ay = srtPos.y - cellY;
+            double bx = endPos.x - cellX;
+            double by = endPos.y - cellY;
 
             // Skip if segment is entirely outside the cell (with margin for point radius)
             double margin = isDebugMode ? 3.0 / pixelGridSize : 0;
@@ -3431,7 +3463,7 @@ public class DendrySampler implements Sampler {
             }
 
             // Sample along the segment at pixel resolution (for segment line)
-            double segLength = seg.length();
+            double segLength = seg.length(segmentList);
             double pixelSize = 1.0 / pixelGridSize;
             int numSamples = Math.max(2, (int) Math.ceil(segLength / pixelSize * 2));
 
@@ -3454,16 +3486,16 @@ public class DendrySampler implements Sampler {
                     double h01 = -2 * t3 + 3 * t2;
                     double h11 = t3 - t2;
 
-                    double x = h00 * seg.srt.x + h10 * (seg.tangentSrt != null ? seg.tangentSrt.x * tangentScale : 0)
-                             + h01 * seg.end.x + h11 * (seg.tangentEnd != null ? seg.tangentEnd.x * tangentScale : 0);
-                    double y = h00 * seg.srt.y + h10 * (seg.tangentSrt != null ? seg.tangentSrt.y * tangentScale : 0)
-                             + h01 * seg.end.y + h11 * (seg.tangentEnd != null ? seg.tangentEnd.y * tangentScale : 0);
-                    double z = MathUtils.lerp(seg.srt.z, seg.end.z, t);
+                    double x = h00 * srtPos.x + h10 * (seg.tangentSrt != null ? seg.tangentSrt.x * tangentScale : 0)
+                             + h01 * endPos.x + h11 * (seg.tangentEnd != null ? seg.tangentEnd.x * tangentScale : 0);
+                    double y = h00 * srtPos.y + h10 * (seg.tangentSrt != null ? seg.tangentSrt.y * tangentScale : 0)
+                             + h01 * endPos.y + h11 * (seg.tangentEnd != null ? seg.tangentEnd.y * tangentScale : 0);
+                    double z = MathUtils.lerp(srtPos.z, endPos.z, t);
 
                     pt = new Point3D(x, y, z);
                 } else {
                     // Linear interpolation
-                    pt = seg.lerp(t);
+                    pt = seg.lerp(segmentList, t);
                 }
 
                 double localX = pt.x - cellX;
@@ -3494,10 +3526,10 @@ public class DendrySampler implements Sampler {
                 if (ax >= -0.1 && ax < 1.1 && ay >= -0.1 && ay < 1.1) {
                     int px = (int) (ax * pixelGridSize);
                     int py = (int) (ay * pixelGridSize);
-                    float elevation = (float) seg.srt.z;
+                    float elevation = (float) srtPos.z;
                     byte level = (byte) seg.level;
                     // pointType from PointType enum value
-                    byte pointType = (byte) seg.srtType.getValue();
+                    byte pointType = (byte) srtType.getValue();
                     cache.markPointWithRadius(px, py, elevation, level, pointType, 2);
                 }
 
@@ -3505,10 +3537,10 @@ public class DendrySampler implements Sampler {
                 if (bx >= -0.1 && bx < 1.1 && by >= -0.1 && by < 1.1) {
                     int px = (int) (bx * pixelGridSize);
                     int py = (int) (by * pixelGridSize);
-                    float elevation = (float) seg.end.z;
+                    float elevation = (float) endPos.z;
                     byte level = (byte) seg.level;
                     // pointType from PointType enum value
-                    byte pointType = (byte) seg.endType.getValue();
+                    byte pointType = (byte) endType.getValue();
                     cache.markPointWithRadius(px, py, elevation, level, pointType, 2);
                 }
             }
@@ -3599,7 +3631,7 @@ public class DendrySampler implements Sampler {
         cache = getOrCreatePixelCache(cellX, cellY);
 
         // Compute all segments for this cell
-        List<Segment3D> allSegments = computeAllSegmentsForCell(seed, cellX, cellY);
+        SegmentList allSegments = computeAllSegmentsForCell(seed, cellX, cellY);
 
         // Sample segments into pixel cache
         if (cache != null) {
@@ -3617,7 +3649,7 @@ public class DendrySampler implements Sampler {
      * Compute all segments for a specific cell (used for pixel cache population).
      * Uses cell center coordinates for higher resolution cell lookup.
      */
-    private List<Segment3D> computeAllSegmentsForCell(long seed, int cellX, int cellY) {
+    private SegmentList computeAllSegmentsForCell(long seed, int cellX, int cellY) {
         Cell cell1 = new Cell(cellX, cellY, 1);
         // Use cell center for consistent higher resolution cell lookup
         double queryCenterX = cellX + 0.5;
