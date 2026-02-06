@@ -1080,4 +1080,38 @@ pruneSegmentsToCell
 
 Note "allSegments" that is returned from "generateAllSegments" should not occur until all levels are complete to ensure the correct 
 
-This should simplify, if changes are resulting in additional or more complex code, it is likely something is being misinterpreted.
+Changes for this should simplify the code-base, if changes are resulting in additional or more complex code, it is likely something is being misinterpreted.
+
+######################################################
+
+I'm getting the following error:
+
+java.lang.IndexOutOfBoundsException: Index -1 out of bounds for length 128
+	at java.base/jdk.internal.util.Preconditions.outOfBounds(Preconditions.java:100)
+	at java.base/jdk.internal.util.Preconditions.outOfBoundsCheckIndex(Preconditions.java:106)
+	at java.base/jdk.internal.util.Preconditions.checkIndex(Preconditions.java:302)
+	at java.base/java.util.Objects.checkIndex(Objects.java:365)
+	at java.base/java.util.ArrayList.get(ArrayList.java:428)
+	at dendryterra.SegmentList.getPoint(SegmentList.java:113)
+
+
+    ############################################
+
+createSubdividedSegments (line 466) needs some fixes:
+
+1. 
+
+
+Some of the tangents appear to huge angle deviations causing significant twist.
+
+
+####################################################
+
+Reminder: Final ToDo:
+
+Remove all unused / legacy functions.
+Remove unnecessary fields in Point3D:
+    public final PointType srtType;
+    public final PointType endType;
+    public final Point3D srt;
+    public final Point3D end;

@@ -10,7 +10,7 @@ public class SegmentListConfig {
     public double curvature = 0.0;
     public double curvatureFalloff = 0.0;
     public double tangentStrength = 1.0;
-    public double maxTwistAngle = 1.0;
+    public double maxTwistAngle = 0.1745; // ~10 degrees in radians, reduced by jitter magnitude
     public double SlopeWithoutTwist = 0.5;
     
     public SegmentListConfig() {}

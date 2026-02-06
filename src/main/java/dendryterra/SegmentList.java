@@ -455,6 +455,10 @@ public class SegmentList {
      * Create subdivided segments between two points using spline or linear interpolation.
      * Uses global configuration parameters.
      *
+     * Note: Hermite splines use uniform parameter spacing (t), not uniform arc length.
+     * Strong tangents or tight curves can cause points to bunch up in certain areas.
+     * Points that end up too close together (< 0.5% of original segment length) are skipped.
+     *
      * @param srtIdx Start point index
      * @param endIdx End point index
      * @param level Resolution level
@@ -476,35 +480,66 @@ public class SegmentList {
 
         // Create intermediate points
         int prevIdx = srtIdx;
+        Vec2D prevTangent = tangentSrt;
+
+        // Minimum distance threshold: 0.5% of original segment length
+        double segLength = srt.position.projectZ().distanceTo(end.position.projectZ());
+        double minDistanceThreshold = segLength * 0.005;
 
         for (int i = 1; i < numDivisions; i++) {
             double t = (double) i / numDivisions;
             Point3D intermediatePoint;
+            double jitterMagnitude = 0;
 
             if (config.useSplines && config.curvature > 0) {
                 // Use cubic Hermite spline interpolation with jitter
+                jitterMagnitude = segLength * 0.02; // 2% of segment length
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
                                                            tangentSrt, tangentEnd, t, config.tangentStrength, rng);
             } else {
                 // Use linear interpolation with jitter
+                jitterMagnitude = 0.01; // Small jitter
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, rng);
+            }
+
+            // Check if this point is too close to the previous point
+            NetworkPoint prevPoint = points.get(prevIdx);
+            double distanceToPrev = prevPoint.position.projectZ().distanceTo(intermediatePoint.projectZ());
+
+            if (distanceToPrev < minDistanceThreshold) {
+                // Skip this point - too close to previous point
+                // This can happen with Hermite splines when tangents create tight curves
+                continue;
+            }
+
+            // Compute tangent at this intermediate point
+            Vec2D intermediateTangent;
+            if (config.useSplines && config.curvature > 0 && tangentSrt != null && tangentEnd != null) {
+                // Compute tangent from Hermite spline derivative
+                intermediateTangent = computeHermiteTangent(srt.position, end.position,
+                                                           tangentSrt, tangentEnd, t, config.tangentStrength);
+                // Apply random twist, scaled by jitter magnitude
+                intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
+                                                       config.maxTwistAngle, rng);
+            } else {
+                // For linear interpolation, use direction from start to end with twist
+                Vec2D baseDirection = new Vec2D(srt.position.projectZ(), end.position.projectZ()).normalize();
+                intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
+                                                       config.maxTwistAngle, rng);
             }
 
             // Add intermediate point with appropriate type
             int intermediateIdx = addPoint(intermediatePoint, intermediateType, level);
 
-            // Create segment from previous to intermediate
-            addBasicSegment(prevIdx, intermediateIdx, level,
-                      prevIdx == srtIdx ? tangentSrt : null,
-                      null);
+            // Create segment from previous to intermediate with computed tangents
+            addBasicSegment(prevIdx, intermediateIdx, level, prevTangent, intermediateTangent);
 
             prevIdx = intermediateIdx;
+            prevTangent = intermediateTangent;
         }
 
         // Create final segment to end point
-        addBasicSegment(prevIdx, endIdx, level,
-                  null,
-                  tangentEnd);
+        addBasicSegment(prevIdx, endIdx, level, prevTangent, tangentEnd);
     }
     
     /**
@@ -555,13 +590,66 @@ public class SegmentList {
         double x = MathUtils.lerp(srt.x, end.x, t);
         double y = MathUtils.lerp(srt.y, end.y, t);
         double z = MathUtils.lerp(srt.z, end.z, t);
-        
+
         // Add small deterministic jitter for natural appearance
         double jitterMagnitude = 0.01; // Small jitter
         double jitterX = (rng.nextDouble() - 0.5) * jitterMagnitude;
         double jitterY = (rng.nextDouble() - 0.5) * jitterMagnitude;
-        
+
         return new Point3D(x + jitterX, y + jitterY, z);
+    }
+
+    /**
+     * Compute the tangent direction at parameter t along a Hermite spline.
+     * Returns the derivative of the spline, which gives the direction at that point.
+     */
+    private Vec2D computeHermiteTangent(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd,
+                                        double t, double tangentStrength) {
+        double segLength = srt.projectZ().distanceTo(end.projectZ());
+        double tangentScale = segLength * tangentStrength;
+
+        // Hermite basis function derivatives
+        double t2 = t * t;
+        double h00_prime = 6 * t2 - 6 * t;
+        double h10_prime = 3 * t2 - 4 * t + 1;
+        double h01_prime = -6 * t2 + 6 * t;
+        double h11_prime = 3 * t2 - 2 * t;
+
+        double dx = h00_prime * srt.x + h10_prime * (tangentSrt != null ? tangentSrt.x * tangentScale : 0)
+                  + h01_prime * end.x + h11_prime * (tangentEnd != null ? tangentEnd.x * tangentScale : 0);
+        double dy = h00_prime * srt.y + h10_prime * (tangentSrt != null ? tangentSrt.y * tangentScale : 0)
+                  + h01_prime * end.y + h11_prime * (tangentEnd != null ? tangentEnd.y * tangentScale : 0);
+
+        return new Vec2D(dx, dy).normalize();
+    }
+
+    /**
+     * Apply a random twist (rotation) to a tangent vector.
+     * The twist amount is scaled based on jitter magnitude - more jitter means less twist.
+     *
+     * @param tangent Base tangent direction
+     * @param jitterMagnitude Magnitude of position jitter applied
+     * @param maxTwist Maximum twist angle in radians
+     * @param rng Random number generator
+     * @return Twisted tangent vector
+     */
+    private Vec2D applyTangentTwist(Vec2D tangent, double jitterMagnitude, double maxTwist, Random rng) {
+        // Compute twist reduction factor based on jitter
+        // More jitter (more displacement) -> less twist
+        // Use exponential decay: twist scales down as jitter increases
+        double jitterRatio = Math.min(1.0, jitterMagnitude / 0.02); // Normalize to typical jitter scale
+        double twistScale = Math.exp(-2.0 * jitterRatio); // Exponential decay
+
+        // Random twist angle in range [-maxTwist, +maxTwist], scaled by twist reduction
+        double twistAngle = (rng.nextDouble() * 2.0 - 1.0) * maxTwist * twistScale;
+
+        // Apply rotation
+        double cos = Math.cos(twistAngle);
+        double sin = Math.sin(twistAngle);
+        double newX = tangent.x * cos - tangent.y * sin;
+        double newY = tangent.x * sin + tangent.y * cos;
+
+        return new Vec2D(newX, newY);
     }
 
     /**
