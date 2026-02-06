@@ -1025,3 +1025,19 @@ Issues:
 #########################################################3
 
 Make changes if necessary so that addSegmentWithDivisions only applies jitter to new intermediate points, not to the start / end points used to start the creation of the segment.
+
+##############################################################
+
+Update getExistingConnectionDirection to actually find the tangent of connecting segment to the point, instead of the slope tangent of the point.
+
+#################################################
+
+Some subdivided nodes appear much closer tto the original point than I would expect.  Update or confirm the following:
+
+1. That divided segment points are placed on the hermite spline equidistant according to the number of divisions to create, and jitter is added to those positions.
+2. That tangent strengths are based / multiplied by the distances between the original points before subdivision.
+
+################################################################################
+
+
+Make changes if necessary so that the tangent derivation in computePointTangent at (point.connections == 1) is properly rotating / negating the attached tangent so that the new segment is continuous.  If connected point is an end point and it's connected to the end point of the segment being created, or if the connected point is an start point and it's connected to the start point of the segment being created, the tangent must be negated / rotated 180 degrees so that the constructed splines aligned.  Otherwise the tangent should be taken directly.

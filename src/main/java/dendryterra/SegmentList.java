@@ -338,14 +338,12 @@ public class SegmentList {
             double twist = (NoiseGen.nextFloat() * 2.0 * Math.min(slope/config.SlopeWithoutTwist, 1.0) - 1.0) * config.maxTwistAngle;
             return rotateVector(angle, twist);
         } else if (point.connections == 1) {
-            // One existing connection - check if aligned with target
-            Vec2D existingDir = getExistingConnectionDirection(pointIdx);
-            if (existingDir != null) {
-                double alignment = toTarget.dot(existingDir);
-                // Aligned - use existing for continuity
-                return isStart ? existingDir : existingDir.negate();
+            // One existing connection - use tangent continuity for smooth splines
+            Vec2D continuousTangent = getContinuousTangent(pointIdx, isStart);
+            if (continuousTangent != null) {
+                return continuousTangent;
             }
-            // Not aligned - use direction to target with small offset
+            // Fallback - use direction to target with small offset
             double offset = (Math.random() - 0.5) * config.SlopeWithoutTwist * 0.5;
             return rotateVector(toTarget, offset);
         } else {
@@ -362,8 +360,65 @@ public class SegmentList {
     }
     
     /**
+     * Get the continuous tangent for C1 spline continuity when connecting to an existing segment.
+     * Properly handles all connection cases:
+     * - existing END → new START: same direction (forward chain)
+     * - existing START → new END: same direction (backward chain)
+     * - existing END → new END: negate (meeting point)
+     * - existing START → new START: negate (splitting point)
+     *
+     * @param pointIdx The point index where connection occurs
+     * @param isNewSegmentStart True if this is the START of the new segment being created
+     * @return The properly oriented tangent for C1 continuity, or null if no connection
+     */
+    private Vec2D getContinuousTangent(int pointIdx, boolean isNewSegmentStart) {
+        List<SegmentConnection> connections = pointToSegments.get(pointIdx);
+        if (connections == null || connections.isEmpty()) {
+            return null;
+        }
+
+        // Use the first connected segment
+        SegmentConnection conn = connections.get(0);
+        Segment3D seg = segments.get(conn.segmentIndex);
+
+        // Get the raw tangent from the existing segment
+        Vec2D existingTangent;
+        if (conn.isStart) {
+            // Point is at existing segment's START
+            existingTangent = seg.tangentSrt;
+            if (existingTangent == null) {
+                // Fallback: direction from start toward end
+                NetworkPoint point = points.get(pointIdx);
+                existingTangent = new Vec2D(point.position.projectZ(), seg.end.projectZ()).normalize();
+            }
+        } else {
+            // Point is at existing segment's END
+            existingTangent = seg.tangentEnd;
+            if (existingTangent == null) {
+                // Fallback: direction from start toward end (same as tangent direction)
+                NetworkPoint point = points.get(pointIdx);
+                existingTangent = new Vec2D(seg.srt.projectZ(), point.position.projectZ()).normalize();
+            }
+        }
+
+        // Determine if we need to negate based on connection types:
+        // Same-side connections (start-start or end-end): negate for opposite flow
+        // Opposite-side connections (start-end or end-start): same direction for continuous flow
+        boolean sameType = (conn.isStart == isNewSegmentStart);
+
+        if (sameType) {
+            // start→start or end→end: negate for proper flow direction
+            return existingTangent.negate();
+        } else {
+            // end→start or start→end: same direction for continuous flow
+            return existingTangent;
+        }
+    }
+
+    /**
      * Get the tangent direction of an existing segment connected to a point.
      * Returns the actual stored tangent from the segment, using index-based lookup.
+     * Note: For C1 continuity, use getContinuousTangent instead.
      */
     private Vec2D getExistingConnectionDirection(int pointIdx) {
         List<SegmentConnection> connections = pointToSegments.get(pointIdx);
@@ -384,13 +439,13 @@ public class SegmentList {
             NetworkPoint point = points.get(pointIdx);
             return new Vec2D(point.position.projectZ(), seg.end.projectZ()).normalize();
         } else {
-            // Point is at segment end - return the end tangent (negated to point outward)
+            // Point is at segment end - return the end tangent
             if (seg.tangentEnd != null) {
-                return seg.tangentEnd.negate();
+                return seg.tangentEnd;
             }
             // Fallback to computed direction if no tangent stored
             NetworkPoint point = points.get(pointIdx);
-            return new Vec2D(point.position.projectZ(), seg.srt.projectZ()).normalize();
+            return new Vec2D(seg.srt.projectZ(), point.position.projectZ()).normalize();
         }
     }
     

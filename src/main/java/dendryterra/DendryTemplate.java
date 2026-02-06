@@ -181,7 +181,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("tangent-strength")
     @Default
-    private @Meta double tangentStrength = 0.4;
+    private @Meta double tangentStrength = 1.0;
 
     /**
      * Pixel cache resolution for faster repeated queries.
