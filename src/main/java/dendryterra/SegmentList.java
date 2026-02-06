@@ -14,26 +14,43 @@ import java.util.*;
 public class SegmentList {
     private final List<NetworkPoint> points;
     private final List<Segment3D> segments;
+    private final Map<Integer, List<SegmentConnection>> pointToSegments;  // Maps point index to connected segments
     private int nextIndex;  // For generating unique indices
     private SegmentListConfig config;  // Global configuration
+
+    /**
+     * Tracks a segment connection to a point, storing which end of the segment connects.
+     */
+    private static class SegmentConnection {
+        final int segmentIndex;
+        final boolean isStart;  // true if point is at segment start, false if at end
+
+        SegmentConnection(int segmentIndex, boolean isStart) {
+            this.segmentIndex = segmentIndex;
+            this.isStart = isStart;
+        }
+    }
 
     public SegmentList() {
         this.points = new ArrayList<>();
         this.segments = new ArrayList<>();
+        this.pointToSegments = new HashMap<>();
         this.nextIndex = 0;
         this.config = new SegmentListConfig();
     }
-    
+
     public SegmentList(long salt) {
         this.points = new ArrayList<>();
         this.segments = new ArrayList<>();
+        this.pointToSegments = new HashMap<>();
         this.nextIndex = 0;
         this.config = new SegmentListConfig(salt);
     }
-    
+
     public SegmentList(SegmentListConfig config) {
         this.points = new ArrayList<>();
         this.segments = new ArrayList<>();
+        this.pointToSegments = new HashMap<>();
         this.nextIndex = 0;
         this.config = config;
     }
@@ -146,7 +163,14 @@ public class SegmentList {
             tangentSrt, tangentEnd,
             srt.pointType, end.pointType
         );
+        int segmentIndex = segments.size();
         segments.add(segment);
+
+        // Track segment connections by point index
+        pointToSegments.computeIfAbsent(srtIdx, k -> new ArrayList<>())
+            .add(new SegmentConnection(segmentIndex, true));
+        pointToSegments.computeIfAbsent(endIdx, k -> new ArrayList<>())
+            .add(new SegmentConnection(segmentIndex, false));
 
         // Update connection counts
         points.set(srtIdx, srt.incrementConnections());
@@ -318,10 +342,8 @@ public class SegmentList {
             Vec2D existingDir = getExistingConnectionDirection(pointIdx);
             if (existingDir != null) {
                 double alignment = toTarget.dot(existingDir);
-                if (alignment > 0.7) {
-                    // Aligned - use existing for continuity
-                    return isStart ? existingDir : existingDir.negate();
-                }
+                // Aligned - use existing for continuity
+                return isStart ? existingDir : existingDir.negate();
             }
             // Not aligned - use direction to target with small offset
             double offset = (Math.random() - 0.5) * config.SlopeWithoutTwist * 0.5;
@@ -340,22 +362,36 @@ public class SegmentList {
     }
     
     /**
-     * Get the direction of existing connections from a point.
+     * Get the tangent direction of an existing segment connected to a point.
+     * Returns the actual stored tangent from the segment, using index-based lookup.
      */
     private Vec2D getExistingConnectionDirection(int pointIdx) {
-        NetworkPoint point = points.get(pointIdx);
-        Point3D pointPos = point.position;
-        
-        // Find segments connected to this point
-        for (Segment3D seg : segments) {
-            if (seg.srt.distanceSquaredTo(pointPos) < MathUtils.EPSILON) {
-                return new Vec2D(pointPos.projectZ(), seg.end.projectZ()).normalize();
-            }
-            if (seg.end.distanceSquaredTo(pointPos) < MathUtils.EPSILON) {
-                return new Vec2D(pointPos.projectZ(), seg.srt.projectZ()).normalize();
-            }
+        List<SegmentConnection> connections = pointToSegments.get(pointIdx);
+        if (connections == null || connections.isEmpty()) {
+            return null;
         }
-        return null;
+
+        // Use the first connected segment
+        SegmentConnection conn = connections.get(0);
+        Segment3D seg = segments.get(conn.segmentIndex);
+
+        if (conn.isStart) {
+            // Point is at segment start - return the start tangent
+            if (seg.tangentSrt != null) {
+                return seg.tangentSrt;
+            }
+            // Fallback to computed direction if no tangent stored
+            NetworkPoint point = points.get(pointIdx);
+            return new Vec2D(point.position.projectZ(), seg.end.projectZ()).normalize();
+        } else {
+            // Point is at segment end - return the end tangent (negated to point outward)
+            if (seg.tangentEnd != null) {
+                return seg.tangentEnd.negate();
+            }
+            // Fallback to computed direction if no tangent stored
+            NetworkPoint point = points.get(pointIdx);
+            return new Vec2D(point.position.projectZ(), seg.srt.projectZ()).normalize();
+        }
     }
     
     /**
@@ -632,6 +668,10 @@ public class SegmentList {
         }
         for (Segment3D s : this.segments) {
             copy.segments.add(s);  // Segment3D is immutable
+        }
+        // Copy point-to-segment mapping
+        for (Map.Entry<Integer, List<SegmentConnection>> entry : this.pointToSegments.entrySet()) {
+            copy.pointToSegments.put(entry.getKey(), new ArrayList<>(entry.getValue()));
         }
         return copy;
     }

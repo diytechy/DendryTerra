@@ -1021,3 +1021,7 @@ Issues:
 1. Discontinuities are present on trunk, something is causing segments to not get created deterministically.
 2. The trunk does not continue upward from every newly created point, instead it is branching out, which is not expected behavior (checked with SEGMENT_DEBUGGING=15).  The trunk should be non-branching, is the newly created index point used as the connection point for the next iteration?
 3. combineConstellationSegmentLists appears very complicated.  Please make sure new constellation points get their index continued from the last created point from the previous index, that way the points and segments do not need to be reindexed, and should be able to be copied over directly.
+
+#########################################################3
+
+Make changes if necessary so that addSegmentWithDivisions only applies jitter to new intermediate points, not to the start / end points used to start the creation of the segment.
