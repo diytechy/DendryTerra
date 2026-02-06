@@ -151,6 +151,9 @@ public final class Segment3D {
         if (isPointBased()) {
             return srt;
         }
+        if (!isIndexBased()) {
+            throw new IllegalStateException("Segment has neither Point3D nor valid indices");
+        }
         return list.getPoint(srtIdx).position;
     }
 
@@ -161,6 +164,9 @@ public final class Segment3D {
     public Point3D getEnd(SegmentList list) {
         if (isPointBased()) {
             return end;
+        }
+        if (!isIndexBased()) {
+            throw new IllegalStateException("Segment has neither Point3D nor valid indices");
         }
         return list.getPoint(endIdx).position;
     }
@@ -173,6 +179,9 @@ public final class Segment3D {
         if (isPointBased() || srtType != null) {
             return srtType;
         }
+        if (!isIndexBased()) {
+            throw new IllegalStateException("Segment has neither Point3D nor valid indices");
+        }
         return list.getPoint(srtIdx).pointType;
     }
 
@@ -183,6 +192,9 @@ public final class Segment3D {
     public PointType getEndType(SegmentList list) {
         if (isPointBased() || endType != null) {
             return endType;
+        }
+        if (!isIndexBased()) {
+            throw new IllegalStateException("Segment has neither Point3D nor valid indices");
         }
         return list.getPoint(endIdx).pointType;
     }

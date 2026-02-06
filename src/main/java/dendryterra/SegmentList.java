@@ -154,14 +154,10 @@ public class SegmentList {
      */
     public void addBasicSegment(int srtIdx, int endIdx, int level,
                            Vec2D tangentSrt, Vec2D tangentEnd) {
-        NetworkPoint srt = points.get(srtIdx);
-        NetworkPoint end = points.get(endIdx);
-
-        // Create Segment3D (using current Point3D-based format)
+        // Create index-based Segment3D
         Segment3D segment = new Segment3D(
-            srt.position, end.position, level,
-            tangentSrt, tangentEnd,
-            srt.pointType, end.pointType
+            srtIdx, endIdx, level,
+            tangentSrt, tangentEnd
         );
         int segmentIndex = segments.size();
         segments.add(segment);
@@ -173,8 +169,10 @@ public class SegmentList {
             .add(new SegmentConnection(segmentIndex, false));
 
         // Update connection counts
-        points.set(srtIdx, srt.incrementConnections());
-        points.set(endIdx, end.incrementConnections());
+        NetworkPoint srtPt = points.get(srtIdx);
+        NetworkPoint endPt = points.get(endIdx);
+        points.set(srtIdx, srtPt.incrementConnections());
+        points.set(endIdx, endPt.incrementConnections());
     }
 
     /**
