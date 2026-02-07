@@ -610,7 +610,8 @@ public class SegmentList {
             double maxJitter = maxSegmentLength * 0.5;
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
-            if (rawMagnitude > MathUtils.EPSILON) {
+            // TODO: Remove level check to allow jitter on all levels.
+            if (rawMagnitude > MathUtils.EPSILON || level==0) {
                 jitterX = (jitterX / rawMagnitude) * scaledMagnitude;
                 jitterY = (jitterY / rawMagnitude) * scaledMagnitude;
             } else {
@@ -653,6 +654,10 @@ public class SegmentList {
                 intermediateTangent = computeHermiteTangent(srt.position, end.position,
                                                            tangentSrt, tangentEnd, t, config.tangentStrength);
                 // Apply random twist, scaled by jitter magnitude
+                // TODO: Allow twist on level 1+
+                if (level == 0) {
+                    jitterMagnitude = 0; // Disable twist for higher levels to maintain smoother branches
+                }
                 intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
                                                        config.maxIntermediateTwistAngle, rng);
             } else {

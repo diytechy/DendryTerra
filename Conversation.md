@@ -1137,7 +1137,23 @@ ava.lang.NullPointerException: Cannot read field "x" because "v" is null
 Ref funcs:
 connectAndDefineSegmentsV2
 
-The intermediate points are not visible in the PIXEL_DEBUG return type for non-trunk level 0 segments or for the stitches.  Please investigate this issue.  I believe it could be an issue in the way the pixel cache is produced or an issue in point types not getting set / getting lost as segment lists are joined.
+The intermediate points (knots) are not visible in the PIXEL_DEBUG return type for non-trunk level 0 segments or for the stitches.  Please investigate this issue.  I believe it could be an issue in the way the pixel cache is produced or an issue in point types not getting set / getting lost as segment lists are joined.
+
+#########################################################
+
+Some updates:
+
+1. In pruneSegmentsToCell, make sure orphaned segments (segments where both end types are "EDGE") are subdivided in half so a single knot remains accessible for higher levels to attach to.
+
+2. Level 2 + segments don't appear to be created, are level 1 segments getting made available for level 2 segments to attach to?
+
+3. Somehow at level 1, jitter is significant enough to allow points to overlap, but this should not be the possible.  Is there a bug around "addSegmentWithDivisions" that allows the jitter to exceed 50% of the maxSegmentLength?
+
+4. The overlap may be due to excessive tangents adopted from lower levels.  In "addSegmentWithDivisions" add a check to saturate / bound the magnitude of the tangent returned from computeTangentsForConnection to be no larger than the magnitude of maxSegmentLength.
+
+##########################################################
+
+Even with no jitter, level 1 segments are returning strange paths, this is due to how to the branches are getting built out.
 
 Make sure distance for order to attached points is closest to original segment, but validation of distance is against fully defined segment.
 
