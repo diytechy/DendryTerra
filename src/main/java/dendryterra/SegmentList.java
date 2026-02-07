@@ -242,6 +242,10 @@ public class SegmentList {
         tangentSrt = boundTangentMagnitude(tangentSrt, distance);
         tangentEnd = boundTangentMagnitude(tangentEnd, distance);
 
+        // Step 1c: Clamp tangent components near cell boundaries to prevent spline overshoot
+        tangentSrt = clampTangentToCellBoundary(tangentSrt, srt.position, distance);
+        tangentEnd = clampTangentToCellBoundary(tangentEnd, end.position, distance);
+
         // Step 2: Subdivide long segments if needed using provided maxSegmentLength
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
         // TODO: Allow subdivision at higher levels after confirming basic segment shape is appropriate.
@@ -298,6 +302,66 @@ public class SegmentList {
         // Scale down to max magnitude while preserving direction
         double scale = maxMagnitude / magnitude;
         return new Vec2D(tangent.x * scale, tangent.y * scale);
+    }
+
+    /**
+     * Clamp tangent components to prevent Hermite spline from crossing cell boundaries.
+     * For a cubic Hermite spline, the maximum overshoot from a tangent is approximately
+     * 0.25 * tangent_component * segmentLength * tangentStrength.
+     *
+     * @param tangent The tangent vector to clamp
+     * @param position The point position (to compute distance to cell edges)
+     * @param segmentLength Length of the segment
+     * @return Clamped tangent vector
+     */
+    private Vec2D clampTangentToCellBoundary(Vec2D tangent, Point3D position, double segmentLength) {
+        if (tangent == null || position == null) return tangent;
+
+        // Get local position within the cell [0, 1) x [0, 1)
+        double localX = position.x - Math.floor(position.x);
+        double localY = position.y - Math.floor(position.y);
+
+        // Distance to each cell edge
+        double distToLeft = localX;
+        double distToRight = 1.0 - localX;
+        double distToBottom = localY;
+        double distToTop = 1.0 - localY;
+
+        // Maximum allowed tangent component = distToEdge / (overshootFactor * segmentLength * tangentStrength)
+        // Using 0.25 as conservative overshoot factor for cubic Hermite
+        double overshootFactor = 0.25 * segmentLength * config.tangentStrength;
+        if (overshootFactor < MathUtils.EPSILON) return tangent;
+
+        double clampedX = tangent.x;
+        double clampedY = tangent.y;
+
+        // Clamp positive x component (pointing right)
+        if (tangent.x > 0) {
+            double maxX = distToRight / overshootFactor;
+            clampedX = Math.min(tangent.x, maxX);
+        }
+        // Clamp negative x component (pointing left)
+        else if (tangent.x < 0) {
+            double maxNegX = distToLeft / overshootFactor;
+            clampedX = Math.max(tangent.x, -maxNegX);
+        }
+
+        // Clamp positive y component (pointing up/top)
+        if (tangent.y > 0) {
+            double maxY = distToTop / overshootFactor;
+            clampedY = Math.min(tangent.y, maxY);
+        }
+        // Clamp negative y component (pointing down/bottom)
+        else if (tangent.y < 0) {
+            double maxNegY = distToBottom / overshootFactor;
+            clampedY = Math.max(tangent.y, -maxNegY);
+        }
+
+        // Only create new vector if clamping occurred
+        if (clampedX != tangent.x || clampedY != tangent.y) {
+            return new Vec2D(clampedX, clampedY);
+        }
+        return tangent;
     }
 
     /**

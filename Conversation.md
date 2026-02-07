@@ -1176,10 +1176,15 @@ Remove "SEGMENT_DEBUGGING" 40 and 50 in it's current form.  Now add debug 40 to 
 
 ##########################################################
 
-New issue: createSubdividedSegments is changing the shape of the original curve (addBasicSegment).
+Update debug definition 40 so that it works on concurrent levels (level 1+)
 
-This would by typical, but at level 1+ jitter is suppressed such that createSubdividedSegments should give the same shape as addBasicSegment.
+Ex: If at level 1, just return the points as 0-length segments as done now.
 
+If at level 2, fully connect level 1 (previous level) and then return level 2 points only as 0-length segments.
+
+I want this change to help debug why I don't see any level 2 segments.
+
+Also add logger context in debug 40 to indicate for the highest level (resolution) selected how many points were drafted, how many remained after merging, and how many remained after probabilistically removing.
 
 ##########################################################
 

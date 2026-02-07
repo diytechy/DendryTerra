@@ -58,6 +58,10 @@ sampler:                # Optional control function
   type: OPEN_SIMPLEX_2
   frequency: 0.0001
 
+x: 0
+z: 4000
+rez: 5
+
 Colordef:
   
 -1.0, 0.0, 0.0, 0.0

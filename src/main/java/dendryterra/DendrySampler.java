@@ -533,7 +533,68 @@ public class DendrySampler implements Sampler {
             // Otherwise segment is entirely outside - skip it
         }
 
+        // Post-processing: Mark points near cell edges as EDGE if we have enough segments
+        // This prevents higher-level segments from connecting near boundaries
+        if (result.getSegmentCount() > 4) {
+            markEdgePointsNearBoundary(result, minX, maxX, minY, maxY, 2);
+        }
+
         return result;
+    }
+
+    /**
+     * Mark points closest to each cell edge as EDGE type.
+     * This prevents segment creation near edges which can cause visual discontinuities.
+     *
+     * @param segList The segment list to modify
+     * @param minX Cell minimum X
+     * @param maxX Cell maximum X
+     * @param minY Cell minimum Y
+     * @param maxY Cell maximum Y
+     * @param countPerEdge Number of points to mark per edge
+     */
+    private void markEdgePointsNearBoundary(SegmentList segList, double minX, double maxX,
+                                             double minY, double maxY, int countPerEdge) {
+        List<NetworkPoint> points = segList.getPoints();
+
+        // For each edge, find the N closest non-EDGE points and mark them as EDGE
+        // Left edge (closest to minX)
+        markClosestPointsToEdge(segList, points, p -> p.position.x - minX, countPerEdge);
+        // Right edge (closest to maxX)
+        markClosestPointsToEdge(segList, points, p -> maxX - p.position.x, countPerEdge);
+        // Bottom edge (closest to minY)
+        markClosestPointsToEdge(segList, points, p -> p.position.y - minY, countPerEdge);
+        // Top edge (closest to maxY)
+        markClosestPointsToEdge(segList, points, p -> maxY - p.position.y, countPerEdge);
+    }
+
+    /**
+     * Mark the N points closest to an edge (as measured by distanceFunc) as EDGE type.
+     * Only considers points that aren't already EDGE type.
+     */
+    private void markClosestPointsToEdge(SegmentList segList, List<NetworkPoint> points,
+                                          java.util.function.Function<NetworkPoint, Double> distanceFunc,
+                                          int count) {
+        // Collect non-EDGE points with their distances
+        List<int[]> candidates = new ArrayList<>();  // [index, distance * 10000]
+        for (int i = 0; i < points.size(); i++) {
+            NetworkPoint p = points.get(i);
+            if (p.pointType == PointType.EDGE) continue;
+            double dist = distanceFunc.apply(p);
+            if (dist >= 0) {
+                candidates.add(new int[]{i, (int)(dist * 10000)});
+            }
+        }
+
+        // Sort by distance (ascending)
+        candidates.sort((a, b) -> Integer.compare(a[1], b[1]));
+
+        // Mark the closest N points as EDGE
+        for (int i = 0; i < Math.min(count, candidates.size()); i++) {
+            int idx = candidates.get(i)[0];
+            NetworkPoint p = points.get(idx);
+            segList.updatePoint(idx, p.withPointType(PointType.EDGE));
+        }
     }
 
     /**
@@ -888,19 +949,29 @@ public class DendrySampler implements Sampler {
     private List<Point3D> generatePointsForCellAtLevel(int cellX, int cellY, int level) {
         List<Point3D> points = new ArrayList<>();
         int pointsPerAxis = getPointsPerCellForLevel(level);
-        double gridSpacing = getGridSpacingForLevel(level);
 
-        // Generate a grid of points within the cell [cellX, cellX+1) x [cellY, cellY+1)
+        // Convert cell indices to world coordinates
+        // For level 1: resolution=1, cells are 1x1 in world space
+        // For level 2: resolution=2, cells are 0.5x0.5 in world space, etc.
+        double cellResolution = getCellResolutionForLevel(level);
+        double worldCellStartX = (double) cellX / cellResolution;
+        double worldCellStartY = (double) cellY / cellResolution;
+        double cellWorldSize = 1.0 / cellResolution;
+
+        // Grid spacing in world coordinates (spacing between point centers within this cell)
+        double worldGridSpacing = cellWorldSize / pointsPerAxis;
+
+        // Generate a grid of points within the cell
         for (int i = 0; i < pointsPerAxis; i++) {
             for (int j = 0; j < pointsPerAxis; j++) {
                 // Position point at center of each sub-cell with deterministic jitter
-                double baseX = cellX + (j + 0.5) * gridSpacing;
-                double baseY = cellY + (i + 0.5) * gridSpacing;
+                double baseX = worldCellStartX + (j + 0.5) * worldGridSpacing;
+                double baseY = worldCellStartY + (i + 0.5) * worldGridSpacing;
 
                 // Add deterministic jitter based on position and level
                 Random rng = initRandomGenerator((int)(baseX * 10000), (int)(baseY * 10000), level);
-                double jitterX = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
-                double jitterY = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
+                double jitterX = (rng.nextDouble() - 0.5) * worldGridSpacing * 0.8;
+                double jitterY = (rng.nextDouble() - 0.5) * worldGridSpacing * 0.8;
 
                 double px = baseX + jitterX;
                 double py = baseY + jitterY;
