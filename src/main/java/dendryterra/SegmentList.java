@@ -246,7 +246,7 @@ public class SegmentList {
             addBasicSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
         } else {
             // Multiple segments - pass computed tangents and RNG to avoid recomputation
-            createSubdividedSegments(srtIdx, endIdx, level, numDivisions, tangentSrt, tangentEnd, rng);
+            createSubdividedSegments(srtIdx, endIdx, level, maxSegmentLength, distance, tangentSrt, tangentEnd, rng);
         }
     }
     
@@ -467,8 +467,10 @@ public class SegmentList {
      * @param tangentEnd Pre-computed tangent at end point
      * @param rng Random number generator for deterministic jitter
      */
-    private void createSubdividedSegments(int srtIdx, int endIdx, int level, int numDivisions,
-                                          Vec2D tangentSrt, Vec2D tangentEnd, Random rng) {
+    private void createSubdividedSegments(int srtIdx, int endIdx, int level, double maxSegmentLength,
+                                          double distance, Vec2D tangentSrt, Vec2D tangentEnd, Random rng) {
+                                            
+        int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
 
@@ -482,9 +484,9 @@ public class SegmentList {
         int prevIdx = srtIdx;
         Vec2D prevTangent = tangentSrt;
 
-        // Minimum distance threshold: 0.5% of original segment length
-        double segLength = srt.position.projectZ().distanceTo(end.position.projectZ());
-        double minDistanceThreshold = segLength * 0.005;
+        // Minimum distance threshold: % of intended segment length
+        double segLength = maxSegmentLength;
+        double minDistanceThreshold = segLength * 0.2;
 
         for (int i = 1; i < numDivisions; i++) {
             double t = (double) i / numDivisions;
@@ -502,11 +504,21 @@ public class SegmentList {
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, rng);
             }
 
-            // Check if this point is too close to the previous point
-            NetworkPoint prevPoint = points.get(prevIdx);
-            double distanceToPrev = prevPoint.position.projectZ().distanceTo(intermediatePoint.projectZ());
+            // Check if this point is too close to the previous point or ends
+            double distanceToSel = Double.MAX_VALUE;
+            if (i==1) {
+                // First intermediate point - check distance to start
+                distanceToSel = srt.position.projectZ().distanceTo(intermediatePoint.projectZ());
+            } else if (i == numDivisions - 1) {
+                // Last intermediate point - check distance to end
+                distanceToSel = end.position.projectZ().distanceTo(intermediatePoint.projectZ());
+            }
+            else{
+                NetworkPoint prevPoint = points.get(prevIdx);
+                distanceToSel = prevPoint.position.projectZ().distanceTo(intermediatePoint.projectZ());
+            }
 
-            if (distanceToPrev < minDistanceThreshold) {
+            if (distanceToSel < minDistanceThreshold) {
                 // Skip this point - too close to previous point
                 // This can happen with Hermite splines when tangents create tight curves
                 continue;

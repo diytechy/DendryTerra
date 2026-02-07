@@ -3589,17 +3589,8 @@ public class DendrySampler implements Sampler {
             //   1 = ORIGINAL (initial star/point)
             //   0 = segment line only (pointType=-1)
             //  -1 = no data
-            if (data.pointType == PointType.LEAF.getValue()) {
-                return 4;  // Leaf point
-            } else if (data.pointType == PointType.KNOT.getValue()) {
-                return 3;  // Subdivision/knot point
-            } else if (data.pointType == PointType.TRUNK.getValue()) {
-                return 2;  // Trunk point
-            } else if (data.pointType == PointType.ORIGINAL.getValue()) {
-                return 1;  // Original star point
-            } else {
-                return 0;  // Segment line only (pointType=-1)
-            }
+            // Direct mapping: return pointType
+            return data.pointType;
         } else {
             // PIXEL_LEVEL
             return data.level;
