@@ -41,7 +41,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 20;
+    private static final int SEGMENT_DEBUGGING = 30;
 
     // Configuration parameters
     private final int resolution;
@@ -1539,16 +1539,19 @@ public class DendrySampler implements Sampler {
         Set<Long> seen = new HashSet<>();
 
         for (Segment3D seg : segList.getSegments()) {
-            long srtKey = quantizePositionForCombine(seg.srt);
+            Point3D srtPos = seg.getSrt(segList);
+            Point3D endPos = seg.getEnd(segList);
+
+            long srtKey = quantizePositionForCombine(srtPos);
             if (!seen.contains(srtKey)) {
                 seen.add(srtKey);
-                endpoints.add(seg.srt);
+                endpoints.add(srtPos);
             }
 
-            long endKey = quantizePositionForCombine(seg.end);
+            long endKey = quantizePositionForCombine(endPos);
             if (!seen.contains(endKey)) {
                 seen.add(endKey);
-                endpoints.add(seg.end);
+                endpoints.add(endPos);
             }
         }
 
