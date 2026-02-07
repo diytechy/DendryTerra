@@ -2020,8 +2020,8 @@ public class DendrySampler implements Sampler {
     private void connectAndDefineSegmentsV2(UnconnectedPoints unconnected, SegmentList segList,
                                              double maxSegmentDistance, double mergeDistance,
                                              int level, int cellX, int cellY) {
-        double maxDistSq = maxSegmentDistance * maxSegmentDistance;
-        double mergeDistSq = mergeDistance * mergeDistance;
+        double maxDistSq = maxSegmentDistance; // * maxSegmentDistance;
+        double mergeDistSq = mergeDistance; // * mergeDistance;
 
         // Phase A: For level 0, build trunk from highest point
         if (level == 0) {
@@ -2043,7 +2043,7 @@ public class DendrySampler implements Sampler {
 
         // Phase B: Grow network from existing segments
         // Find unconnected points within range and connect them
-        int maxIterations = unconnected.totalSize() * 3;
+        int maxIterations = unconnected.totalSize() * 10;
         int iterations = 0;
 
         while (!unconnected.isEmpty() && iterations < maxIterations) {
@@ -2083,7 +2083,7 @@ public class DendrySampler implements Sampler {
      */
     private void buildTrunkV2(UnconnectedPoints unconnected, SegmentList segList,
                                double maxSegmentDistance, double mergeDistance, int level, int cellX, int cellY) {
-        double maxDistSq = maxSegmentDistance * maxSegmentDistance;
+        double maxDistSq = maxSegmentDistance; // * maxSegmentDistance;
 
         // Find lowest unconnected point to start trunk
         int startIdx = unconnected.findLowestUnconnected();

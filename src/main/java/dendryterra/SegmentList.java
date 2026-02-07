@@ -363,44 +363,57 @@ public class SegmentList {
             return new Vec2D(1, 0); // Default direction
         }
         toTarget = toTarget.normalize();
-        // Get slope tangent trajectory based on point:
-        if (isStart) {
-            angle = point.position.getTangentVector();
-            slope = Math.abs(point.position.getSlope());
-        }
-        else {
-            angle = target.position.getTangentVector().negate();
-            slope = Math.abs(point.position.getSlope());
-        }
         // Adjust based on connection count
         if (point.connections == 0) {
+            // Get slope tangent trajectory based on point, also invert the target direction if we are solving for the end condition.
+            if (isStart) {
+                angle = point.position.getTangentVector();
+                slope = Math.abs(point.position.getSlope());
+            }
+            else {
+                angle = target.position.getTangentVector().negate();
+                slope = Math.abs(point.position.getSlope());
+                toTarget = toTarget.negate();
+            }
             // No existing connections - use flow direction with deterministic twist
             double twist = (NoiseGen.nextFloat() * 2.0 * Math.min(slope/config.SlopeWithoutTwist, 1.0) - 1.0) * config.maxTwistAngle;
             Vec2D tangent = rotateVector(angle, twist);
 
-            // Clamp tangent to be within 60 degrees of the target direction
+            // Clamp tangent to be within 60 degrees of the target direction toward the end point.
             // This prevents extreme tangent angles that cause problematic spline behavior
             double maxTangentAngle = Math.PI / 3.0; // 60 degrees in radians
             return clampTangentAngle(tangent, toTarget, maxTangentAngle);
-        } else if (point.connections == 1) {
-            // One existing connection - use tangent continuity for smooth splines
+        } else {
             Vec2D continuousTangent = getContinuousTangent(pointIdx, isStart);
             if (continuousTangent != null) {
-                return continuousTangent;
+                // One existing connection - use tangent continuity for smooth splines
+                if (point.connections == 1) {
+                    return continuousTangent;
+                }
+                // Multiple connections, take random angle between continuous tangent and direction to target
+                else {
+                    // Pick a random angle between continuousTangent and toTarget
+                    double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
+                    double angleTarget = Math.atan2(toTarget.y, toTarget.x);
+
+                    // Calculate the angular difference (taking the shorter path)
+                    double angleDiff = angleTarget - angleContinuous;
+                    // Normalize to [-PI, PI]
+                    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+                    // Pick a random interpolation factor [0, 1] and interpolate the angle
+                    double interpolationFactor = NoiseGen.nextFloat();
+                    double resultAngle = angleContinuous + angleDiff * interpolationFactor;
+
+                    // Create vector at the interpolated angle with the magnitude of continuousTangent
+                    double magnitude = continuousTangent.length();
+                    return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
+                }
             }
             // Fallback - use direction to target with small offset
-            double offset = (Math.random() - 0.5) * config.SlopeWithoutTwist * 0.5;
+            double offset = (NoiseGen.nextFloat() - 0.5) * config.SlopeWithoutTwist * 0.5;
             return rotateVector(toTarget, offset);
-        } else {
-            // Multiple connections - compute offset tangent
-            Vec2D existingDir = getExistingConnectionDirection(pointIdx);
-            if (existingDir != null) {
-                // Offset 20-70 degrees on the side of the target
-                double angleToTarget = Math.atan2(toTarget.y, toTarget.x);
-                double offsetAngle = config.SlopeWithoutTwist * (0.4 + Math.random() * 0.3); // 20-70 degrees
-                return createVectorFromAngle(angleToTarget + offsetAngle);
-            }
-            return toTarget;
         }
     }
     
@@ -433,6 +446,7 @@ public class SegmentList {
             existingTangent = seg.tangentSrt;
             if (existingTangent == null) {
                 // Fallback: direction from start toward end
+                System.err.println("Warning: No tangent available for segment start point index " + pointIdx);
                 NetworkPoint point = points.get(pointIdx);
                 Point3D endPos = seg.getEnd(this);
                 existingTangent = new Vec2D(point.position.projectZ(), endPos.projectZ()).normalize();
@@ -442,6 +456,7 @@ public class SegmentList {
             existingTangent = seg.tangentEnd;
             if (existingTangent == null) {
                 // Fallback: direction from start toward end (same as tangent direction)
+                System.err.println("Warning: No tangent available for segment end point index " + pointIdx);
                 NetworkPoint point = points.get(pointIdx);
                 Point3D srtPos = seg.getSrt(this);
                 existingTangent = new Vec2D(srtPos.projectZ(), point.position.projectZ()).normalize();
@@ -482,19 +497,17 @@ public class SegmentList {
             if (seg.tangentSrt != null) {
                 return seg.tangentSrt;
             }
-            // Fallback to computed direction if no tangent stored
-            NetworkPoint point = points.get(pointIdx);
-            Point3D endPos = seg.getEnd(this);
-            return new Vec2D(point.position.projectZ(), endPos.projectZ()).normalize();
+            // Create warning and return null.
+            System.err.println("Warning: No tangent available for segment start point index " + pointIdx);
+            return null;
         } else {
             // Point is at segment end - return the end tangent
             if (seg.tangentEnd != null) {
                 return seg.tangentEnd;
             }
-            // Fallback to computed direction if no tangent stored
-            NetworkPoint point = points.get(pointIdx);
-            Point3D srtPos = seg.getSrt(this);
-            return new Vec2D(srtPos.projectZ(), point.position.projectZ()).normalize();
+            // Create warning and return null.
+            System.err.println("Warning: No tangent available for segment end point index " + pointIdx);
+            return null;
         }
     }
     

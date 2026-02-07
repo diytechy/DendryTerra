@@ -1115,9 +1115,14 @@ Add a check in addSegmentWithDivisions so that newly created tangents for the st
 
 ######################################################
 *********************************************************
-Set trunk level to -1 for trunk node creation?
-Update correct maximum segment length for branches from trunk.
+Ref funcs:
+connectAndDefineSegmentsV2
+
+Issues when assessing branches fom the trunk on level 0:
+1. The intermediate points either are not being created or are not visible in the PIXEL_DEBUG return type.
+2. The connection tangents into the trunk appear to sometimes rotate / bend around the trunk element.  
 Update tangents into "lines" to just be straight in?  Just a little bit of variation?
+Make sure distance for order is closest to original segment, but validation of distance is against fully defined segment.
 
 ##########################################################
 
