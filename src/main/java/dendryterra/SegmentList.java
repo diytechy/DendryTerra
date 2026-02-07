@@ -244,6 +244,10 @@ public class SegmentList {
 
         // Step 2: Subdivide long segments if needed using provided maxSegmentLength
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
+        // TODO: Allow subdivision at higher levels after confirming basic segment shape is appropriate.
+        if (level>0){
+            numDivisions = 0;
+        }
         if (numDivisions <= 1) {
             // Single segment - add directly
             addBasicSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);

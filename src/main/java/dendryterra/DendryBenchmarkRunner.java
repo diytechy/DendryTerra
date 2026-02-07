@@ -56,7 +56,8 @@ public class DendryBenchmarkRunner {
             ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0,    // cachepixels disabled
-            0.1, 0.01  // slopeWhenStraight, lowestSlopeCutoff
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0           // debug
         );
         cases.add(new TestCase("Baseline", "cache=ON, parallel=ON, splines=ON, n=2", baseline, null));
 
@@ -75,7 +76,8 @@ public class DendryBenchmarkRunner {
             ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0,    // cachepixels disabled
-            0.1, 0.01  // slopeWhenStraight, lowestSlopeCutoff
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0           // debug
         );
         cases.add(new TestCase("No Cache", "cache=OFF, parallel=ON, splines=ON", noCache, "Baseline"));
         
@@ -94,7 +96,8 @@ public class DendryBenchmarkRunner {
             ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0,    // cachepixels disabled
-            0.1, 0.01  // slopeWhenStraight, lowestSlopeCutoff
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0           // debug
         );
         cases.add(new TestCase("No Parallel", "cache=ON, parallel=OFF, splines=ON", noParallel, "Baseline"));
 
@@ -113,7 +116,8 @@ public class DendryBenchmarkRunner {
             ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0,    // cachepixels disabled
-            0.1, 0.01  // slopeWhenStraight, lowestSlopeCutoff
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0           // debug
         );
         cases.add(new TestCase("No Splines", "cache=ON, parallel=ON, splines=OFF", noSplines, "Baseline"));
 
@@ -132,7 +136,8 @@ public class DendryBenchmarkRunner {
             ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0,    // cachepixels disabled
-            0.1, 0.01  // slopeWhenStraight, lowestSlopeCutoff
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0           // debug
         );
         cases.add(new TestCase("Minimal", "cache=OFF, parallel=OFF, splines=OFF", minimal, "Baseline"));
 
@@ -148,7 +153,8 @@ public class DendryBenchmarkRunner {
             ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             0.0,    // cachepixels disabled
-            0.1, 0.01  // slopeWhenStraight, lowestSlopeCutoff
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0           // debug
         );
         cases.add(new TestCase("High Resolution", "n=3, all optimizations ON", highRes, "Baseline"));
 
@@ -167,7 +173,8 @@ public class DendryBenchmarkRunner {
             ConstellationScale, constellationShape,
             tangentAngle, tangentStrength,
             1.0,    // cachepixels enabled
-            0.1, 0.01  // slopeWhenStraight, lowestSlopeCutoff
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0           // debug
         );
         cases.add(new TestCase("CachePixels Enabled", "cache=ON, parallel=ON, splines=ON, cachepixels=1.0", cachePixelsEnabled, "Baseline"));
 

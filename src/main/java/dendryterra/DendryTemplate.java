@@ -216,6 +216,21 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double lowestSlopeCutoff = 0.01;
 
+    /**
+     * Debug level for segment visualization.
+     * 0 = normal operation (default)
+     * 5 = stars only for first constellation
+     * 6 = stars only for all constellations
+     * 10 = first constellation segments only
+     * 15 = all constellations before stitching (trunk only)
+     * 20 = all constellations before stitching
+     * 30 = all constellations including stitching
+     * 40 = level 1+ points as 0-length segments (distribution check)
+     */
+    @Value("debug")
+    @Default
+    private @Meta int debug = 0;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -282,7 +297,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             ConstellationScale, constellationShape,
             Math.toRadians(tangentAngle), tangentStrength,
             cachepixels,
-            slopeWhenStraight, lowestSlopeCutoff
+            slopeWhenStraight, lowestSlopeCutoff,
+            debug
         );
     }
 }

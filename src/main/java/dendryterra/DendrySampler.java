@@ -28,7 +28,7 @@ public class DendrySampler implements Sampler {
 
     /**
      * Debug parameter to return segments at different processing stages.
-     * Change this value and recompile to debug segment generation.
+     * Configurable via constructor parameter (default: 0).
      *
      * Values:
      *   0  - Normal operation (default)
@@ -38,10 +38,9 @@ public class DendrySampler implements Sampler {
      *  15  - Return segments for ALL constellations, before stitching, only tree
      *  20  - Return segments for ALL constellations, before stitching
      *  30  - Return segments for all constellations INCLUDING stitching
-     *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
-     *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
+     *  40  - Return level 1+ points as 0-length segments to check distribution before connection
      */
-    private static final int SEGMENT_DEBUGGING = 0;
+    private final int debug;
 
     // Configuration parameters
     private final int resolution;
@@ -286,7 +285,8 @@ public class DendrySampler implements Sampler {
                          int ConstellationScale, ConstellationShape constellationShape,
                          double tangentAngle, double tangentStrength,
                          double cachepixels,
-                         double slopeWhenStraight, double lowestSlopeCutoff) {
+                         double slopeWhenStraight, double lowestSlopeCutoff,
+                         int debug) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -313,6 +313,7 @@ public class DendrySampler implements Sampler {
         this.cachepixels = cachepixels;
         this.slopeWhenStraight = slopeWhenStraight;
         this.lowestSlopeCutoff = lowestSlopeCutoff;
+        this.debug = debug;
 
         // Calculate pixel grid size
         if (cachepixels > 0) {
@@ -1308,14 +1309,14 @@ public class DendrySampler implements Sampler {
             List<Point3D> stars = generateConstellationStars(constInfo);
 
             // DEBUG: Collect stars as zero-length segments for visualization
-            if (SEGMENT_DEBUGGING == 5 || SEGMENT_DEBUGGING == 6) {
+            if (debug == 5 || debug == 6) {
                 for (Point3D star : stars) {
                     int starIdx = starSegmentList.addPoint(star, PointType.ORIGINAL, 0);
                     starSegmentList.addBasicSegment(starIdx, starIdx, 0, null, null);
                 }
             }
-            if (SEGMENT_DEBUGGING == 5) {
-                LOGGER.info("SEGMENT_DEBUGGING=5: Returning stars only for first constellation ({})", stars.size());
+            if (debug == 5) {
+                LOGGER.info("debug=5: Returning stars only for first constellation ({})", stars.size());
                 return starSegmentList;
             }
             // Build network within constellation using CleanAndNetworkPointsV2
@@ -1328,21 +1329,21 @@ public class DendrySampler implements Sampler {
             constellationSegmentLists.put(constKey, segList);
 
             // DEBUG: Return after first constellation only
-            if (SEGMENT_DEBUGGING == 10 && firstConstellation) {
-                LOGGER.info("SEGMENT_DEBUGGING=10: Returning first constellation segments only ({} segments)", segList.getSegmentCount());
+            if (debug == 10 && firstConstellation) {
+                LOGGER.info("debug=10: Returning first constellation segments only ({} segments)", segList.getSegmentCount());
                 return segList;
             }
             firstConstellation = false;
         }
 
         // DEBUG: Return all constellation segments before stitching
-        if ((SEGMENT_DEBUGGING == 20)||(SEGMENT_DEBUGGING == 15)) {
+        if ((debug == 20)||(debug == 15)) {
             SegmentList combined = combineConstellationSegmentLists(constellationSegmentLists);
-            LOGGER.info("SEGMENT_DEBUGGING=20or15: Returning all constellation segments before stitching ({} segments)", combined.getSegmentCount());
+            LOGGER.info("debug=20or15: Returning all constellation segments before stitching ({} segments)", combined.getSegmentCount());
             return combined;
         }
-        if (SEGMENT_DEBUGGING == 6) {
-            LOGGER.info("SEGMENT_DEBUGGING=6: Returning all constellation stars: ({} stars)", starSegmentList.getPointCount());
+        if (debug == 6) {
+            LOGGER.info("debug=6: Returning all constellation stars: ({} stars)", starSegmentList.getPointCount());
             return starSegmentList;
         }
 
@@ -1356,8 +1357,8 @@ public class DendrySampler implements Sampler {
         combinedSegList.normalizeElevations();
 
         // DEBUG: Return all segments including stitching
-        if (SEGMENT_DEBUGGING == 30) {
-            LOGGER.info("SEGMENT_DEBUGGING=30: Returning all segments including stitching ({} segments, {} stitch)", combinedSegList.getSegmentCount(), stitchCount);
+        if (debug == 30) {
+            LOGGER.info("debug=30: Returning all segments including stitching ({} segments, {} stitch)", combinedSegList.getSegmentCount(), stitchCount);
             return combinedSegList;
         }
 
@@ -1583,7 +1584,7 @@ public class DendrySampler implements Sampler {
 
         // Step 1: Use ConstellationInfo's startCell and cellCount to iterate over cells
         // Debug logging for constellation parameters
-        if (SEGMENT_DEBUGGING > 0) {
+        if (debug > 0) {
             LOGGER.info("Constellation: center=({}, {}), size={}, ConstellationScale={}, cellRange=[{},{} +{}x{}]",
                 String.format("%.1f", center.x), String.format("%.1f", center.y),
                 String.format("%.1f", size), ConstellationScale,
@@ -1624,7 +1625,7 @@ public class DendrySampler implements Sampler {
         List<Point3D> starsWithSlopes = computeSlopesForPoints(mergedStars);
 
         // Debug logging for star counts
-        if (SEGMENT_DEBUGGING > 0) {
+        if (debug > 0) {
             // Calculate bounding box of drafted stars
             double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
             double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
@@ -2010,6 +2011,23 @@ public class DendrySampler implements Sampler {
         // Step 4: Create UnconnectedPoints from cleaned points
         UnconnectedPoints unconnected = UnconnectedPoints.fromPoints(cleanedPoints, PointType.ORIGINAL, level);
 
+        // DEBUG 40: Show level 1+ points after merging/cleaning, before connection
+        // This helps debug point distribution issues at higher levels
+        if (debug == 40 && level > 0) {
+            // Copy previous level segments first
+            if (previousLevelSegments != null) {
+                result = previousLevelSegments.copy();
+            }
+            // Add all cleaned level 1+ points as 0-length segments for visualization
+            for (Point3D pt : cleanedPoints) {
+                int idx = result.addPoint(pt, PointType.ORIGINAL, level);
+                result.addBasicSegment(idx, idx, level, null, null);
+            }
+            LOGGER.info("debug=40: Level {} - showing {} cleaned points before connection",
+                       level, cleanedPoints.size());
+            return result;
+        }
+
         // Step 5: Initialize SegmentList
         // For level 0: start empty, build trunk first
         // For level 1+: copy previous level segments (points already connected)
@@ -2041,14 +2059,14 @@ public class DendrySampler implements Sampler {
             buildTrunkV2(unconnected, segList, maxSegmentDistance, mergeDistance, level, cellX, cellY);
 
             // DEBUG: Return after trunk creation
-            if (SEGMENT_DEBUGGING == 15) {
+            if (debug == 15) {
                 // Add 0-length segments for unconnected points for visualization
                 unconnected.forEach(p -> {
                     int idx = segList.addPoint(p.position, p.pointType, level);
                     // 0-length segment for visualization
                     segList.addBasicSegment(idx, idx, level, null, null);
                 });
-                LOGGER.info("SEGMENT_DEBUGGING=15: V2 returning after trunk ({} segments, {} points)",
+                LOGGER.info("debug=15: V2 returning after trunk ({} segments, {} points)",
                            segList.getSegmentCount(), segList.getPointCount());
                 return;
             }
