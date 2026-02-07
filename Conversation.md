@@ -1099,10 +1099,15 @@ java.lang.IndexOutOfBoundsException: Index -1 out of bounds for length 128
 
 createSubdividedSegments (line 466) needs some fixes:
 
-1. 
+1. Tangents should be created for each subdivision instead of being set to null, with some slight jitter / randomized twist (likely +/- 10 degrees.)  The amount of randomized twist should reduce as a function of how much jitter offset the point in the x/y coordinates.  Add the maximum amount of intermediate twist as a config in SegmentListConfig.java.
 
+2. I still see some segments generate with a point very close to the original point, could there be some rounding or other computation error that would lead to an intermediate point getting created very close to the start or end point?
 
 Some of the tangents appear to huge angle deviations causing significant twist.
+
+####################################################
+
+In SEGMENT_DEBUG 15, it seems there are values of 5 returned (Edge type points) but they are not on the cell / grid boundary.  Can you verify pruneSegmentsToCell is dividing only crossing segments that cross the cell boundary and are divided at the cell boundary?  Note segments that do not have at least one point in the cell boundary can be ignored and completely excluded from the pruned segments, that may reduce complexity in this function.
 
 
 ####################################################
