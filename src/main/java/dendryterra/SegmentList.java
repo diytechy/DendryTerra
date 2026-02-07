@@ -377,9 +377,17 @@ public class SegmentList {
                 slope = Math.abs(point.position.getSlope());
             }
             else {
-                angle = target.position.getTangentVector().negate();
+                Vec2D targetTangent = target.position.getTangentVector();
+                angle = (targetTangent != null) ? targetTangent.negate() : null;
                 slope = Math.abs(point.position.getSlope());
             }
+
+            // Fallback to segment tangent if slope-based tangent is not available
+            if (angle == null) {
+                angle = segTangent;
+                slope = 0.0;
+            }
+
             // No existing connections - use flow direction with deterministic twist
             double twist = (NoiseGen.nextFloat() * 2.0 * Math.min(slope/config.SlopeWithoutTwist, 1.0) - 1.0) * config.maxTwistAngle;
             Vec2D tangent = rotateVector(angle, twist);
