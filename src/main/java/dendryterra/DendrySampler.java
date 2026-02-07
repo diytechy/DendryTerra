@@ -1533,28 +1533,13 @@ public class DendrySampler implements Sampler {
 
     /**
      * Extract unique endpoints from a SegmentList's segments.
+     * Since SegmentList already maintains unique NetworkPoints, just return their positions.
      */
     private List<Point3D> extractUniqueEndpointsFromSegmentList(SegmentList segList) {
         List<Point3D> endpoints = new ArrayList<>();
-        Set<Long> seen = new HashSet<>();
-
-        for (Segment3D seg : segList.getSegments()) {
-            Point3D srtPos = seg.getSrt(segList);
-            Point3D endPos = seg.getEnd(segList);
-
-            long srtKey = quantizePositionForCombine(srtPos);
-            if (!seen.contains(srtKey)) {
-                seen.add(srtKey);
-                endpoints.add(srtPos);
-            }
-
-            long endKey = quantizePositionForCombine(endPos);
-            if (!seen.contains(endKey)) {
-                seen.add(endKey);
-                endpoints.add(endPos);
-            }
+        for (NetworkPoint np : segList.getPoints()) {
+            endpoints.add(np.position);
         }
-
         return endpoints;
     }
 
