@@ -237,6 +237,10 @@ public class SegmentList {
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
 
+        // Step 1b: Bound tangent magnitudes to maxSegmentLength to prevent excessive curves
+        tangentSrt = boundTangentMagnitude(tangentSrt, maxSegmentLength);
+        tangentEnd = boundTangentMagnitude(tangentEnd, maxSegmentLength);
+
         // Step 2: Subdivide long segments if needed using provided maxSegmentLength
         double distance = srt.position.distanceTo(end.position);
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
@@ -269,6 +273,27 @@ public class SegmentList {
         double cos = Math.cos(angle);
         double sin = Math.sin(angle);
         return new Vec2D(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+    }
+
+    /**
+     * Bound the magnitude of a tangent vector to a maximum value.
+     * Preserves direction while capping length.
+     *
+     * @param tangent The tangent vector to bound
+     * @param maxMagnitude Maximum allowed magnitude
+     * @return Bounded tangent vector
+     */
+    private Vec2D boundTangentMagnitude(Vec2D tangent, double maxMagnitude) {
+        if (tangent == null) return null;
+
+        double magnitude = tangent.length();
+        if (magnitude <= maxMagnitude || magnitude < MathUtils.EPSILON) {
+            return tangent;
+        }
+
+        // Scale down to max magnitude while preserving direction
+        double scale = maxMagnitude / magnitude;
+        return new Vec2D(tangent.x * scale, tangent.y * scale);
     }
 
     /**
@@ -576,9 +601,22 @@ public class SegmentList {
             Point3D intermediatePoint;
             jitterX = rng.nextDouble() - 0.5; // [-0.5, 0.5]
             jitterY = rng.nextDouble() - 0.5; // [-0.5, 0.5]
-            jitterMagnitude = (jitterX * jitterX + jitterY * jitterY) / Math.sqrt(0.5); // Normalize to [0, 1]
-            jitterX *= maxSegmentLength*0.75;
-            jitterY *= maxSegmentLength*0.75;
+
+            // Normalize jitter to unit vector, then scale to max 50% of segment length
+            double rawMagnitude = Math.sqrt(jitterX * jitterX + jitterY * jitterY);
+            jitterMagnitude = rawMagnitude / Math.sqrt(0.5); // Normalize to [0, 1]
+
+            // Cap jitter magnitude at 50% of maxSegmentLength
+            double maxJitter = maxSegmentLength * 0.5;
+            double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
+
+            if (rawMagnitude > MathUtils.EPSILON) {
+                jitterX = (jitterX / rawMagnitude) * scaledMagnitude;
+                jitterY = (jitterY / rawMagnitude) * scaledMagnitude;
+            } else {
+                jitterX = 0;
+                jitterY = 0;
+            }
             if (config.useSplines && config.curvature > 0) {
                 // Use cubic Hermite spline interpolation with jitter
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,

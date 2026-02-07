@@ -47,7 +47,7 @@ type: DENDRY
 n: 0                    # Resolution levels (1-5)
 epsilon: 0              # Point distribution bias [0, 0.5)
 delta: 0.05             # Segment displacement
-cachepixels: 21.0
+cachepixels: 23.1
 slope: 0.001              # Valley/cliff factor
 gridsize: 2000      # Grid scaling (1000)
 return: PIXEL_DEBUG       # distance, weighted, or elevation

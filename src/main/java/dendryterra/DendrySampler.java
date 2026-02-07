@@ -595,6 +595,7 @@ public class DendrySampler implements Sampler {
 
     /**
      * Clip a segment where both ends are outside but the segment crosses through the cell.
+     * Creates a midpoint KNOT so higher levels can attach to orphaned EDGE-EDGE segments.
      */
     private void clipSegmentBothEnds(SegmentList source, Segment3D seg, SegmentList result,
                                       double minX, double maxX, double minY, double maxY) {
@@ -609,10 +610,34 @@ public class DendrySampler implements Sampler {
             return;
         }
 
-        // Both endpoints are EDGE type
+        // Create midpoint KNOT so higher levels can attach to this segment
+        Point3D midpoint = new Point3D(
+            (entry.x + exit.x) / 2.0,
+            (entry.y + exit.y) / 2.0,
+            (entry.z + exit.z) / 2.0
+        );
+
+        // Compute midpoint tangent by interpolating between entry and exit tangents
+        Vec2D midTangent = null;
+        if (seg.tangentSrt != null && seg.tangentEnd != null) {
+            midTangent = new Vec2D(
+                (seg.tangentSrt.x + seg.tangentEnd.x) / 2.0,
+                (seg.tangentSrt.y + seg.tangentEnd.y) / 2.0
+            ).normalize();
+        } else if (seg.tangentSrt != null) {
+            midTangent = seg.tangentSrt;
+        } else if (seg.tangentEnd != null) {
+            midTangent = seg.tangentEnd;
+        }
+
+        // Add points: EDGE -> KNOT -> EDGE
         int entryIdx = result.addPoint(entry, PointType.EDGE, seg.level);
+        int midIdx = result.addPoint(midpoint, PointType.KNOT, seg.level);
         int exitIdx = result.addPoint(exit, PointType.EDGE, seg.level);
-        result.addBasicSegment(entryIdx, exitIdx, seg.level, seg.tangentSrt, seg.tangentEnd);
+
+        // Create two segments through the midpoint
+        result.addBasicSegment(entryIdx, midIdx, seg.level, seg.tangentSrt, midTangent);
+        result.addBasicSegment(midIdx, exitIdx, seg.level, midTangent, seg.tangentEnd);
     }
 
     /**
