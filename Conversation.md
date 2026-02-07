@@ -1115,14 +1115,31 @@ Add a check in addSegmentWithDivisions so that newly created tangents for the st
 
 ######################################################
 *********************************************************
+The latest build was working for some time but eventually produced an error:
+12:32:34.181 [AWT-EventQueue-0] INFO dendryterra.DendrySampler -- Constellation: center=(-4.5, 25.5), size=3.0, ConstellationScale=1, cellRange=[-7,23 +5x5]
+12:32:34.182 [AWT-EventQueue-0] INFO dendryterra.DendrySampler --   -> drafted=25, bounded=9, merged=9 stars (size=3.000, halfMerge=0.333, center=(-4.50,25.50), draftBounds=[-6.76,23.03 to -2.09,27.80])
+ava.lang.NullPointerException: Cannot read field "x" because "v" is null
+	at dendryterra.SegmentList.rotateVector(SegmentList.java:271)
+	at dendryterra.SegmentList.computePointTangent(SegmentList.java:385)
+	at dendryterra.SegmentList.computeTangentsForConnection(SegmentList.java:343)
+	at dendryterra.SegmentList.addSegmentWithDivisions(SegmentList.java:236)
+	at dendryterra.SegmentList.addSegmentWithDivisions(SegmentList.java:188)
+	at dendryterra.DendrySampler.createSegmentV2(DendrySampler.java:2274)
+	at dendryterra.DendrySampler.connectAndDefineSegmentsV2(DendrySampler.java:2060)
+	at dendryterra.DendrySampler.CleanAndNetworkPointsV2(DendrySampler.java:1996)
+	at dendryterra.DendrySampler.generateAsterism(DendrySampler.java:1300)
+	at dendryterra.DendrySampler.generateAllSegments(DendrySampler.java:439)
+	at dendryterra.DendrySampler.computeAllSegmentsForCell(DendrySampler.java:3630)
+	at dendryterra.DendrySampler.evaluateWithPixelCache(DendrySampler.java:3607)
+	at dendryterra.DendrySampler.getSample(DendrySampler.java:387)
+	at com.dfsek.noise.swing.NoisePanel.getImage(NoisePanel.java:294)
+
 Ref funcs:
 connectAndDefineSegmentsV2
 
-Issues when assessing branches fom the trunk on level 0:
-1. The intermediate points either are not being created or are not visible in the PIXEL_DEBUG return type.
-2. The connection tangents into the trunk appear to sometimes rotate / bend around the trunk element.  
-Update tangents into "lines" to just be straight in?  Just a little bit of variation?
-Make sure distance for order is closest to original segment, but validation of distance is against fully defined segment.
+The intermediate points are not visible in the PIXEL_DEBUG return type for non-trunk level 0 segments or for the stitches.  Please investigate this issue.  I believe it could be an issue in the way the pixel cache is produced or an issue in point types not getting set / getting lost as segment lists are joined.
+
+Make sure distance for order to attached points is closest to original segment, but validation of distance is against fully defined segment.
 
 ##########################################################
 

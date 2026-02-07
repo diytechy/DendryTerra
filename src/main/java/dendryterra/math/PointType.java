@@ -8,8 +8,9 @@ public enum PointType {
 
     /**
      * Point was created as a part of segment subdivision (knot point).
+     * Value 1 is above segment lines (0) but below other point types.
      */
-    KNOT(0),
+    KNOT(1),
 
     /**
      * Point was part of the original trunk creation (main flow path).

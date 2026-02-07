@@ -33,7 +33,7 @@ type: DENDRY
 n: 0                    # Resolution levels (1-5)
 epsilon: 0              # Point distribution bias [0, 0.5)
 delta: 0.05             # Segment displacement
-cachepixels: 21.0
+cachepixels: 23.1
 slope: 0.001              # Valley/cliff factor
 gridsize: 1000      # Grid scaling (1000)
 return: PIXEL_LEVEL       # distance, weighted, or elevation
@@ -56,3 +56,13 @@ constellation-scale: 1
 sampler:                # Optional control function
   type: OPEN_SIMPLEX_2
   frequency: 0.0001
+
+Colordef:
+  
+-1.0, 0.0, 0.0, 0.0
+0.0, 0.0, 0.0, 1.0
+1.0, 0.0, 0.0, 1.0
+2.0, 1.00, 1.0, 0.0
+3.0, 0.0, 1.0, 1.0
+4.0, 1.0, 1.0, 1.0
+5.0, 1.0, 0.0, 0.0

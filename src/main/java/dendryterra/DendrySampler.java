@@ -41,7 +41,7 @@ public class DendrySampler implements Sampler {
      *  40  - Return segments after Phase A of CleanAndNetworkPoints (initial connections)
      *  50  - Return segments after Phase B of CleanAndNetworkPoints (chain connections)
      */
-    private static final int SEGMENT_DEBUGGING = 30;
+    private static final int SEGMENT_DEBUGGING = 0;
 
     // Configuration parameters
     private final int resolution;
@@ -3497,7 +3497,8 @@ public class DendrySampler implements Sampler {
                     if (px >= 0 && px < pixelGridSize && py >= 0 && py < pixelGridSize) {
                         float elevation = (float) pt.z;
                         byte level = (byte) seg.level;
-                        cache.setPixel(px, py, elevation, level, (byte) 1);
+                        // Use value 0 for segment lines so point types (KNOT=0+, TRUNK=2, etc.) take priority
+                        cache.setPixel(px, py, elevation, level, (byte) 0);
                     }
                 }
             }
