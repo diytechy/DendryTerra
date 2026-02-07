@@ -533,65 +533,81 @@ public class DendrySampler implements Sampler {
             // Otherwise segment is entirely outside - skip it
         }
 
-        // Post-processing: Mark points near cell edges as EDGE if we have enough segments
+        // Post-processing: Propagate EDGE type one step inward from boundary points
         // This prevents higher-level segments from connecting near boundaries
         if (result.getSegmentCount() > 4) {
-            //markEdgePointsNearBoundary(result, minX, maxX, minY, maxY, 2);
+            propagateEdgeTypeOneStep(result);
         }
 
         return result;
     }
 
     /**
-     * Mark points closest to each cell edge as EDGE type.
-     * This prevents segment creation near edges which can cause visual discontinuities.
-     *
-     * @param segList The segment list to modify
-     * @param minX Cell minimum X
-     * @param maxX Cell maximum X
-     * @param minY Cell minimum Y
-     * @param maxY Cell maximum Y
-     * @param countPerEdge Number of points to mark per edge
+     * Propagate EDGE type one step inward from existing EDGE points.
+     * For each segment where one endpoint is EDGE (with 1 connection) and the other is non-EDGE,
+     * mark the non-EDGE point as EDGE only if it has another connected segment with two non-EDGE points.
+     * This ensures we don't orphan segments while preventing connections near boundaries.
      */
-    private void markEdgePointsNearBoundary(SegmentList segList, double minX, double maxX,
-                                             double minY, double maxY, int countPerEdge) {
+    private void propagateEdgeTypeOneStep(SegmentList segList) {
+        List<Segment3D> segments = segList.getSegments();
         List<NetworkPoint> points = segList.getPoints();
 
-        // For each edge, find the N closest non-EDGE points and mark them as EDGE
-        // Left edge (closest to minX)
-        markClosestPointsToEdge(segList, points, p -> p.position.x - minX, countPerEdge);
-        // Right edge (closest to maxX)
-        markClosestPointsToEdge(segList, points, p -> maxX - p.position.x, countPerEdge);
-        // Bottom edge (closest to minY)
-        markClosestPointsToEdge(segList, points, p -> p.position.y - minY, countPerEdge);
-        // Top edge (closest to maxY)
-        markClosestPointsToEdge(segList, points, p -> maxY - p.position.y, countPerEdge);
-    }
+        // Collect points to mark as EDGE (don't modify while iterating)
+        Set<Integer> pointsToMark = new HashSet<>();
 
-    /**
-     * Mark the N points closest to an edge (as measured by distanceFunc) as EDGE type.
-     * Only considers points that aren't already EDGE type.
-     */
-    private void markClosestPointsToEdge(SegmentList segList, List<NetworkPoint> points,
-                                          java.util.function.Function<NetworkPoint, Double> distanceFunc,
-                                          int count) {
-        // Collect non-EDGE points with their distances
-        List<int[]> candidates = new ArrayList<>();  // [index, distance * 10000]
-        for (int i = 0; i < points.size(); i++) {
-            NetworkPoint p = points.get(i);
-            if (p.pointType == PointType.EDGE) continue;
-            double dist = distanceFunc.apply(p);
-            if (dist >= 0) {
-                candidates.add(new int[]{i, (int)(dist * 10000)});
+        for (Segment3D seg : segments) {
+            NetworkPoint srtPt = points.get(seg.srtIdx);
+            NetworkPoint endPt = points.get(seg.endIdx);
+
+            // Check if exactly one endpoint is EDGE with only 1 connection
+            int edgeIdx = -1;
+            int nonEdgeIdx = -1;
+
+            if (srtPt.pointType == PointType.EDGE && srtPt.connections == 1 &&
+                endPt.pointType != PointType.EDGE) {
+                edgeIdx = seg.srtIdx;
+                nonEdgeIdx = seg.endIdx;
+            } else if (endPt.pointType == PointType.EDGE && endPt.connections == 1 &&
+                       srtPt.pointType != PointType.EDGE) {
+                edgeIdx = seg.endIdx;
+                nonEdgeIdx = seg.srtIdx;
+            }
+
+            if (nonEdgeIdx < 0) continue;
+
+            // Check if the non-EDGE point has another segment with two non-EDGE points
+            NetworkPoint nonEdgePt = points.get(nonEdgeIdx);
+            if (nonEdgePt.connections < 2) continue;  // Must have at least 2 connections
+
+            boolean hasNonEdgeSegment = false;
+            for (Segment3D otherSeg : segments) {
+                if (otherSeg == seg) continue;
+
+                // Check if this segment connects to the non-EDGE point
+                int otherIdx = -1;
+                if (otherSeg.srtIdx == nonEdgeIdx) {
+                    otherIdx = otherSeg.endIdx;
+                } else if (otherSeg.endIdx == nonEdgeIdx) {
+                    otherIdx = otherSeg.srtIdx;
+                }
+
+                if (otherIdx < 0) continue;
+
+                // Check if the other endpoint is non-EDGE
+                NetworkPoint otherPt = points.get(otherIdx);
+                if (otherPt.pointType != PointType.EDGE) {
+                    hasNonEdgeSegment = true;
+                    break;
+                }
+            }
+
+            if (hasNonEdgeSegment) {
+                pointsToMark.add(nonEdgeIdx);
             }
         }
 
-        // Sort by distance (ascending)
-        candidates.sort((a, b) -> Integer.compare(a[1], b[1]));
-
-        // Mark the closest N points as EDGE
-        for (int i = 0; i < Math.min(count, candidates.size()); i++) {
-            int idx = candidates.get(i)[0];
+        // Mark collected points as EDGE
+        for (int idx : pointsToMark) {
             NetworkPoint p = points.get(idx);
             segList.updatePoint(idx, p.withPointType(PointType.EDGE));
         }
