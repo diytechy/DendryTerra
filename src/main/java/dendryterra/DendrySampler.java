@@ -536,7 +536,7 @@ public class DendrySampler implements Sampler {
         // Post-processing: Mark points near cell edges as EDGE if we have enough segments
         // This prevents higher-level segments from connecting near boundaries
         if (result.getSegmentCount() > 4) {
-            markEdgePointsNearBoundary(result, minX, maxX, minY, maxY, 2);
+            //markEdgePointsNearBoundary(result, minX, maxX, minY, maxY, 2);
         }
 
         return result;
