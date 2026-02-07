@@ -356,13 +356,19 @@ public class SegmentList {
         NetworkPoint target = points.get(targetIdx);
         //Initialize point variables that determine tangent and twist.
         Vec2D angle = new Vec2D(0,0);
+        Vec2D segTangent = new Vec2D(0,0);
         double slope = 0;
-        // Base direction toward target
-        Vec2D toTarget = new Vec2D(point.position.projectZ(), target.position.projectZ());
-        if (toTarget.lengthSquared() < MathUtils.EPSILON) {
+        // Get the tangent along the segment creation direction.
+        if (isStart) {
+            segTangent = new Vec2D(point.position.projectZ(), target.position.projectZ());
+        }
+        else{
+            segTangent = new Vec2D( target.position.projectZ(),point.position.projectZ());
+        }
+        if (segTangent.lengthSquared() < MathUtils.EPSILON) {
             return new Vec2D(1, 0); // Default direction
         }
-        toTarget = toTarget.normalize();
+        segTangent = segTangent.normalize();
         // Adjust based on connection count
         if (point.connections == 0) {
             // Get slope tangent trajectory based on point, also invert the target direction if we are solving for the end condition.
@@ -373,7 +379,6 @@ public class SegmentList {
             else {
                 angle = target.position.getTangentVector().negate();
                 slope = Math.abs(point.position.getSlope());
-                toTarget = toTarget.negate();
             }
             // No existing connections - use flow direction with deterministic twist
             double twist = (NoiseGen.nextFloat() * 2.0 * Math.min(slope/config.SlopeWithoutTwist, 1.0) - 1.0) * config.maxTwistAngle;
@@ -382,7 +387,7 @@ public class SegmentList {
             // Clamp tangent to be within 60 degrees of the target direction toward the end point.
             // This prevents extreme tangent angles that cause problematic spline behavior
             double maxTangentAngle = Math.PI / 3.0; // 60 degrees in radians
-            return clampTangentAngle(tangent, toTarget, maxTangentAngle);
+            return clampTangentAngle(tangent, segTangent, maxTangentAngle);
         } else {
             Vec2D continuousTangent = getContinuousTangent(pointIdx, isStart);
             if (continuousTangent != null) {
@@ -392,28 +397,35 @@ public class SegmentList {
                 }
                 // Multiple connections, take random angle between continuous tangent and direction to target
                 else {
-                    // Pick a random angle between continuousTangent and toTarget
-                    double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
-                    double angleTarget = Math.atan2(toTarget.y, toTarget.x);
+                    if(true){
+                        //Temp override to verify branch segments are not twisting, might be missing inversion.
+                        return segTangent;
+                    }
+                    else{
+                        // Pick a random angle between continuousTangent and toTarget
+                        double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
+                        double angleTarget = Math.atan2(segTangent.y, segTangent.x);
 
-                    // Calculate the angular difference (taking the shorter path)
-                    double angleDiff = angleTarget - angleContinuous;
-                    // Normalize to [-PI, PI]
-                    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-                    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                        // Calculate the angular difference (taking the shorter path)
+                        double angleDiff = angleTarget - angleContinuous;
+                        // Normalize to [-PI, PI]
+                        while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                        while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
 
-                    // Pick a random interpolation factor [0, 1] and interpolate the angle
-                    double interpolationFactor = NoiseGen.nextFloat();
-                    double resultAngle = angleContinuous + angleDiff * interpolationFactor;
+                        // Pick a random interpolation factor [0, 1] and interpolate the angle
+                        double interpolationFactor = NoiseGen.nextFloat();
+                        double resultAngle = angleContinuous + angleDiff * interpolationFactor;
 
-                    // Create vector at the interpolated angle with the magnitude of continuousTangent
-                    double magnitude = continuousTangent.length();
-                    return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
+                        // Create vector at the interpolated angle with the magnitude of continuousTangent
+                        double magnitude = continuousTangent.length();
+                        return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
+                    }
+                        
                 }
             }
             // Fallback - use direction to target with small offset
-            double offset = (NoiseGen.nextFloat() - 0.5) * config.SlopeWithoutTwist * 0.5;
-            return rotateVector(toTarget, offset);
+            // double offset = (NoiseGen.nextFloat() - 0.5) * config.SlopeWithoutTwist * 0.5;
+            return segTangent;
         }
     }
     
