@@ -1987,6 +1987,13 @@ public class DendrySampler implements Sampler {
         double mergeDistance = MERGE_POINT_SPACING * getGridSpacingForLevel(level+1);
         double maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
 
+        // DEBUG 40: Track point counts at each stage for the highest level
+        int draftedCount = points.size();
+        int afterMergeCount = 0;
+        int afterNearSegmentsCount = 0;
+        int afterProbabilisticCount = 0;
+        boolean isDebug40TargetLevel = (debug == 40 && level > 0 && level == resolution);
+
         // Step 1: Clean network points - merge points within merge distance (only for level > 0)
         List<Point3D> cleanedPoints;
         if (level > 0) {
@@ -1994,37 +2001,40 @@ public class DendrySampler implements Sampler {
         } else {
             cleanedPoints = new ArrayList<>(points);
         }
+        afterMergeCount = cleanedPoints.size();
 
         // Step 2: Remove points within merge distance of lower-level segments (if not level 0)
         if (level > 0 && previousLevelSegments != null && !previousLevelSegments.isEmpty()) {
             cleanedPoints = removePointsNearSegments(cleanedPoints, previousLevelSegments, mergeDistance);
         }
+        afterNearSegmentsCount = cleanedPoints.size();
 
         // Step 3: Probabilistically remove points based on branchesSampler and distance from segments
         if (level > 0 && previousLevelSegments != null) {
             cleanedPoints = probabilisticallyRemovePoints(cleanedPoints,
                                                           previousLevelSegments, gridSpacing);
         }
+        afterProbabilisticCount = cleanedPoints.size();
 
         if (cleanedPoints.isEmpty()) return result;
 
         // Step 4: Create UnconnectedPoints from cleaned points
         UnconnectedPoints unconnected = UnconnectedPoints.fromPoints(cleanedPoints, PointType.ORIGINAL, level);
 
-        // DEBUG 40: Show level 1+ points after merging/cleaning, before connection
-        // This helps debug point distribution issues at higher levels
-        if (debug == 40 && level > 0) {
-            // Copy previous level segments first
+        // DEBUG 40: Show points as 0-length segments ONLY for the highest level (resolution)
+        // For lower levels, fully connect them so we can see the segment tree up to this point
+        if (isDebug40TargetLevel) {
+            // Copy previous level segments first (these are already connected)
             if (previousLevelSegments != null) {
                 result = previousLevelSegments.copy();
             }
-            // Add all cleaned level 1+ points as 0-length segments for visualization
+            // Add all cleaned level points as 0-length segments for visualization
             for (Point3D pt : cleanedPoints) {
                 int idx = result.addPoint(pt, PointType.ORIGINAL, level);
                 result.addBasicSegment(idx, idx, level, null, null);
             }
-            LOGGER.info("debug=40: Level {} - showing {} cleaned points before connection",
-                       level, cleanedPoints.size());
+            LOGGER.info("debug=40: Level {} (resolution={}) - Point counts: drafted={}, afterMerge={}, afterNearSegments={}, afterProbabilistic={}",
+                       level, resolution, draftedCount, afterMergeCount, afterNearSegmentsCount, afterProbabilisticCount);
             return result;
         }
 
