@@ -3509,13 +3509,7 @@ public class DendrySampler implements Sampler {
                     if (px >= 0 && px < pixelGridSize && py >= 0 && py < pixelGridSize) {
                         float elevation = (float) pt.z;
                         byte level = (byte) seg.level;
-                        if (isDebugMode) {
-                        // pointType 1 = segment line only (no special point)
                         cache.setPixel(px, py, elevation, level, (byte) 1);
-                        }else{
-                        // pointType -1 = segment line only (no special point)
-                        cache.setPixel(px, py, elevation, level, (byte) -1);
-                        }
                     }
                 }
             }
@@ -3614,7 +3608,7 @@ public class DendrySampler implements Sampler {
             // If pixel has data, return it; if empty (NaN), return -2
             // - 1 gives delta from other values.
             // This is the FIX: we don't recompute just because a pixel is empty
-            return Double.isNaN(value) ? -1 : (value+1);
+            return Double.isNaN(value) ? -1 : (value);
         }
 
         // CACHE MISS: Cell not computed yet - create/get cache entry and compute
