@@ -397,7 +397,7 @@ public class SegmentList {
                 }
                 // Multiple connections, take random angle between continuous tangent and direction to target
                 else {
-                    if(true){
+                    if(false){
                         //Temp override to verify branch segments are not twisting, might be missing inversion.
                         return segTangent;
                     }
