@@ -495,7 +495,7 @@ public class SegmentList {
 
             if (config.useSplines && config.curvature > 0) {
                 // Use cubic Hermite spline interpolation with jitter
-                jitterMagnitude = segLength * 0.02; // 2% of segment length
+                jitterMagnitude = maxSegmentLength * 0.3; // % of segment length
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
                                                            tangentSrt, tangentEnd, t, config.tangentStrength, rng);
             } else {
