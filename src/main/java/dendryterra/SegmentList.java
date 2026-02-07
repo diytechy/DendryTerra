@@ -238,11 +238,11 @@ public class SegmentList {
         Vec2D tangentEnd = tangents[1];
 
         // Step 1b: Bound tangent magnitudes to maxSegmentLength to prevent excessive curves
-        tangentSrt = boundTangentMagnitude(tangentSrt, maxSegmentLength);
-        tangentEnd = boundTangentMagnitude(tangentEnd, maxSegmentLength);
+        double distance = srt.position.distanceTo(end.position);
+        tangentSrt = boundTangentMagnitude(tangentSrt, distance);
+        tangentEnd = boundTangentMagnitude(tangentEnd, distance);
 
         // Step 2: Subdivide long segments if needed using provided maxSegmentLength
-        double distance = srt.position.distanceTo(end.position);
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
         if (numDivisions <= 1) {
             // Single segment - add directly

@@ -1159,6 +1159,14 @@ Make sure distance for order to attached points is closest to original segment, 
 
 ##########################################################
 
+Let's update connectAndDefineSegmentsV2 phase B.
+
+Current implementation: continuously chaining in the shortest segment, each time re-evaluating and finding the next closest segment.
+
+Updated implementation: Sort all unconnected points by their shortest distance to previous segment / trunk segment points.  Then loop from closest to furthest unconnected point, each time adding the point into the segment list, connecting it with the standard connection rules to available points in the segment list.  This way the initial sort does not get affected by newer points, but newer points are available to connect to each iteration.  This should reduce likelihood of new segments crossing.
+
+##########################################################
+
 Reminder: Final ToDo:
 
 Remove all unused / legacy functions.

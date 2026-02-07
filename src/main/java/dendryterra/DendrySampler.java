@@ -2001,7 +2001,7 @@ public class DendrySampler implements Sampler {
 
         // Step 3: Probabilistically remove points based on branchesSampler and distance from segments
         if (level > 0 && previousLevelSegments != null) {
-            cleanedPoints = probabilisticallyRemovePoints(cleanedPoints, cellX, cellY,
+            cleanedPoints = probabilisticallyRemovePoints(cleanedPoints,
                                                           previousLevelSegments, gridSpacing);
         }
 
@@ -2055,24 +2055,52 @@ public class DendrySampler implements Sampler {
         }
 
         // Phase B: Grow network from existing segments
-        // Find unconnected points within range and connect them
-        int maxIterations = unconnected.totalSize() * 10;
-        int iterations = 0;
+        // Pre-sort unconnected points by distance to existing segment list (computed once)
+        // This prevents new connections from affecting sort order and reduces crossing segments
 
-        while (!unconnected.isEmpty() && iterations < maxIterations) {
-            iterations++;
+        // Step 1: Compute initial distances for all unconnected points to segment list
+        List<int[]> sortedByDistance = new ArrayList<>();
+        List<Integer> remaining = unconnected.getRemainingIndices();
 
-            // Find the unconnected point closest to any point in the SegmentList
-            int[] closest = unconnected.findClosestToSegmentList(segList, maxSegmentDistance);
-            if (closest == null) {
-                // No points within range - remaining points can't connect
-                break;
+        for (int unconnIdx : remaining) {
+            NetworkPoint unconnPt = unconnected.getPoint(unconnIdx);
+            if (unconnPt.pointType == PointType.EDGE) continue;
+
+            // Find minimum distance to any point in segment list
+            double minDistSq = Double.MAX_VALUE;
+            Point2D unconnPos = unconnPt.position.projectZ();
+
+            for (int i = 0; i < segList.getPointCount(); i++) {
+                NetworkPoint segPt = segList.getPoint(i);
+                if (segPt.pointType == PointType.EDGE) continue;
+
+                double distSq = unconnPos.distanceSquaredTo(segPt.position.projectZ());
+                if (distSq < minDistSq) {
+                    minDistSq = distSq;
+                }
             }
 
-            int unconnIdx = closest[0];
+            // Only include points within max segment distance
+            if (minDistSq <= maxDistSq) {
+                // Store as [unconnIdx, distance * 1000000 as int for sorting]
+                sortedByDistance.add(new int[]{unconnIdx, (int)(minDistSq * 1000000)});
+            }
+        }
+
+        // Step 2: Sort by initial distance (closest first)
+        sortedByDistance.sort((a, b) -> Integer.compare(a[1], b[1]));
+
+        // Step 3: Process points in sorted order (closest to furthest from initial segment list)
+        for (int[] entry : sortedByDistance) {
+            int unconnIdx = entry[0];
+
+            // Skip if already removed (shouldn't happen but safety check)
+            if (unconnected.isRemoved(unconnIdx)) continue;
+
             NetworkPoint unconnPt = unconnected.getPoint(unconnIdx);
 
             // Find best neighbor in SegmentList for this point
+            // This looks at the CURRENT segment list, which may include newly added points
             int neighborIdx = findBestNeighborV2(unconnPt, segList, maxDistSq, mergeDistSq, level);
 
             if (neighborIdx < 0) {
@@ -2082,11 +2110,8 @@ public class DendrySampler implements Sampler {
             }
 
             // Create connection: move point to SegmentList and create segment
+            // The newly added point becomes available for subsequent iterations
             createSegmentV2(unconnected, unconnIdx, segList, neighborIdx, level, mergeDistance);
-        }
-
-        if (iterations >= maxIterations) {
-            LOGGER.warn("connectAndDefineSegmentsV2 reached max iterations ({}) at level {}", maxIterations, level);
         }
     }
 
@@ -2205,8 +2230,8 @@ public class DendrySampler implements Sampler {
             NetworkPoint candidate = segList.getPoint(i);
             if (candidate.pointType == PointType.EDGE) continue;
 
-            // Skip if already has 3+ connections (full)
-            if (candidate.connections >= 3) continue;
+            // Skip if already has 5+ connections (full)
+            if (candidate.connections >= 5) continue;
 
             Point2D candidatePos = candidate.position.projectZ();
             double distSq = sourcePos.distanceSquaredTo(candidatePos);
@@ -2403,7 +2428,7 @@ public class DendrySampler implements Sampler {
      * @param gridSpacing Grid spacing for this level (used to calculate distance threshold)
      * @return Filtered list of points
      */
-    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points, int cellX, int cellY,
+    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points,
                                                          SegmentList previousLevelSegments,
                                                          double gridSpacing) {
         List<Point3D> result = new ArrayList<>();
@@ -2459,8 +2484,8 @@ public class DendrySampler implements Sampler {
     /**
      * Probabilistically remove points based on branchesSampler only (legacy overload).
      */
-    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points, int cellX, int cellY) {
-        return probabilisticallyRemovePoints(points, cellX, cellY, new SegmentList(new SegmentListConfig(salt)), 1.0);
+    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points) {
+        return probabilisticallyRemovePoints(points, new SegmentList(new SegmentListConfig(salt)), 1.0);
     }
 
 
