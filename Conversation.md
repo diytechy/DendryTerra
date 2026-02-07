@@ -1165,6 +1165,22 @@ Current implementation: continuously chaining in the shortest segment, each time
 
 Updated implementation: Sort all unconnected points by their shortest distance to previous segment / trunk segment points.  Then loop from closest to furthest unconnected point, each time adding the point into the segment list, connecting it with the standard connection rules to available points in the segment list.  This way the initial sort does not get affected by newer points, but newer points are available to connect to each iteration.  This should reduce likelihood of new segments crossing.
 
+###########################################################
+
+Remove "SEGMENT_DEBUGGING" 40 and 50 in it's current form.  Now add debug 40 to perform the following:
+ - return all level 1+ points as 0-length segments so they can be reviewed after merging.
+ - do not perform the normal connection of those points back to the lower level segment, as the intent is to see how the level 1 points are distributed before they are joined to the previous level segment tree.
+
+ Note currently there are multiple tangles due to close points on level 1+, I suspect there is a defect preventing level 1+ points from merging properly.
+
+
+##########################################################
+
+New issue: createSubdividedSegments is changing the shape of the original curve (addBasicSegment).
+
+This would by typical, but at level 1+ jitter is suppressed such that createSubdividedSegments should give the same shape as addBasicSegment.
+
+
 ##########################################################
 
 Reminder: Final ToDo:

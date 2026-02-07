@@ -53,6 +53,7 @@ gridsize: 2000      # Grid scaling (1000)
 return: PIXEL_DEBUG       # distance, weighted, or elevation
 curvature: 1.0
 constellation-scale: 1
+debug: 0
 sampler:                # Optional control function
   type: OPEN_SIMPLEX_2
   frequency: 0.0001

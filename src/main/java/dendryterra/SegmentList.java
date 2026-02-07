@@ -245,9 +245,9 @@ public class SegmentList {
         // Step 2: Subdivide long segments if needed using provided maxSegmentLength
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
         // TODO: Allow subdivision at higher levels after confirming basic segment shape is appropriate.
-        if (level>0){
-            numDivisions = 0;
-        }
+        //if (level>0){
+        //    numDivisions = 0;
+        //}
         if (numDivisions <= 1) {
             // Single segment - add directly
             addBasicSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
@@ -615,7 +615,7 @@ public class SegmentList {
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
             // TODO: Remove level check to allow jitter on all levels.
-            if (rawMagnitude > MathUtils.EPSILON || level==0) {
+            if (rawMagnitude > MathUtils.EPSILON && level==0) {
                 jitterX = (jitterX / rawMagnitude) * scaledMagnitude;
                 jitterY = (jitterY / rawMagnitude) * scaledMagnitude;
             } else {
