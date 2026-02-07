@@ -237,7 +237,6 @@ public class SegmentList {
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
 
-        
         // Step 2: Subdivide long segments if needed using provided maxSegmentLength
         double distance = srt.position.distanceTo(end.position);
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
@@ -270,6 +269,49 @@ public class SegmentList {
         double cos = Math.cos(angle);
         double sin = Math.sin(angle);
         return new Vec2D(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+    }
+
+    /**
+     * Clamp a tangent vector to be within maxAngle of a reference direction.
+     * This prevents extreme tangent angles that can cause problematic spline behavior.
+     *
+     * @param tangent The tangent vector to clamp
+     * @param direction The reference direction (typically start-to-end vector)
+     * @param maxAngleRadians Maximum allowed angle in radians (e.g., 60 degrees = 1.047 radians)
+     * @return Clamped tangent vector
+     */
+    private Vec2D clampTangentAngle(Vec2D tangent, Vec2D direction, double maxAngleRadians) {
+        if (tangent == null || direction == null) {
+            return tangent;
+        }
+
+        // Normalize both vectors for angle calculation
+        Vec2D tangentNorm = tangent.normalize();
+        Vec2D directionNorm = direction.normalize();
+
+        // Compute angle between tangent and direction using dot product
+        double dotProduct = tangentNorm.x * directionNorm.x + tangentNorm.y * directionNorm.y;
+        // Clamp dot product to [-1, 1] to handle floating point errors
+        dotProduct = Math.max(-1.0, Math.min(1.0, dotProduct));
+        double angle = Math.acos(dotProduct);
+
+        // If angle is within limit, return original tangent
+        if (angle <= maxAngleRadians) {
+            return tangent;
+        }
+
+        // Need to clamp: rotate tangent toward direction
+        // Determine rotation direction using cross product (z-component in 2D)
+        double cross = tangentNorm.x * directionNorm.y - tangentNorm.y * directionNorm.x;
+        double rotationSign = (cross >= 0) ? 1.0 : -1.0;
+
+        // Rotate direction by maxAngle in the appropriate direction
+        double clampedAngle = rotationSign * maxAngleRadians;
+        Vec2D clampedDirection = rotateVector(directionNorm, clampedAngle);
+
+        // Scale back to original tangent magnitude
+        double tangentLength = tangent.length();
+        return new Vec2D(clampedDirection.x * tangentLength, clampedDirection.y * tangentLength);
     }
     
     /**
@@ -334,7 +376,12 @@ public class SegmentList {
         if (point.connections == 0) {
             // No existing connections - use flow direction with deterministic twist
             double twist = (NoiseGen.nextFloat() * 2.0 * Math.min(slope/config.SlopeWithoutTwist, 1.0) - 1.0) * config.maxTwistAngle;
-            return rotateVector(angle, twist);
+            Vec2D tangent = rotateVector(angle, twist);
+
+            // Clamp tangent to be within 60 degrees of the target direction
+            // This prevents extreme tangent angles that cause problematic spline behavior
+            double maxTangentAngle = Math.PI / 3.0; // 60 degrees in radians
+            return clampTangentAngle(tangent, toTarget, maxTangentAngle);
         } else if (point.connections == 1) {
             // One existing connection - use tangent continuity for smooth splines
             Vec2D continuousTangent = getContinuousTangent(pointIdx, isStart);
@@ -487,36 +534,40 @@ public class SegmentList {
         // Minimum distance threshold: % of intended segment length
         double segLength = maxSegmentLength;
         double minDistanceThreshold = segLength * 0.2;
-
+        double jitterX = 0;
+        double jitterY = 0;
+        double jitterMagnitude = 0;
+        
         for (int i = 1; i < numDivisions; i++) {
             double t = (double) i / numDivisions;
             Point3D intermediatePoint;
-            double jitterMagnitude = 0;
-
+            jitterX = rng.nextDouble() - 0.5; // [-0.5, 0.5]
+            jitterY = rng.nextDouble() - 0.5; // [-0.5, 0.5]
+            jitterMagnitude = (jitterX * jitterX + jitterY * jitterY) / Math.sqrt(0.5); // Normalize to [0, 1]
+            jitterX *= maxSegmentLength*0.75;
+            jitterY *= maxSegmentLength*0.75;
             if (config.useSplines && config.curvature > 0) {
                 // Use cubic Hermite spline interpolation with jitter
-                jitterMagnitude = maxSegmentLength * 0.3; // % of segment length
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
-                                                           tangentSrt, tangentEnd, t, config.tangentStrength, rng);
+                                                           tangentSrt, tangentEnd, t, config.tangentStrength, jitterX, jitterY);
             } else {
                 // Use linear interpolation with jitter
-                jitterMagnitude = 0.01; // Small jitter
-                intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, rng);
+                intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, jitterX, jitterY);
             }
 
             // Check if this point is too close to the previous point or ends
             double distanceToSel = Double.MAX_VALUE;
-            if (i==1) {
-                // First intermediate point - check distance to start
-                distanceToSel = srt.position.projectZ().distanceTo(intermediatePoint.projectZ());
-            } else if (i == numDivisions - 1) {
-                // Last intermediate point - check distance to end
-                distanceToSel = end.position.projectZ().distanceTo(intermediatePoint.projectZ());
-            }
-            else{
-                NetworkPoint prevPoint = points.get(prevIdx);
-                distanceToSel = prevPoint.position.projectZ().distanceTo(intermediatePoint.projectZ());
-            }
+            //if (i==1) {
+            //    // First intermediate point - check distance to start
+            //    distanceToSel = srt.position.projectZ().distanceTo(intermediatePoint.projectZ());
+            //} else if (i == numDivisions - 1) {
+            //    // Last intermediate point - check distance to end
+            //    distanceToSel = end.position.projectZ().distanceTo(intermediatePoint.projectZ());
+            //}
+            //else{
+            //    NetworkPoint prevPoint = points.get(prevIdx);
+            //    distanceToSel = prevPoint.position.projectZ().distanceTo(intermediatePoint.projectZ());
+            //}
 
             if (distanceToSel < minDistanceThreshold) {
                 // Skip this point - too close to previous point
@@ -568,7 +619,7 @@ public class SegmentList {
      * @return Interpolated point with jitter applied
      */
     private Point3D interpolateHermiteSpline(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd,
-                                             double t, double tangentStrength, Random rng) {
+                                             double t, double tangentStrength, double jitterX, double jitterY) {
         double t2 = t * t;
         double t3 = t2 * t;
         double h00 = 2 * t3 - 3 * t2 + 1;
@@ -585,11 +636,6 @@ public class SegmentList {
                  + h01 * end.y + h11 * (tangentEnd != null ? tangentEnd.y * tangentScale : 0);
         double z = MathUtils.lerp(srt.z, end.z, t);  // Linear interpolation for elevation
 
-        // Add small deterministic jitter for natural appearance (intermediate points only)
-        double jitterMagnitude = segLength * 0.02; // 2% of segment length
-        double jitterX = (rng.nextDouble() - 0.5) * jitterMagnitude;
-        double jitterY = (rng.nextDouble() - 0.5) * jitterMagnitude;
-
         return new Point3D(x + jitterX, y + jitterY, z);
     }
     
@@ -597,16 +643,11 @@ public class SegmentList {
      * Linear interpolation with deterministic jitter.
      * References jitter application logic from DendrySampler.
      */
-    private Point3D interpolateLinearWithJitter(Point3D srt, Point3D end, double t, Random rng) {
+    private Point3D interpolateLinearWithJitter(Point3D srt, Point3D end, double t, double jitterX, double jitterY) {
         // Linear interpolation
         double x = MathUtils.lerp(srt.x, end.x, t);
         double y = MathUtils.lerp(srt.y, end.y, t);
         double z = MathUtils.lerp(srt.z, end.z, t);
-
-        // Add small deterministic jitter for natural appearance
-        double jitterMagnitude = 0.01; // Small jitter
-        double jitterX = (rng.nextDouble() - 0.5) * jitterMagnitude;
-        double jitterY = (rng.nextDouble() - 0.5) * jitterMagnitude;
 
         return new Point3D(x + jitterX, y + jitterY, z);
     }
@@ -650,8 +691,9 @@ public class SegmentList {
         // Compute twist reduction factor based on jitter
         // More jitter (more displacement) -> less twist
         // Use exponential decay: twist scales down as jitter increases
-        double jitterRatio = Math.min(1.0, jitterMagnitude / 0.02); // Normalize to typical jitter scale
-        double twistScale = Math.exp(-2.0 * jitterRatio); // Exponential decay
+        //double jitterRatio = Math.min(1.0, jitterMagnitude / 0.02); // Normalize to typical jitter scale
+        //double twistScale = Math.exp(-2.0 * jitterRatio); // Exponential decay
+        double twistScale = (1.0 - jitterMagnitude); // Linear decay alternative
 
         // Random twist angle in range [-maxTwist, +maxTwist], scaled by twist reduction
         double twistAngle = (rng.nextDouble() * 2.0 - 1.0) * maxTwist * twistScale;

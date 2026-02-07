@@ -1111,6 +1111,7 @@ In SEGMENT_DEBUG 15, it seems there are values of 5 returned (Edge type points) 
 
 
 ####################################################
+Add a check in addSegmentWithDivisions so that newly created tangents for the start and end points are clamped within 60 degrees of the vector between the start and end point.
 
 Reminder: Final ToDo:
 
