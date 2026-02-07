@@ -1113,6 +1113,14 @@ In SEGMENT_DEBUG 15, it seems there are values of 5 returned (Edge type points) 
 ####################################################
 Add a check in addSegmentWithDivisions so that newly created tangents for the start and end points are clamped within 60 degrees of the vector between the start and end point.
 
+######################################################
+*********************************************************
+Set trunk level to -1 for trunk node creation?
+Update correct maximum segment length for branches from trunk.
+Update tangents into "lines" to just be straight in?  Just a little bit of variation?
+
+##########################################################
+
 Reminder: Final ToDo:
 
 Remove all unused / legacy functions.
