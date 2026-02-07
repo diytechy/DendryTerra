@@ -520,12 +520,12 @@ public class SegmentList {
                                                            tangentSrt, tangentEnd, t, config.tangentStrength);
                 // Apply random twist, scaled by jitter magnitude
                 intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
-                                                       config.maxTwistAngle, rng);
+                                                       config.maxIntermediateTwistAngle, rng);
             } else {
                 // For linear interpolation, use direction from start to end with twist
                 Vec2D baseDirection = new Vec2D(srt.position.projectZ(), end.position.projectZ()).normalize();
                 intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
-                                                       config.maxTwistAngle, rng);
+                                                       config.maxIntermediateTwistAngle, rng);
             }
 
             // Add intermediate point with appropriate type
@@ -624,12 +624,13 @@ public class SegmentList {
     }
 
     /**
-     * Apply a random twist (rotation) to a tangent vector.
+     * Apply a random twist (rotation) to a tangent vector for intermediate points.
      * The twist amount is scaled based on jitter magnitude - more jitter means less twist.
+     * Used with config.maxIntermediateTwistAngle for intermediate subdivision points.
      *
      * @param tangent Base tangent direction
      * @param jitterMagnitude Magnitude of position jitter applied
-     * @param maxTwist Maximum twist angle in radians
+     * @param maxTwist Maximum twist angle in radians (use config.maxIntermediateTwistAngle)
      * @param rng Random number generator
      * @return Twisted tangent vector
      */

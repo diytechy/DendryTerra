@@ -10,7 +10,8 @@ public class SegmentListConfig {
     public double curvature = 0.0;
     public double curvatureFalloff = 0.0;
     public double tangentStrength = 1.0;
-    public double maxTwistAngle = 0.1745; // ~10 degrees in radians, reduced by jitter magnitude
+    public double maxTwistAngle = 0.1745; // ~10 degrees in radians, for original points
+    public double maxIntermediateTwistAngle = 0.0873; // ~5 degrees in radians, for intermediate points, reduced by jitter magnitude
     public double SlopeWithoutTwist = 0.5;
     
     public SegmentListConfig() {}
@@ -43,6 +44,12 @@ public class SegmentListConfig {
         this.maxTwistAngle = maxTwistAngle;
         return this;
     }
+
+    public SegmentListConfig withMaxIntermediateTwistAngle(double maxIntermediateTwistAngle) {
+        this.maxIntermediateTwistAngle = maxIntermediateTwistAngle;
+        return this;
+    }
+
     public SegmentListConfig withSlopeWithoutTwist(double SlopeWithoutTwist) {
         this.SlopeWithoutTwist = SlopeWithoutTwist;
         return this;
