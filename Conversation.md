@@ -1254,7 +1254,27 @@ intermediateTangent
 Unconnected points at level 0 do not appear to connect back to the trunk, or to each-other.  Is there a bug in level 0 asterism creation that is preventing new segments from connecting to points that were just added in previous segment iteration creation or at trunk creation?
 
 
+Add new parameter inputs:
+riverwidth - a sampler that gives a value that will be used to determine the river width at a given point.
+borderwidth - a sampler that gives a value that will be used to determine the width of a border region around a river.
 
+Now add a new return type "PIXEL_RIVER" which will return the following using the pixel cache data:
+
+1. For each query / coordinate of "PIXEL_RIVER" the river width and border width will be computed from their samplers as the noted parameter inputs above.
+2. For the resolution / levels that were configured, the riverwidth per level shall be calculated as:
+RiverWidthAtLevel = riverwidth*(0.6^level), but will not be able to be less than 2x the pixelcache resolution.
+
+Then, for each coordinate, an approximation will be used to determine if the coordinate is in range of a river knowing the pixel distance to each river type and the width of the river at a particlar river, and if not a river than determin if the query coordinate is a boundary using a similar method.
+
+IMPORTANT: The accuracy of distance can be appoximated by using a "star" or set of lines from the query point to determine if it intersects a river pixel.  Alternatively, other matrix functions may be more suitable to perform operations across the entire cached pixel cell.
+
+IMPORTANT: If a queried coordinate is within the riverwidth or borderwidth from the cell wall, the adjacent cell's pixel cache will need to be queried if no matches were found in the current cell.
+
+A "within river border" response should always have priority over a border.
+
+Returns 0 for river.
+Returns 1 for border.
+Returns 2 for not river.
 
 
 
@@ -1263,7 +1283,7 @@ Unconnected points at level 0 do not appear to connect back to the trunk, or to 
 
 #########################################################
 
-Elevation - If a node is getting attached and is lower elevation than the node it's connecting to, all nodes that it's connected to going to down to the level 0 asterism should be reduced in elevation ratiometrically.
+ A check should be made every time a point is added to a Segment list when above level 0, where if a node is getting attached and is lower elevation than the node it's connecting to, all nodes that it's connected to that chain down to the level 0 asterism should be reduced in elevation ratiometrically by the elevation of the point to add / elevation of the point that it's connecting to, so that river cannot flow "uphill".  This can likely be implimented within "SegmentList.java", where if a new point is lower than it's connecting point, a loop on the points and their connectios can be performed to ensure only points going down to 0 are reduced in height.
 
 River return type - Input to specify the width for each level to report as river enum.  Input to point to sampler to define the width variation.  Refer to current river sampler, since "flats" or lowlands might be a special type that needs consideration?
 

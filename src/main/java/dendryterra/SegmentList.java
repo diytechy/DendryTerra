@@ -135,6 +135,74 @@ public class SegmentList {
     }
 
     /**
+     * Ensure water flows downhill by propagating elevation reduction when a new point
+     * connects at a lower elevation than the existing network.
+     *
+     * When sourceIdx has lower elevation than targetIdx, all points connected to targetIdx
+     * (in the chain toward level 0) are reduced ratiometrically by (sourceZ / targetZ).
+     *
+     * @param sourceIdx The newly added point index
+     * @param targetIdx The existing point it's connecting to
+     * @param level The current level (only applies at level > 0)
+     */
+    public void ensureDownhillFlow(int sourceIdx, int targetIdx, int level) {
+        if (level == 0) return; // Level 0 handled separately
+
+        NetworkPoint source = points.get(sourceIdx);
+        NetworkPoint target = points.get(targetIdx);
+
+        double sourceZ = source.position.z;
+        double targetZ = target.position.z;
+
+        // Only adjust if source is lower than target (water would flow uphill)
+        if (sourceZ >= targetZ || targetZ <= MathUtils.EPSILON) return;
+
+        // Calculate reduction ratio
+        double ratio = sourceZ / targetZ;
+
+        // Propagate reduction through the chain toward level 0
+        Set<Integer> visited = new HashSet<>();
+        propagateElevationReduction(targetIdx, ratio, visited);
+    }
+
+    /**
+     * Recursively propagate elevation reduction through connected points.
+     * Only follows connections to points at the same or lower level (toward asterism).
+     *
+     * @param pointIdx Current point to reduce
+     * @param ratio Reduction ratio to apply (new_elevation = old_elevation * ratio)
+     * @param visited Set of already visited point indices (to avoid cycles)
+     */
+    private void propagateElevationReduction(int pointIdx, double ratio, Set<Integer> visited) {
+        if (visited.contains(pointIdx)) return;
+        visited.add(pointIdx);
+
+        NetworkPoint p = points.get(pointIdx);
+
+        // Reduce this point's elevation
+        double newZ = p.position.z * ratio;
+        Point3D newPosition = new Point3D(p.position.x, p.position.y, newZ);
+        points.set(pointIdx, p.withPosition(newPosition));
+
+        // Find connected points through segments
+        List<SegmentConnection> connections = pointToSegments.get(pointIdx);
+        if (connections == null) return;
+
+        for (SegmentConnection conn : connections) {
+            Segment3D seg = segments.get(conn.segmentIndex);
+
+            // Get the other endpoint
+            int otherIdx = conn.isStart ? seg.endIdx : seg.srtIdx;
+
+            // Only propagate to points at same or lower level (toward level 0)
+            NetworkPoint other = points.get(otherIdx);
+            if (other.level <= p.level) {
+                propagateElevationReduction(otherIdx, ratio, visited);
+            }
+        }
+    }
+
+    /**
      * Get the total number of points.
      */
     public int getPointCount() {
@@ -197,6 +265,10 @@ public class SegmentList {
     public int addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength) {
         // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
+
+        // Ensure water flows downhill: if new point is lower than existing,
+        // propagate elevation reduction through the connected chain toward level 0
+        ensureDownhillFlow(srtIdx, endIdx, level);
 
         // Call full implementation using global config
         addSegmentWithDivisions(srtIdx, endIdx, level, maxSegmentLength);
