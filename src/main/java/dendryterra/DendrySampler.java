@@ -2316,7 +2316,7 @@ public class DendrySampler implements Sampler {
                                                 double maxDistSq, int level) {
         Point2D currentPos2D = currentPos.projectZ();
 
-        double bestSlope = Double.MAX_VALUE;  // Must be positive (uphill)
+        double bestSlope = 0;  // Must be positive (uphill)
         int bestUnconnIdx = -1;
 
         List<Integer> remaining = unconnected.getRemainingIndices();
@@ -2337,7 +2337,7 @@ public class DendrySampler implements Sampler {
             // Trunk requires uphill (positive slope)
             if (normalizedSlope < 0) continue;
 
-            if (normalizedSlope < bestSlope) {
+            if (normalizedSlope > bestSlope) {
                 bestSlope = normalizedSlope;
                 bestUnconnIdx = unconnIdx;
             }
