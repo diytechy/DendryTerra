@@ -2260,7 +2260,7 @@ public class DendrySampler implements Sampler {
             // For subsequent, use currentIdx in segList
             int nextUnconnIdx;
             if (firstSegment) {
-                nextUnconnIdx = findBestTrunkNeighborFromPoint(unconnected, trunkStartPt.position, maxDistSq, level);
+                nextUnconnIdx = findBestTrunkNeighborFromFirstPoint(unconnected, trunkStartPt.position, maxDistSq, level);
             } else {
                 nextUnconnIdx = findBestTrunkNeighborV2(unconnected, segList, currentIdx, maxDistSq, level);
             }
@@ -2292,14 +2292,31 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Find best trunk neighbor from a position (for first trunk segment).
-     * Looks for uphill neighbors (positive slope).
+     * Calculate normalized slope between two points with distance falloff.
+     * At level 0 with minimum set, uses minimum elevation for candidate.
+     *
+     * @param sourceZ Source point elevation
+     * @param candidateZ Candidate point elevation
+     * @param dist 2D distance between points
+     * @param level Current level (for minimum handling at level 0)
+     * @return Normalized slope (sourceZ - effectiveCandidateZ) / dist^DISTANCE_FALLOFF_POWER
      */
-    private int findBestTrunkNeighborFromPoint(UnconnectedPoints unconnected, Point3D currentPos,
+    private double calculateNormalizedSlope(double sourceZ, double candidateZ, double dist, int level) {
+        // At level 0 with minimum set, use minimum elevation for candidates
+        double effectiveCandidateZ = candidateZ;
+        double heightDiff = sourceZ - effectiveCandidateZ;
+        return heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+    }
+
+    /**
+     * Find best trunk neighbor from a position (for first trunk segment).
+     * Looks for lowest uphill neighbor (positive slope).
+     */
+    private int findBestTrunkNeighborFromFirstPoint(UnconnectedPoints unconnected, Point3D currentPos,
                                                 double maxDistSq, int level) {
         Point2D currentPos2D = currentPos.projectZ();
 
-        double bestSlope = 0;  // Must be positive (uphill)
+        double bestSlope = Double.MAX_VALUE;  // Must be positive (uphill)
         int bestUnconnIdx = -1;
 
         List<Integer> remaining = unconnected.getRemainingIndices();
@@ -2312,15 +2329,15 @@ public class DendrySampler implements Sampler {
 
             if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
 
-            // Calculate slope
+            // Calculate normalized slope using common helper
             double dist = Math.sqrt(distSq);
-            double heightDiff = candidate.position.z - currentPos.z;
-            double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+            // Note: For trunk, we want uphill, so heightDiff is candidate - current (inverted from normal)
+            double normalizedSlope = -calculateNormalizedSlope(currentPos.z, candidate.position.z, dist, level);
 
             // Trunk requires uphill (positive slope)
-            if (normalizedSlope <= 0) continue;
+            if (normalizedSlope < 0) continue;
 
-            if (normalizedSlope > bestSlope) {
+            if (normalizedSlope < bestSlope) {
                 bestSlope = normalizedSlope;
                 bestUnconnIdx = unconnIdx;
             }
@@ -2354,17 +2371,9 @@ public class DendrySampler implements Sampler {
 
             if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
 
-            // Calculate normalized slope with DistanceFalloffPower
+            // Calculate normalized slope using common helper
             double dist = Math.sqrt(distSq);
-            double selZ = Double.MAX_VALUE;
-            if(level==0){
-                selZ = minimum;
-            }
-            else{
-                selZ = candidate.position.z;
-            }
-            double heightDiff = sourcePt.position.z - selZ;
-            double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+            double normalizedSlope = calculateNormalizedSlope(sourcePt.position.z, candidate.position.z, dist, level);
 
             // Level 1+ has slope cutoff
             if (level > 0 && (normalizedSlope < lowestSlopeCutoff)) {
@@ -2416,10 +2425,10 @@ public class DendrySampler implements Sampler {
 
             if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
 
-            // Calculate slope
+            // Calculate normalized slope using common helper
             double dist = Math.sqrt(distSq);
-            double heightDiff = candidate.position.z - currentPt.position.z;
-            double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
+            // Note: For trunk, we want uphill, so heightDiff is candidate - current (inverted from normal)
+            double normalizedSlope = -calculateNormalizedSlope(currentPt.position.z, candidate.position.z, dist, level);
 
             // Trunk requires uphill (positive slope)
             if (normalizedSlope <= 0) continue;

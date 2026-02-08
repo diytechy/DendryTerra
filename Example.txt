@@ -56,8 +56,10 @@ constellation-scale: 1
 lowest-slope-cutoff: -1000
 debug: 0
 sampler:                # Optional control function
-  type: OPEN_SIMPLEX_2
-  frequency: 0.0001
+  type: PROBABILITY
+  sampler:
+    type: OPEN_SIMPLEX_2
+    frequency: 0.0001
 
 x: -3,571
 z: -645

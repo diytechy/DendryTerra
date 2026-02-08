@@ -1230,7 +1230,21 @@ Figure out why chained segments can't connect to eachother.
 
 In phase B of CleanAndNetworkPointsV2 it appears 
 
+##############################################
+
+Add a new parameter "minimum" (DendryTemplate.java) with a default value of 0 that defines the elevation that level 0 points are forced to and add functionality so that that at level 0 the candidate points at level 0 are assumed to be at the "minimum" elevation to change drive changes to path preferences.
+
 ###########################################################
+
+Update the following functions to all use a common function to calculate the normalized slope instead of duplicating the similar functionality.
+
+findBestTrunkNeighborV2
+findBestTrunkNeighborFromPoint
+findBestNeighborV2
+
+findBestTrunkNeighborV2 and findBestTrunkNeighborFromPoint have older slope calculations.
+
+findBestNeighborV2 should have the latest updates for normalized slope calculation.
 
 intermediateTangent
 
