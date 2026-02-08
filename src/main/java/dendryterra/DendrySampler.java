@@ -2152,7 +2152,7 @@ public class DendrySampler implements Sampler {
         double maxDistSq = maxSegmentDistance; // * maxSegmentDistance;
         double mergeDistSq = mergeDistance; // * mergeDistance;
 
-        // Phase A: For level 0, build trunk from highest point
+        // Phase A: For level 0, build trunk from lowest point
         if (level == 0) {
             buildTrunkV2(unconnected, segList, maxSegmentDistance, mergeDistance, level, cellX, cellY);
 
@@ -2175,6 +2175,9 @@ public class DendrySampler implements Sampler {
         // This prevents new connections from affecting sort order and reduces crossing segments
 
         // Step 1: Compute initial distances for all unconnected points to segment list
+        // Note: We include ALL points in the sort, not just those within maxDistSq.
+        // This allows chain growth - points far from the initial trunk can still connect
+        // to newly added points. The actual distance check happens in findBestNeighborV2.
         List<int[]> sortedByDistance = new ArrayList<>();
         List<Integer> remaining = unconnected.getRemainingIndices();
 
@@ -2196,11 +2199,9 @@ public class DendrySampler implements Sampler {
                 }
             }
 
-            // Only include points within max segment distance
-            if (minDistSq <= maxDistSq) {
-                // Store as [unconnIdx, distance * 1000000 as int for sorting]
-                sortedByDistance.add(new int[]{unconnIdx, (int)(minDistSq * 1000000)});
-            }
+            // Include all points in sort (removed the maxDistSq filter)
+            // Store as [unconnIdx, distance * 1000000 as int for sorting]
+            sortedByDistance.add(new int[]{unconnIdx, (int)(minDistSq * 1000000)});
         }
 
         // Step 2: Sort by initial distance (closest first)
@@ -2289,6 +2290,9 @@ public class DendrySampler implements Sampler {
                 currentIdx = segList.addSegmentWithDivisions(trunkNextPt, currentIdx, level, mergeDistance);
             }
         }
+
+        // Force all trunk points to elevation 0 for flattened path preferences
+        segList.forceAllPointElevations(0);
     }
 
     /**

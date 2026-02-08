@@ -121,6 +121,20 @@ public class SegmentList {
     }
 
     /**
+     * Force all points in the segment list to a specific elevation.
+     * Useful for flattening level 0 constellations to change path preferences.
+     *
+     * @param elevation The elevation to set for all points
+     */
+    public void forceAllPointElevations(double elevation) {
+        for (int i = 0; i < points.size(); i++) {
+            NetworkPoint p = points.get(i);
+            Point3D newPosition = new Point3D(p.position.x, p.position.y, elevation);
+            points.set(i, p.withPosition(newPosition));
+        }
+    }
+
+    /**
      * Get the total number of points.
      */
     public int getPointCount() {
