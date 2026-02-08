@@ -2356,7 +2356,14 @@ public class DendrySampler implements Sampler {
 
             // Calculate normalized slope with DistanceFalloffPower
             double dist = Math.sqrt(distSq);
-            double heightDiff = sourcePt.position.z - candidate.position.z;
+            double selZ = Double.MAX_VALUE;
+            if(level==0){
+                selZ = minimum;
+            }
+            else{
+                selZ = candidate.position.z;
+            }
+            double heightDiff = sourcePt.position.z - selZ;
             double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
 
             // Level 1+ has slope cutoff
