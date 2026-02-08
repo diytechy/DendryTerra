@@ -2064,6 +2064,9 @@ public class DendrySampler implements Sampler {
         if(level >0){
             maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
         }
+        else{
+            mergeDistance = mergeDistance/2;
+        }
 
         // DEBUG 40: Track point counts at each stage for the highest level
         int draftedCount = points.size();
@@ -2327,9 +2330,9 @@ public class DendrySampler implements Sampler {
                                     double maxDistSq, double mergeDistSq, int level) {
         Point2D sourcePos = sourcePt.position.projectZ();
 
-        double bestSlopeWithinMerge = Double.MAX_VALUE;
+        double bestdistSq = Double.MAX_VALUE;
         int bestNeighborWithinMerge = -1;
-        double bestSlopeOverall = Double.MAX_VALUE;
+        double bestSlopeOverall = Double.MIN_VALUE;
         int bestNeighborOverall = -1;
 
         for (int i = 0; i < segList.getPointCount(); i++) {
@@ -2350,26 +2353,26 @@ public class DendrySampler implements Sampler {
             double normalizedSlope = heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
 
             // Level 1+ has slope cutoff
-            if (level > 0 && normalizedSlope > lowestSlopeCutoff) {
+            if (level > 0 && (normalizedSlope < lowestSlopeCutoff)) {
                 continue;
             }
 
             // Apply branch encouragement if candidate has 2+ connections
             double effectiveSlope = normalizedSlope;
-            if (candidate.connections >= 2) {
+            if (candidate.connections >= 1) {
                 effectiveSlope *= BRANCH_ENCOURAGEMENT_FACTOR;
             }
 
             // Priority A: Prefer neighbors within merge distance
             if (distSq <= mergeDistSq) {
-                if (effectiveSlope < bestSlopeWithinMerge) {
-                    bestSlopeWithinMerge = effectiveSlope;
+                if (distSq < bestdistSq) {
+                    bestdistSq = distSq;
                     bestNeighborWithinMerge = i;
                 }
             }
 
             // Priority B: Track overall best
-            if (effectiveSlope < bestSlopeOverall) {
+            if (effectiveSlope > bestSlopeOverall) {
                 bestSlopeOverall = effectiveSlope;
                 bestNeighborOverall = i;
             }

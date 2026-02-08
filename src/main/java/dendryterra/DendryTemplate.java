@@ -214,7 +214,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("lowest-slope-cutoff")
     @Default
-    private @Meta double lowestSlopeCutoff = 0.01;
+    private @Meta double lowestSlopeCutoff = -0.01;
 
     /**
      * Debug level for segment visualization.

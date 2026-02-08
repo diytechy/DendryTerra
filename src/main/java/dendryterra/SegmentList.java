@@ -675,7 +675,7 @@ public class SegmentList {
             jitterMagnitude = rawMagnitude / Math.sqrt(0.5); // Normalize to [0, 1]
 
             // Cap jitter magnitude at % of maxSegmentLength
-            double maxJitter = maxSegmentLength * 0.25;
+            double maxJitter = maxSegmentLength *  Math.pow(0.25, level);
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
             // TODO: Remove level check to allow jitter on all levels.
@@ -735,7 +735,7 @@ public class SegmentList {
                 intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
                                                        config.maxIntermediateTwistAngle, rng);
             }
-
+            intermediateTangent = boundTangentMagnitude(intermediateTangent, ((maxSegmentLength*8)/(Math.pow(2, level))));
             // Add intermediate point with appropriate type
             int intermediateIdx = addPoint(intermediatePoint, intermediateType, level);
 

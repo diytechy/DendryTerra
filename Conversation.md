@@ -1216,7 +1216,24 @@ Then similar to generatePointsForCellAtLevel, generate all the level points acco
 
 ##########################################################
 
-It appears some level 0 points are not getting connected to the rest of the asterism (missing / dropped entirely).  This appears to be happening in phase B of connectAndDefineSegmentsV2
+It appears some level 0 points are not getting connected to the rest of the asterism (missing / dropped entirely).  This appears to be happening in phase B of connectAndDefineSegmentsV2, I expanded max level search to inf, and it's working, but this shouldn't have been an issue.
+
+#################################################################
+
+Increase the number of segments created for trunk (double the amount of segments created)
+
+Increase the allowable tangent multiplier.... since these are tight connections.
+
+Figure out why chained segments can't connect to eachother.
+
+##########################################################
+
+In phase B of CleanAndNetworkPointsV2 it appears 
+
+###########################################################
+
+intermediateTangent
+
 
 
 
