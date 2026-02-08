@@ -1255,12 +1255,12 @@ Unconnected points at level 0 do not appear to connect back to the trunk, or to 
 
 
 Add new parameter inputs:
-riverwidth - a sampler that gives a value that will be used to determine the river width at a given point.
-borderwidth - a sampler that gives a value that will be used to determine the width of a border region around a river.
+riverwidth - a sampler that gives a value that will be used to determine the river width at a given point.  Default 16.
+borderwidth - a sampler that gives a value that will be used to determine the width of a border region around a river.   Default 20
 
 Now add a new return type "PIXEL_RIVER" which will return the following using the pixel cache data:
 
-1. For each query / coordinate of "PIXEL_RIVER" the river width and border width will be computed from their samplers as the noted parameter inputs above.
+1. For each query / coordinate of "PIXEL_RIVER" the river width and border width will be computed from their samplers as the noted parameter inputs above (the inputs above are in raw coordinates, so they need to be divided by the pixel cache value if distances will be compared using pixel units.)
 2. For the resolution / levels that were configured, the riverwidth per level shall be calculated as:
 RiverWidthAtLevel = riverwidth*(0.6^level), but will not be able to be less than 2x the pixelcache resolution.
 

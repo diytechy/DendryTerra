@@ -140,6 +140,13 @@ public class DendrySampler implements Sampler {
     private final double cachepixels;     // Pixel cache resolution (0 = disabled)
     private final int pixelGridSize;      // Number of pixels per cell axis (gridsize / cachepixels)
 
+    // River width parameters
+    private final Sampler riverwidthSampler;    // Sampler for river width at a point
+    private final double defaultRiverwidth;      // Default river width when no sampler
+    private final Sampler borderwidthSampler;   // Sampler for border width around rivers
+    private final double defaultBorderwidth;    // Default border width when no sampler
+    private static final double RIVER_WIDTH_FALLOFF = 0.6;  // River width reduction per level
+
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
     private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
@@ -292,7 +299,9 @@ public class DendrySampler implements Sampler {
                          double tangentAngle, double tangentStrength,
                          double cachepixels,
                          double slopeWhenStraight, double lowestSlopeCutoff,
-                         int debug, double minimum) {
+                         int debug, double minimum,
+                         Sampler riverwidthSampler, double defaultRiverwidth,
+                         Sampler borderwidthSampler, double defaultBorderwidth) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -321,6 +330,10 @@ public class DendrySampler implements Sampler {
         this.lowestSlopeCutoff = lowestSlopeCutoff;
         this.debug = debug;
         this.minimum = minimum;
+        this.riverwidthSampler = riverwidthSampler;
+        this.defaultRiverwidth = defaultRiverwidth;
+        this.borderwidthSampler = borderwidthSampler;
+        this.defaultBorderwidth = defaultBorderwidth;
 
         // Calculate pixel grid size
         if (cachepixels > 0) {
@@ -3504,7 +3517,8 @@ public class DendrySampler implements Sampler {
         return cachepixels > 0 && pixelCache != null &&
                (returnType == DendryReturnType.PIXEL_ELEVATION ||
                 returnType == DendryReturnType.PIXEL_LEVEL ||
-                returnType == DendryReturnType.PIXEL_DEBUG);
+                returnType == DendryReturnType.PIXEL_DEBUG ||
+                returnType == DendryReturnType.PIXEL_RIVER);
     }
 
     /**
@@ -3760,10 +3774,143 @@ public class DendrySampler implements Sampler {
             //  -1 = no data
             // Direct mapping: return pointType
             return data.pointType;
+        } else if (returnType == DendryReturnType.PIXEL_RIVER) {
+            // River mode: we're on a segment, so distance is 0 -> return 0 (river)
+            return 0;
         } else {
             // PIXEL_LEVEL
             return data.level;
         }
+    }
+
+    /**
+     * Get river width at a point, applying level-based falloff.
+     * @param worldX World X coordinate (normalized)
+     * @param worldY World Y coordinate (normalized)
+     * @param level Segment level (0-5)
+     * @return River width in normalized coordinates
+     */
+    private double getRiverWidth(double worldX, double worldY, int level) {
+        double baseWidth;
+        if (riverwidthSampler != null) {
+            baseWidth = riverwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+        } else {
+            baseWidth = defaultRiverwidth;
+        }
+        // Apply level-based falloff: width * (0.6^level)
+        double levelWidth = baseWidth * Math.pow(RIVER_WIDTH_FALLOFF, level);
+        // Minimum width is 2x pixel resolution
+        double minWidth = 2.0 * cachepixels;
+        return Math.max(levelWidth, minWidth) / gridsize;  // Normalize to cell units
+    }
+
+    /**
+     * Get border width at a point.
+     * @param worldX World X coordinate (normalized)
+     * @param worldY World Y coordinate (normalized)
+     * @return Border width in normalized coordinates
+     */
+    private double getBorderWidth(double worldX, double worldY) {
+        double width;
+        if (borderwidthSampler != null) {
+            width = borderwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+        } else {
+            width = defaultBorderwidth;
+        }
+        return width / gridsize;  // Normalize to cell units
+    }
+
+    /**
+     * Find the nearest segment pixel within a search radius.
+     * Searches the current cell and adjacent cells if needed.
+     * @param worldX World X coordinate (normalized)
+     * @param worldY World Y coordinate (normalized)
+     * @param maxSearchRadius Maximum search radius in normalized coordinates
+     * @return Array of [distance, level] or null if no segment found
+     */
+    private double[] findNearestSegmentPixel(double worldX, double worldY, double maxSearchRadius) {
+        int cellX = MathUtils.floor(worldX);
+        int cellY = MathUtils.floor(worldY);
+
+        // Convert search radius to pixels
+        int maxPixelRadius = (int) Math.ceil(maxSearchRadius * pixelGridSize) + 1;
+
+        // Get local pixel coordinates
+        double localX = worldX - cellX;
+        double localY = worldY - cellY;
+        int centerPx = (int) (localX * pixelGridSize);
+        int centerPy = (int) (localY * pixelGridSize);
+
+        double bestDistSq = Double.MAX_VALUE;
+        int bestLevel = -1;
+
+        // Search in expanding rings
+        for (int radius = 0; radius <= maxPixelRadius; radius++) {
+            // If we've found a segment within current radius, stop
+            if (bestDistSq <= radius * radius) {
+                break;
+            }
+
+            // Search ring at this radius
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    // Only process pixels on the ring edge (optimization)
+                    if (Math.abs(dx) != radius && Math.abs(dy) != radius) {
+                        continue;
+                    }
+
+                    int px = centerPx + dx;
+                    int py = centerPy + dy;
+
+                    // Determine which cell this pixel is in
+                    int checkCellX = cellX;
+                    int checkCellY = cellY;
+                    int checkPx = px;
+                    int checkPy = py;
+
+                    // Handle crossing into adjacent cells
+                    if (px < 0) {
+                        checkCellX = cellX - 1;
+                        checkPx = px + pixelGridSize;
+                    } else if (px >= pixelGridSize) {
+                        checkCellX = cellX + 1;
+                        checkPx = px - pixelGridSize;
+                    }
+                    if (py < 0) {
+                        checkCellY = cellY - 1;
+                        checkPy = py + pixelGridSize;
+                    } else if (py >= pixelGridSize) {
+                        checkCellY = cellY + 1;
+                        checkPy = py - pixelGridSize;
+                    }
+
+                    // Get cache for this cell
+                    CellPixelData cache = getCachedPixelData(checkCellX, checkCellY);
+                    if (cache == null || !cache.populated) {
+                        continue;
+                    }
+
+                    PixelData data = cache.getPixel(checkPx, checkPy);
+                    if (data != null) {
+                        // Calculate distance in normalized coordinates
+                        double pixelWorldX = checkCellX + (checkPx + 0.5) / pixelGridSize;
+                        double pixelWorldY = checkCellY + (checkPy + 0.5) / pixelGridSize;
+                        double distSq = (worldX - pixelWorldX) * (worldX - pixelWorldX) +
+                                       (worldY - pixelWorldY) * (worldY - pixelWorldY);
+
+                        if (distSq < bestDistSq) {
+                            bestDistSq = distSq;
+                            bestLevel = data.level;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (bestLevel >= 0) {
+            return new double[] { Math.sqrt(bestDistSq), bestLevel };
+        }
+        return null;
     }
 
     /**
@@ -3780,10 +3927,15 @@ public class DendrySampler implements Sampler {
             // CACHE HIT: Cell is already computed - look up pixel value directly
             pixelCacheHits.incrementAndGet();
             double value = lookupPixelValue(x, y);
-            // If pixel has data, return it; if empty (NaN), return -2
-            // - 1 gives delta from other values.
-            // This is the FIX: we don't recompute just because a pixel is empty
-            return Double.isNaN(value) ? -1 : (value);
+            // If pixel has data, return it
+            if (!Double.isNaN(value)) {
+                return value;
+            }
+            // Pixel is empty - handle based on return type
+            if (returnType == DendryReturnType.PIXEL_RIVER) {
+                return evaluateRiverDistance(x, y);
+            }
+            return -1;
         }
 
         // CACHE MISS: Cell not computed yet - create/get cache entry and compute
@@ -3801,8 +3953,51 @@ public class DendrySampler implements Sampler {
 
         // Lookup the value
         double value = lookupPixelValue(x, y);
-        // If pixel has data, return it; if empty (NaN), return 0
-        return Double.isNaN(value) ? 0 : value;
+        // If pixel has data, return it
+        if (!Double.isNaN(value)) {
+            return value;
+        }
+        // Pixel is empty - handle based on return type
+        if (returnType == DendryReturnType.PIXEL_RIVER) {
+            return evaluateRiverDistance(x, y);
+        }
+        return 0;
+    }
+
+    /**
+     * Evaluate river/border classification for a point not directly on a segment.
+     * Searches for nearest segment and compares distance to river/border widths.
+     * @param x Normalized X coordinate
+     * @param y Normalized Y coordinate
+     * @return 0 = river, 1 = border, 2 = outside
+     */
+    private double evaluateRiverDistance(double x, double y) {
+        // Get max search radius (river width + border width at level 0)
+        double maxRiverWidth = getRiverWidth(x, y, 0);
+        double borderWidth = getBorderWidth(x, y);
+        double maxSearchRadius = maxRiverWidth + borderWidth;
+
+        // Find nearest segment pixel
+        double[] nearest = findNearestSegmentPixel(x, y, maxSearchRadius);
+        if (nearest == null) {
+            // No segment found within search radius - outside river/border
+            return 2;
+        }
+
+        double distance = nearest[0];
+        int level = (int) nearest[1];
+
+        // Get river width for this level
+        double riverWidth = getRiverWidth(x, y, level);
+
+        // Classify based on distance
+        if (distance < riverWidth) {
+            return 0;  // Within river
+        } else if (distance < riverWidth + borderWidth) {
+            return 1;  // Within border
+        } else {
+            return 2;  // Outside
+        }
     }
 
     /**

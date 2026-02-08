@@ -243,6 +243,39 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double minimum = 0;
 
+    /**
+     * Sampler for river width at a given point.
+     * The sampled value determines base river width in world units.
+     * Actual river width per level = riverwidth * (0.6^level), minimum 2x pixel resolution.
+     * Used with PIXEL_RIVER return type.
+     */
+    @Value("riverwidth")
+    @Default
+    private @Meta Sampler riverwidthSampler = null;
+
+    /**
+     * Default river width when no riverwidth sampler is provided.
+     */
+    @Value("default-riverwidth")
+    @Default
+    private @Meta double defaultRiverwidth = 16.0;
+
+    /**
+     * Sampler for border width around rivers.
+     * The sampled value determines border width in world units.
+     * Used with PIXEL_RIVER return type.
+     */
+    @Value("borderwidth")
+    @Default
+    private @Meta Sampler borderwidthSampler = null;
+
+    /**
+     * Default border width when no borderwidth sampler is provided.
+     */
+    @Value("default-borderwidth")
+    @Default
+    private @Meta double defaultBorderwidth = 20.0;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -310,7 +343,9 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             Math.toRadians(tangentAngle), tangentStrength,
             cachepixels,
             slopeWhenStraight, lowestSlopeCutoff,
-            debug, minimum
+            debug, minimum,
+            riverwidthSampler, defaultRiverwidth,
+            borderwidthSampler, defaultBorderwidth
         );
     }
 }
