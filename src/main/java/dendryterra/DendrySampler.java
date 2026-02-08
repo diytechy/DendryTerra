@@ -2060,7 +2060,10 @@ public class DendrySampler implements Sampler {
         // Function setup: determine cell-specific distances
         double gridSpacing = getGridSpacingForLevel(level);
         double mergeDistance = MERGE_POINT_SPACING * getGridSpacingForLevel(level+1);
-        double maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
+        double maxSegmentDistance = Double.MAX_VALUE;
+        if(level >0){
+            maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
+        }
 
         // DEBUG 40: Track point counts at each stage for the highest level
         int draftedCount = points.size();

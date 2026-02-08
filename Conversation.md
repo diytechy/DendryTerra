@@ -1188,6 +1188,53 @@ Also add logger context in debug 40 to indicate for the highest level (resolutio
 
 ##########################################################
 
+Still not seeing any level 2 points come through debug mode 40 on level 2.  The tool indicates 5 points were retained after probabilistic removal.  Is there any other logic that is removing points before they are connected to previous level segments?
+
+Unrelated:
+
+Add logic to prevent hermite splines from crossing the cell boundary, this can be done by checking the tangent components, such that if the point x + or - the absolute tangent x component intersects the cell well, reduce it accordingly, and similarly for the y components.  Thus every created tangent component can have it's components "clamped" in a way to ensure they would not overlap the cell boundary.  This only applies to level 1+ tangent creation.  This can probably be done after boundTangentMagnitude in SegmentList.java.
+
+In the cell pruning logic (pruneSegmentsToCell) prevent segment creation near edges by implementing the following:
+- If after pruning, the segment chain is more than 4 segments long, set the two points closest to each edge to edge types to prevent higher level segments from connecting to them, and to reduce the likelihood new segments will cross the cell boundary.
+
+#####################################################
+
+I have commented markEdgePointsNearBoundary because it is converting more than 2 points.
+
+Simplify the logic so that for each segment, if one point is already an edge type and that point only has one connection, and the connected segment to the non-edge point has two non-edge points, then update the non-edge point for the current segment to be an edge type.  This should prevent excessive conversion of points to edge types.
+
+##########################################################
+
+
+Refactor lines 454 to 458 of DendrySampler.java to generate points in a slightly more simplified manner.
+
+Create a new function to create the points for the specified level at the specific query level.   (perhaps just refactor generatePointsForCellAtLevel(queryX, queryY, level))
+
+Determine the number of rows or columns per cell as POINTS_PER_CELL[level]
+
+Then similar to generatePointsForCellAtLevel, generate all the level points according to the points per cell grid spacing to get (points per cell)^2 number of points drafted for the cell.  But now the points should span the entire world cell from 0 to 1 or 2 to 3 ect according to the query cell, instead of a resolution that reduces the coverage of points.
+
+##########################################################
+
+It appears some level 0 points are not getting connected to the rest of the asterism (missing / dropped entirely).  This appears to be happening in phase B of connectAndDefineSegmentsV2
+
+
+
+
+
+
+
+
+
+#########################################################
+
+Elevation - If a node is getting attached and is lower elevation than the node it's connecting to, all nodes that it's connected to going to down to the level 0 asterism should be reduced in elevation ratiometrically.
+
+River return type - Input to specify the width for each level to report as river enum.  Input to point to sampler to define the width variation.  Refer to current river sampler, since "flats" or lowlands might be a special type that needs consideration?
+
+
+
+
 Reminder: Final ToDo:
 
 Remove all unused / legacy functions.
