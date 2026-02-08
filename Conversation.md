@@ -1248,6 +1248,10 @@ findBestNeighborV2 should have the latest updates for normalized slope calculati
 
 intermediateTangent
 
+#####################################################
+
+
+Unconnected points at level 0 do not appear to connect back to the trunk, or to each-other.  Is there a bug in level 0 asterism creation that is preventing new segments from connecting to points that were just added in previous segment iteration creation or at trunk creation?
 
 
 

@@ -13,7 +13,11 @@ public class SegmentListConfig {
     public double maxTwistAngle = 1.0; //  +/- degrees in radians when slope is 0, affects random rotation of origin points.
     public double maxIntermediateTwistAngle = 0.25; // +/- degrees in radians, for intermediate points, reduced by jitter magnitude
     public double SlopeWithoutTwist = 0.5;
-    
+    // Decrease for greater rolloff of jitter as levels increase.
+    public double jitterReductionBase = 0.6; // Base for jitter reduction per level: Math.pow(jitterReductionBase, level)
+    // Increase for greater rolloff of tangent strength as levels increase.
+    public double tangentReductionBase = 1.75; // Base for tangent magnitude reduction per level: Math.pow(tangentReductionBase, level)
+
     public SegmentListConfig() {}
     
     public SegmentListConfig(long salt) {
@@ -52,6 +56,16 @@ public class SegmentListConfig {
 
     public SegmentListConfig withSlopeWithoutTwist(double SlopeWithoutTwist) {
         this.SlopeWithoutTwist = SlopeWithoutTwist;
+        return this;
+    }
+
+    public SegmentListConfig withJitterReductionBase(double jitterReductionBase) {
+        this.jitterReductionBase = jitterReductionBase;
+        return this;
+    }
+
+    public SegmentListConfig withTangentReductionBase(double tangentReductionBase) {
+        this.tangentReductionBase = tangentReductionBase;
         return this;
     }
 }
