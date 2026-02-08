@@ -1276,9 +1276,55 @@ Returns 0 for river.
 Returns 1 for border.
 Returns 2 for not river.
 
+#########################################################
+
+In order to reduce memory consumed by segment lists, rename the class "Segment3D" to "SegmentIdx" and remove the depricated "Point3D" fields in the class.
+
+Unused / depricated funcitons need not be updated for compatability, they will be addressed on a case-by-case basis.
+
+Then create a new class "Segment3D" which includes the following fields:
+
+
+    public final Point3D srt;  // Start point of the segment
+    public final Point3D end;  // End point of the segment
+    public final Vec2D tangentSrt;  // Tangent direction at start point (may be null)
+    public final Vec2D tangentEnd;  // Tangent direction at end point (may be null)
 
 
 
+
+
+
+
+
+
+******************************************
+
+The new method is taking a long time to run as each point needs multiple iterations to evaluate, lets make some more significant changes which should speed up results.
+
+Add new parameters to define how stored information will be normalized in this new method:
+ - "max" defines the maximumm expected elevation / control function value to quantize results for.  Default 2.0, will be described further below.
+ - "max-dist" defines the maximum expected distance computed, and affects how distance will be quantized for results.  Default 50.
+
+1. After evaluating a pruned cell for all levels, store the full segmentlist for that pruned cell.  Retain 20 MB for retained segment lists, removing the oldest access segment lists if space needs to be freed.
+
+2. Now, impliment a new cache for which each element is a fixed 256x256 size of blocks, where each block represents a pixel-cache sized square.  Each 256x256 grid here can be referred to as a chunk.
+ - Each grid / chunk is located in world coordinates using 2 doubles or pixelcache coordinates using uint32.  If using pixelcache coordinates it's okay to produce an error when out of the 32-bit integer bounds.
+ - Each grid / chunk contains 2 values: a UInt8 normalized elevation, and a UInt8 normalized distance.
+ - Each grid / chunk may need to hold a flag or similar that indicates it has been computed.
+
+Thus, each chunk should consume 256x256x2 = 131072 bytes + 8 byte locator + 4 byte age ~ 132 kb.
+
+Similar to the existing cache, this cache should be allowed to consume up to 20 MB.
+ 
+I expect similar functions as getOrCreatePixelCache and evaluateWithPixelCache, but this time to evaluate when a chunk when it is not available.
+
+ 4. Now a queried coordinate from the DendryTerra sampler can first determine if the pixel chunk exists in memory.  If not, it needs to be created.
+
+ To create / fully define a pixel chunk:
+
+ 1. Load all cells that are within the distance boundary "max-dist" of the query point.
+ 2. Load all segments from all cells, note that now they are being evaluated and tracking connection points is not necessary, it may be simpler to convert from Segment list to a segment3D
 
 
 #########################################################

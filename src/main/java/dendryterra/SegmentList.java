@@ -13,7 +13,7 @@ import java.util.*;
  */
 public class SegmentList {
     private final List<NetworkPoint> points;
-    private final List<Segment3D> segments;
+    private final List<SegmentIdx> segments;
     private final Map<Integer, List<SegmentConnection>> pointToSegments;  // Maps point index to connected segments
     private int nextIndex;  // For generating unique indices
     private SegmentListConfig config;  // Global configuration
@@ -189,7 +189,7 @@ public class SegmentList {
         if (connections == null) return;
 
         for (SegmentConnection conn : connections) {
-            Segment3D seg = segments.get(conn.segmentIndex);
+            SegmentIdx seg = segments.get(conn.segmentIndex);
 
             // Get the other endpoint
             int otherIdx = conn.isStart ? seg.endIdx : seg.srtIdx;
@@ -223,7 +223,7 @@ public class SegmentList {
      * Note: Currently accepts Segment3D with Point3D srt/end.
      * After Segment3D is modified to use indices, this will accept index-based segments.
      */
-    public void addSegment(Segment3D segment) {
+    public void addSegment(SegmentIdx segment) {
         segments.add(segment);
         // Connection count updates will be handled after Segment3D transition
         // For now, we'll update counts based on finding points by position
@@ -232,12 +232,12 @@ public class SegmentList {
 
     /**
      * Add a segment directly using point indices.
-     * Creates a Segment3D internally.
+     * Creates a SegmentIdx internally.
      */
     public void addBasicSegment(int srtIdx, int endIdx, int level,
                            Vec2D tangentSrt, Vec2D tangentEnd) {
-        // Create index-based Segment3D
-        Segment3D segment = new Segment3D(
+        // Create index-based SegmentIdx
+        SegmentIdx segment = new SegmentIdx(
             srtIdx, endIdx, level,
             tangentSrt, tangentEnd
         );
@@ -636,7 +636,7 @@ public class SegmentList {
 
         // Use the first connected segment
         SegmentConnection conn = connections.get(0);
-        Segment3D seg = segments.get(conn.segmentIndex);
+        SegmentIdx seg = segments.get(conn.segmentIndex);
 
         // Get the raw tangent from the existing segment
         Vec2D existingTangent;
@@ -689,7 +689,7 @@ public class SegmentList {
 
         // Use the first connected segment
         SegmentConnection conn = connections.get(0);
-        Segment3D seg = segments.get(conn.segmentIndex);
+        SegmentIdx seg = segments.get(conn.segmentIndex);
 
         if (conn.isStart) {
             // Point is at segment start - return the start tangent
@@ -944,7 +944,7 @@ public class SegmentList {
      * Remove a segment by index and decrement connection counts.
      */
     public void removeSegment(int segmentIndex) {
-        Segment3D seg = segments.get(segmentIndex);
+        SegmentIdx seg = segments.get(segmentIndex);
         updateConnectionCountsForSegment(seg, -1);
         segments.remove(segmentIndex);
     }
@@ -952,14 +952,14 @@ public class SegmentList {
     /**
      * Get a segment by its index.
      */
-    public Segment3D getSegment(int index) {
+    public SegmentIdx getSegment(int index) {
         return segments.get(index);
     }
 
     /**
      * Get an unmodifiable view of all segments.
      */
-    public List<Segment3D> getSegments() {
+    public List<SegmentIdx> getSegments() {
         return Collections.unmodifiableList(segments);
     }
 
@@ -1009,7 +1009,7 @@ public class SegmentList {
      * Uses index-based lookup for O(1) performance.
      */
     public boolean areConnected(int idx1, int idx2) {
-        for (Segment3D seg : segments) {
+        for (SegmentIdx seg : segments) {
             if ((seg.srtIdx == idx1 && seg.endIdx == idx2) ||
                 (seg.srtIdx == idx2 && seg.endIdx == idx1)) {
                 return true;
@@ -1088,8 +1088,8 @@ public class SegmentList {
         for (NetworkPoint p : this.points) {
             copy.points.add(p);  // NetworkPoint is immutable
         }
-        for (Segment3D s : this.segments) {
-            copy.segments.add(s);  // Segment3D is immutable
+        for (SegmentIdx s : this.segments) {
+            copy.segments.add(s);  // SegmentIdx is immutable
         }
         // Copy point-to-segment mapping
         for (Map.Entry<Integer, List<SegmentConnection>> entry : this.pointToSegments.entrySet()) {
@@ -1111,16 +1111,16 @@ public class SegmentList {
      * Update connection counts for points referenced by a segment.
      * @param delta +1 for adding, -1 for removing
      */
-    private void updateConnectionCountsForSegment(Segment3D segment, int delta) {
-        // Find point indices by position matching
-        int srtIdx = findPointByPosition(segment.srt, 1e-9);
-        int endIdx = findPointByPosition(segment.end, 1e-9);
+    private void updateConnectionCountsForSegment(SegmentIdx segment, int delta) {
+        // Use segment indices directly
+        int srtIdx = segment.srtIdx;
+        int endIdx = segment.endIdx;
 
-        if (srtIdx >= 0) {
+        if (srtIdx >= 0 && srtIdx < points.size()) {
             NetworkPoint p = points.get(srtIdx);
             points.set(srtIdx, p.withConnections(Math.max(0, p.connections + delta)));
         }
-        if (endIdx >= 0) {
+        if (endIdx >= 0 && endIdx < points.size()) {
             NetworkPoint p = points.get(endIdx);
             points.set(endIdx, p.withConnections(Math.max(0, p.connections + delta)));
         }
@@ -1129,27 +1129,23 @@ public class SegmentList {
     // ========== Conversion Methods ==========
 
     /**
-     * Convert to old format: List<Segment3D> with Point3D srt/end.
-     * Used for backward compatibility with existing code that expects Point3D-based segments.
+     * Convert to List<Segment3D> for evaluation.
+     * Resolves indices to Point3D positions.
      */
     public List<Segment3D> toSegment3DList() {
         List<Segment3D> result = new ArrayList<>();
 
-        for (Segment3D seg : segments) {
-            if (seg.isPointBased()) {
-                // Already has Point3D - use as-is
-                result.add(seg);
-            } else {
-                // Index-based - resolve to Point3D
-                NetworkPoint srtPt = points.get(seg.srtIdx);
-                NetworkPoint endPt = points.get(seg.endIdx);
+        for (SegmentIdx seg : segments) {
+            // Resolve indices to Point3D
+            NetworkPoint srtPt = points.get(seg.srtIdx);
+            NetworkPoint endPt = points.get(seg.endIdx);
 
-                result.add(new Segment3D(
-                    srtPt.position, endPt.position, seg.level,
-                    seg.tangentSrt, seg.tangentEnd,
-                    srtPt.pointType, endPt.pointType
-                ));
-            }
+            result.add(new Segment3D(
+                srtPt.position,
+                endPt.position,
+                seg.tangentSrt,
+                seg.tangentEnd
+            ));
         }
 
         return result;
@@ -1162,8 +1158,8 @@ public class SegmentList {
     public List<Segment2D> toSegment2DList() {
         List<Segment2D> result = new ArrayList<>();
 
-        for (Segment3D seg : segments) {
-            // Use the SegmentList resolution to get Point3D positions, then project to 2D
+        for (SegmentIdx seg : segments) {
+            // Resolve indices and project to 2D
             result.add(seg.projectZ(this));
         }
 
@@ -1172,15 +1168,15 @@ public class SegmentList {
 
     /**
      * Create a SegmentList from an existing List<Segment3D>.
-     * Used to import legacy segments into the new structure.
+     * Used to import segments for evaluation.
      */
     public static SegmentList fromSegment3DList(List<Segment3D> segments, int level) {
         return fromSegment3DList(segments, level, 12345); // Default salt
     }
-    
+
     /**
      * Create a SegmentList from an existing List<Segment3D> with specified salt.
-     * Used to import legacy segments into the new structure.
+     * Used to import segments for evaluation.
      */
     public static SegmentList fromSegment3DList(List<Segment3D> segments, int level, long salt) {
         SegmentList result = new SegmentList(salt);
@@ -1189,17 +1185,13 @@ public class SegmentList {
         Map<Long, Integer> positionToIndex = new HashMap<>();
 
         for (Segment3D seg : segments) {
-            if (!seg.isPointBased()) {
-                throw new IllegalArgumentException("Cannot import index-based segments");
-            }
-
-            // Get or create point for srt
-            int srtIdx = getOrCreatePointIndex(result, positionToIndex, seg.srt, seg.srtType, level);
+            // Get or create point for srt (default to KNOT type)
+            int srtIdx = getOrCreatePointIndex(result, positionToIndex, seg.srt, PointType.KNOT, level);
 
             // Get or create point for end
-            int endIdx = getOrCreatePointIndex(result, positionToIndex, seg.end, seg.endType, level);
+            int endIdx = getOrCreatePointIndex(result, positionToIndex, seg.end, PointType.KNOT, level);
 
-            // Add segment using indices (preserving original tangents, no subdivision)
+            // Add segment using indices (preserving original tangents)
             result.addBasicSegment(srtIdx, endIdx, level, seg.tangentSrt, seg.tangentEnd);
         }
 
