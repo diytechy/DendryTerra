@@ -446,21 +446,17 @@ public class DendrySampler implements Sampler {
         }
 
         // Level 1+: Higher resolution refinement using loop
-        // Each level generates points for the query cell and connects them using CleanAndNetworkPointsV2
+        // Each level generates points spanning the entire world cell (cell1) at increasing density
         SegmentList previousSegList = asterismPruned;
 
         for (int level = 1; level <= resolution; level++) {
-            // Get the cell at this level's resolution
-            int cellResolution = getCellResolutionForLevel(level);
-            Cell levelCell = getCell(queryX, queryY, cellResolution);
-
-            // Generate points for this cell at this level's density
-            List<Point3D> levelPoints = generatePointsForCellAtLevel(levelCell.x, levelCell.y, level);
+            // Generate points for this level spanning the entire world cell
+            List<Point3D> levelPoints = generatePointsForWorldCell(cell1.x, cell1.y, level);
 
             // Use CleanAndNetworkPointsV2 to create properly connected segments
             // This handles merging, cleaning, tangent computation, subdivision, and displacement
             SegmentList levelSegList = CleanAndNetworkPointsV2(
-                levelCell.x, levelCell.y, level, levelPoints, previousSegList);
+                cell1.x, cell1.y, level, levelPoints, previousSegList);
 
             // Update previousSegList for next iteration
             previousSegList = levelSegList;
@@ -957,37 +953,29 @@ public class DendrySampler implements Sampler {
      * Generate points for a single cell at a given level using DIVISIONS_PER_LEVEL configuration.
      * Creates a grid of points within the cell based on getPointsPerCellForLevel().
      *
-     * @param cellX Cell X coordinate in level 1 space
-     * @param cellY Cell Y coordinate in level 1 space
-     * @param level The resolution level (determines point density)
-     * @return List of 3D points within the cell
+     * @param worldCellX World cell X coordinate (level 1 cell)
+     * @param worldCellY World cell Y coordinate (level 1 cell)
+     * @param level The resolution level (determines point density via POINTS_PER_CELL[level])
+     * @return List of 3D points spanning the entire world cell
      */
-    private List<Point3D> generatePointsForCellAtLevel(int cellX, int cellY, int level) {
+    private List<Point3D> generatePointsForWorldCell(int worldCellX, int worldCellY, int level) {
         List<Point3D> points = new ArrayList<>();
         int pointsPerAxis = getPointsPerCellForLevel(level);
 
-        // Convert cell indices to world coordinates
-        // For level 1: resolution=1, cells are 1x1 in world space
-        // For level 2: resolution=2, cells are 0.5x0.5 in world space, etc.
-        double cellResolution = getCellResolutionForLevel(level);
-        double worldCellStartX = (double) cellX / cellResolution;
-        double worldCellStartY = (double) cellY / cellResolution;
-        double cellWorldSize = 1.0 / cellResolution;
+        // Grid spacing: world cell is 1x1, divide by points per axis
+        double gridSpacing = 1.0 / pointsPerAxis;
 
-        // Grid spacing in world coordinates (spacing between point centers within this cell)
-        double worldGridSpacing = cellWorldSize / pointsPerAxis;
-
-        // Generate a grid of points within the cell
+        // Generate pointsPerAxis^2 points spanning the entire world cell [worldCellX, worldCellX+1)
         for (int i = 0; i < pointsPerAxis; i++) {
             for (int j = 0; j < pointsPerAxis; j++) {
-                // Position point at center of each sub-cell with deterministic jitter
-                double baseX = worldCellStartX + (j + 0.5) * worldGridSpacing;
-                double baseY = worldCellStartY + (i + 0.5) * worldGridSpacing;
+                // Position point at center of each grid cell with deterministic jitter
+                double baseX = worldCellX + (j + 0.5) * gridSpacing;
+                double baseY = worldCellY + (i + 0.5) * gridSpacing;
 
                 // Add deterministic jitter based on position and level
                 Random rng = initRandomGenerator((int)(baseX * 10000), (int)(baseY * 10000), level);
-                double jitterX = (rng.nextDouble() - 0.5) * worldGridSpacing * 0.8;
-                double jitterY = (rng.nextDouble() - 0.5) * worldGridSpacing * 0.8;
+                double jitterX = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
+                double jitterY = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
 
                 double px = baseX + jitterX;
                 double py = baseY + jitterY;
