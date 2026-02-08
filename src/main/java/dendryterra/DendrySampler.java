@@ -3523,7 +3523,7 @@ public class DendrySampler implements Sampler {
                (returnType == DendryReturnType.PIXEL_ELEVATION ||
                 returnType == DendryReturnType.PIXEL_LEVEL ||
                 returnType == DendryReturnType.PIXEL_DEBUG ||
-                returnType == DendryReturnType.PIXEL_RIVER);
+                returnType == DendryReturnType.PIXEL_RIVER_LEGACY);
     }
 
     /**
@@ -3779,7 +3779,7 @@ public class DendrySampler implements Sampler {
             //  -1 = no data
             // Direct mapping: return pointType
             return data.pointType;
-        } else if (returnType == DendryReturnType.PIXEL_RIVER) {
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_LEGACY) {
             // River mode: we're on a segment, so distance is 0 -> return 0 (river)
             return 0;
         } else {
@@ -3937,7 +3937,7 @@ public class DendrySampler implements Sampler {
                 return value;
             }
             // Pixel is empty - handle based on return type
-            if (returnType == DendryReturnType.PIXEL_RIVER) {
+            if (returnType == DendryReturnType.PIXEL_RIVER_LEGACY) {
                 return evaluateRiverDistance(x, y);
             }
             return -1;
@@ -3963,7 +3963,7 @@ public class DendrySampler implements Sampler {
             return value;
         }
         // Pixel is empty - handle based on return type
-        if (returnType == DendryReturnType.PIXEL_RIVER) {
+        if (returnType == DendryReturnType.PIXEL_RIVER_LEGACY) {
             return evaluateRiverDistance(x, y);
         }
         return 0;

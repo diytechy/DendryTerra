@@ -47,7 +47,7 @@ public enum DendryReturnType {
     PIXEL_DEBUG,
 
     /**
-     * River detection mode using cached pixel data.
+     * Legacy river detection mode using cached pixel data.
      * Requires cachepixels > 0 to be set.
      * Uses riverwidth and borderwidth samplers to determine thresholds.
      * River width per level = riverwidth * (0.6^level), minimum 2x pixel resolution.
@@ -56,5 +56,5 @@ public enum DendryReturnType {
      *   1 - Within border (distance to segment < river width + border width)
      *   2 - Outside river and border
      */
-    PIXEL_RIVER
+    PIXEL_RIVER_LEGACY
 }

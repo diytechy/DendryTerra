@@ -247,7 +247,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      * Sampler for river width at a given point.
      * The sampled value determines base river width in world units.
      * Actual river width per level = riverwidth * (0.6^level), minimum 2x pixel resolution.
-     * Used with PIXEL_RIVER return type.
+     * Used with PIXEL_RIVER_LEGACY return type.
      */
     @Value("riverwidth")
     @Default
@@ -263,7 +263,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     /**
      * Sampler for border width around rivers.
      * The sampled value determines border width in world units.
-     * Used with PIXEL_RIVER return type.
+     * Used with PIXEL_RIVER_LEGACY return type.
      */
     @Value("borderwidth")
     @Default
