@@ -42,6 +42,12 @@ public class DendrySampler implements Sampler {
      */
     private final int debug;
 
+    /**
+     * Minimum elevation for level 0 points. When non-zero, level 0 star points
+     * use this elevation instead of the control function, flattening path preferences.
+     */
+    private final double minimum;
+
     // Configuration parameters
     private final int resolution;
     private final double epsilon;
@@ -286,7 +292,7 @@ public class DendrySampler implements Sampler {
                          double tangentAngle, double tangentStrength,
                          double cachepixels,
                          double slopeWhenStraight, double lowestSlopeCutoff,
-                         int debug) {
+                         int debug, double minimum) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -314,6 +320,7 @@ public class DendrySampler implements Sampler {
         this.slopeWhenStraight = slopeWhenStraight;
         this.lowestSlopeCutoff = lowestSlopeCutoff;
         this.debug = debug;
+        this.minimum = minimum;
 
         // Calculate pixel grid size
         if (cachepixels > 0) {

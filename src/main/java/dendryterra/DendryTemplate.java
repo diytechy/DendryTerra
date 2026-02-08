@@ -231,6 +231,18 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta int debug = 0;
 
+    /**
+     * Minimum elevation for level 0 (constellation) points.
+     * At level 0, all candidate points are assigned this elevation instead of
+     * the control function value. This flattens the elevation landscape at
+     * level 0, changing path preferences from "downhill flow" to distance-based.
+     * Default: 0 (disabled - uses control function elevation).
+     * When set, level 0 points use this value as their elevation.
+     */
+    @Value("minimum")
+    @Default
+    private @Meta double minimum = 0;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -298,7 +310,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             Math.toRadians(tangentAngle), tangentStrength,
             cachepixels,
             slopeWhenStraight, lowestSlopeCutoff,
-            debug
+            debug, minimum
         );
     }
 }
