@@ -62,7 +62,15 @@ public enum DendryReturnType {
      * Optimized river detection mode using chunked caching system.
      * Each chunk is 256x256 blocks, where each block stores normalized elevation and distance.
      * Uses bigchunk cache (20 MB) and segment list cache (20 MB) for performance.
-     * Returns normalized distance as a double value.
+     * Returns de-quantized distance as a double value.
      */
-    PIXEL_RIVER
+    PIXEL_RIVER,
+
+    /**
+     * Optimized elevation/control function mode using chunked caching system.
+     * Uses the same bigchunk cache as PIXEL_RIVER but returns elevation instead of distance.
+     * Elevation is quantized to UInt8 based on the 'max' parameter (0 = 0.0, 255 = max).
+     * Returns de-quantized elevation as a double value.
+     */
+    PIXEL_RIVER_CTRL
 }

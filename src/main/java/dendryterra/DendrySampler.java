@@ -418,9 +418,11 @@ public class DendrySampler implements Sampler {
         double normalizedX = x / gridsize;
         double normalizedZ = z / gridsize;
 
-        // Use bigchunk cache for PIXEL_RIVER return type
+        // Use bigchunk cache for PIXEL_RIVER and PIXEL_RIVER_CTRL return types
         if (returnType == DendryReturnType.PIXEL_RIVER) {
-            result = evaluateWithBigChunk(x, z);
+            result = evaluateWithBigChunkDistance(x, z);
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_CTRL) {
+            result = evaluateWithBigChunkElevation(x, z);
         }
         // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
         else if (usesPixelCache()) {
@@ -4055,9 +4057,9 @@ public class DendrySampler implements Sampler {
 
     /**
      * Evaluate using the BigChunk cache system for PIXEL_RIVER return type.
-     * Returns the normalized distance value from the cached bigchunk.
+     * Returns the de-quantized distance value from the cached bigchunk.
      */
-    private double evaluateWithBigChunk(double x, double y) {
+    private double evaluateWithBigChunkDistance(double x, double y) {
         // Get or create the bigchunk containing this point
         BigChunk chunk = getOrCreateBigChunk(x, y);
 
@@ -4072,9 +4074,37 @@ public class DendrySampler implements Sampler {
         // Get the block
         BigChunk.BigChunkBlock block = chunk.getBlock(gridX, gridY);
 
-        // Return normalized distance
+        // Return de-quantized distance
         // Convert from uint8 back to actual distance value
-        return block.getDistanceUnsigned();
+        // De-quantization: value / quantizeResolution = value * maxDist / 255
+        double distQuantizeRes = 255.0 / maxDist;
+        return block.getDistanceUnsigned() / distQuantizeRes;
+    }
+
+    /**
+     * Evaluate using the BigChunk cache system for PIXEL_RIVER_CTRL return type.
+     * Returns the de-quantized elevation value from the cached bigchunk.
+     */
+    private double evaluateWithBigChunkElevation(double x, double y) {
+        // Get or create the bigchunk containing this point
+        BigChunk chunk = getOrCreateBigChunk(x, y);
+
+        // Convert world coordinates to block coordinates within the chunk
+        int gridX = worldToGridCoord(x, chunk.worldX, cachepixels);
+        int gridY = worldToGridCoord(y, chunk.worldY, cachepixels);
+
+        // Clamp to valid range
+        gridX = Math.max(0, Math.min(255, gridX));
+        gridY = Math.max(0, Math.min(255, gridY));
+
+        // Get the block
+        BigChunk.BigChunkBlock block = chunk.getBlock(gridX, gridY);
+
+        // Return de-quantized elevation
+        // Convert from uint8 back to actual elevation value
+        // De-quantization: value / quantizeResolution = value * max / 255
+        double elevQuantizeRes = 255.0 / max;
+        return block.getElevationUnsigned() / elevQuantizeRes;
     }
 
     /**
@@ -4227,18 +4257,16 @@ public class DendrySampler implements Sampler {
     private void sampleSegmentAlongSpline(Segment3D seg, int level, BigChunk chunk, double chunkSize) {
         // Calculate number of samples needed
         double segmentLength = seg.length();
-        int numSamples = (int) Math.ceil((segmentLength / cachepixels) * 0.8);
+        int numSamples = (int) Math.ceil((segmentLength / cachepixels) * 1.5);
         if (numSamples < 2) numSamples = 2;  // At least 2 samples
 
-        // Get river width for this level
-        double riverWidth = calculateRiverWidth(level, seg.srt.x, seg.srt.y);
 
         // Sample along the segment
         for (int i = 0; i < numSamples; i++) {
             double t = (double) i / (numSamples - 1);  // 0.0 to 1.0
 
-            // Interpolate position
-            Point3D samplePoint = seg.lerp(t);
+            // Interpolate position using Hermite spline (falls back to linear if no tangents)
+            Point3D samplePoint = evaluateHermiteSpline(seg, t);
 
             // Skip if outside chunk boundary (Manhattan distance check)
             if (!isPointNearChunk(samplePoint, chunk, chunkSize, maxDist)) {
@@ -4250,13 +4278,59 @@ public class DendrySampler implements Sampler {
             dendryterra.math.Vec2D prevTangent = (i > 0) ? interpolateTangent(seg, Math.max(0, t - 1.0 / (numSamples - 1))) : currentTangent;
             dendryterra.math.Vec2D nextTangent = (i < numSamples - 1) ? interpolateTangent(seg, Math.min(1, t + 1.0 / (numSamples - 1))) : currentTangent;
 
-            // Compute elevation at this point (linear interpolation)
-            double elevation = seg.srt.z + t * (seg.end.z - seg.srt.z);
+            // Elevation comes from the Hermite-interpolated point
+            double elevation = samplePoint.z;
+
+            // Get river width for this level
+            double riverWidth = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
 
             // Project cone from this sample point
             projectConeToBoxes(samplePoint, currentTangent, prevTangent, nextTangent,
                              elevation, riverWidth, chunk, chunkSize);
         }
+    }
+
+    /**
+     * Evaluate point on Hermite spline at parameter t.
+     * Uses cubic Hermite interpolation: H(t) = (2t³-3t²+1)P0 + (t³-2t²+t)T0 + (-2t³+3t²)P1 + (t³-t²)T1
+     */
+    private Point3D evaluateHermiteSpline(Segment3D seg, double t) {
+        if (!useSplines || seg.tangentSrt == null || seg.tangentEnd == null) {
+            // Fall back to linear interpolation
+            return seg.lerp(t);
+        }
+
+        double t2 = t * t;
+        double t3 = t2 * t;
+
+        // Hermite basis functions
+        double h00 = 2*t3 - 3*t2 + 1;   // (2t³ - 3t² + 1)
+        double h10 = t3 - 2*t2 + t;     // (t³ - 2t² + t)
+        double h01 = -2*t3 + 3*t2;      // (-2t³ + 3t²)
+        double h11 = t3 - t2;            // (t³ - t²)
+
+        // Tangent vectors scaled by segment length and tangent strength
+        double segLen = seg.length();
+        double tangentScale = segLen * tangentStrength;
+
+        // Apply curvature scaling
+        double effectiveCurvature = curvature;
+
+        // Tangent vectors in 3D (tangents are 2D, z component from elevation difference)
+        double tx0 = seg.tangentSrt.x * tangentScale * effectiveCurvature;
+        double ty0 = seg.tangentSrt.y * tangentScale * effectiveCurvature;
+        double tz0 = (seg.end.z - seg.srt.z) * effectiveCurvature;
+
+        double tx1 = seg.tangentEnd.x * tangentScale * effectiveCurvature;
+        double ty1 = seg.tangentEnd.y * tangentScale * effectiveCurvature;
+        double tz1 = (seg.end.z - seg.srt.z) * effectiveCurvature;
+
+        // Hermite interpolation
+        double x = h00 * seg.srt.x + h10 * tx0 + h01 * seg.end.x + h11 * tx1;
+        double y = h00 * seg.srt.y + h10 * ty0 + h01 * seg.end.y + h11 * ty1;
+        double z = h00 * seg.srt.z + h10 * tz0 + h01 * seg.end.z + h11 * tz1;
+
+        return new Point3D(x, y, z);
     }
 
     /**
@@ -4435,9 +4509,14 @@ public class DendrySampler implements Sampler {
             normalizedDist = distance - riverWidth;
         }
 
-        // Convert to uint8 (0-255), clamped
-        int distU8 = (int) Math.min(255, Math.max(0, normalizedDist));
-        int elevU8 = (int) Math.min(255, Math.max(0, (elevation / max) * 255));
+        // Quantize to uint8 using quantization resolution
+        // Distance: quantizeResolution = 255 / maxDist
+        // Elevation: quantizeResolution = 255 / max
+        double distQuantizeRes = 255.0 / maxDist;
+        int distU8 = (int) Math.min(255, Math.max(0, normalizedDist * distQuantizeRes));
+
+        double elevQuantizeRes = 255.0 / max;
+        int elevU8 = (int) Math.min(255, Math.max(0, elevation * elevQuantizeRes));
 
         // Update distance if lower
         if (distU8 < box.getDistanceUnsigned()) {

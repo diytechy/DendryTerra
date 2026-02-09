@@ -255,6 +255,30 @@ public class DendryBenchmarkRunner {
         );
         cases.add(new TestCase("PIXEL_RIVER_LEGACY", "legacy pixel cache implementation", pixelRiverLegacy, "Baseline"));
 
+        // 10. PIXEL_RIVER_CTRL (returns elevation instead of distance)
+        DendrySampler pixelRiverCtrl = new DendrySampler(
+            n, epsilon, delta, slope, gridsize,
+            DendryReturnType.PIXEL_RIVER_CTRL, null, salt,
+            null, defaultBranches,
+            curvature, curvatureFalloff,
+            connectDistance, connectDistanceFactor,
+            true,   // useCache
+            true,   // useParallel
+            true,   // useSplines
+            false,  // debugTiming
+            parallelThreshold,
+            ConstellationScale, constellationShape,
+            tangentAngle, tangentStrength,
+            1.0,    // cachepixels enabled (required for PIXEL_RIVER_CTRL)
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0,          // debug
+            0,          // minimum
+            null, 16.0, // riverwidthSampler, defaultRiverwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
+        );
+        cases.add(new TestCase("PIXEL_RIVER_CTRL", "chunked cache elevation mode, cachepixels=1.0", pixelRiverCtrl, "PIXEL_ELEVATION"));
+
         return cases;
     }
 
