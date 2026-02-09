@@ -147,6 +147,10 @@ public class DendrySampler implements Sampler {
     private final double defaultBorderwidth;    // Default border width when no sampler
     private static final double RIVER_WIDTH_FALLOFF = 0.6;  // River width reduction per level
 
+    // PIXEL_RIVER parameters
+    private final double max;         // Maximum expected elevation for normalization
+    private final double maxDist;     // Maximum expected distance for normalization
+
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
     private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
@@ -154,6 +158,10 @@ public class DendrySampler implements Sampler {
 
     // Lazy LRU cache (optional based on useCache flag)
     private final LoadingCache<Long, CellData> cellCache;
+
+    // PIXEL_RIVER caches (20 MB each)
+    private final SegmentListCache segmentListCache;
+    private final BigChunkCache bigChunkCache;
 
     // Timing statistics (only used when debugTiming is true)
     private final AtomicLong sampleCount = new AtomicLong(0);
@@ -301,7 +309,8 @@ public class DendrySampler implements Sampler {
                          double slopeWhenStraight, double lowestSlopeCutoff,
                          int debug, double minimum,
                          Sampler riverwidthSampler, double defaultRiverwidth,
-                         Sampler borderwidthSampler, double defaultBorderwidth) {
+                         Sampler borderwidthSampler, double defaultBorderwidth,
+                         double max, double maxDist) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.delta = delta;
@@ -334,6 +343,8 @@ public class DendrySampler implements Sampler {
         this.defaultRiverwidth = defaultRiverwidth;
         this.borderwidthSampler = borderwidthSampler;
         this.defaultBorderwidth = defaultBorderwidth;
+        this.max = max;
+        this.maxDist = maxDist;
 
         // Calculate pixel grid size
         if (cachepixels > 0) {
@@ -357,6 +368,10 @@ public class DendrySampler implements Sampler {
         } else {
             this.pixelCache = null;
         }
+
+        // Initialize PIXEL_RIVER caches
+        this.segmentListCache = new SegmentListCache();
+        this.bigChunkCache = new BigChunkCache();
 
         if (debugTiming) {
             LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useCache={}, useParallel={}, useSplines={}, parallelThreshold={}, cachepixels={}, pixelGridSize={}",
@@ -403,8 +418,12 @@ public class DendrySampler implements Sampler {
         double normalizedX = x / gridsize;
         double normalizedZ = z / gridsize;
 
+        // Use bigchunk cache for PIXEL_RIVER return type
+        if (returnType == DendryReturnType.PIXEL_RIVER) {
+            result = evaluateWithBigChunk(x, z);
+        }
         // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
-        if (usesPixelCache()) {
+        else if (usesPixelCache()) {
             result = evaluateWithPixelCache(seed, normalizedX, normalizedZ);
         } else {
             result = evaluate(seed, normalizedX, normalizedZ);
@@ -2660,6 +2679,21 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Calculate river width for a given level.
+     * River width decreases by RIVER_WIDTH_FALLOFF (0.6) per level.
+     * @param level The segment level (0-5)
+     * @param x World X coordinate for sampling
+     * @param y World Y coordinate for sampling
+     * @return River width in world units
+     */
+    private double calculateRiverWidth(int level, double x, double y) {
+        double baseWidth = (riverwidthSampler != null)
+            ? riverwidthSampler.getSample(salt, x, 0, y)
+            : defaultRiverwidth;
+        return baseWidth * Math.pow(RIVER_WIDTH_FALLOFF, level);
+    }
+
+    /**
      * Subdivide and displace segments based on level.
      */
     private List<Segment3D> subdivideAndDisplaceSegments(List<Segment3D> segments, int level, int cellX, int cellY) {
@@ -4015,5 +4049,404 @@ public class DendrySampler implements Sampler {
         double queryCenterX = cellX + 0.5;
         double queryCenterY = cellY + 0.5;
         return generateAllSegments(cell1, queryCenterX, queryCenterY);
+    }
+
+    // ========== PIXEL_RIVER Implementation ==========
+
+    /**
+     * Evaluate using the BigChunk cache system for PIXEL_RIVER return type.
+     * Returns the normalized distance value from the cached bigchunk.
+     */
+    private double evaluateWithBigChunk(double x, double y) {
+        // Get or create the bigchunk containing this point
+        BigChunk chunk = getOrCreateBigChunk(x, y);
+
+        // Convert world coordinates to block coordinates within the chunk
+        int gridX = worldToGridCoord(x, chunk.worldX, cachepixels);
+        int gridY = worldToGridCoord(y, chunk.worldY, cachepixels);
+
+        // Clamp to valid range
+        gridX = Math.max(0, Math.min(255, gridX));
+        gridY = Math.max(0, Math.min(255, gridY));
+
+        // Get the block
+        BigChunk.BigChunkBlock block = chunk.getBlock(gridX, gridY);
+
+        // Return normalized distance
+        // Convert from uint8 back to actual distance value
+        return block.getDistanceUnsigned();
+    }
+
+    /**
+     * Get the size of a bigchunk in world units.
+     * A bigchunk is 256 blocks, each block is pixelcache sized.
+     */
+    private double getBigChunkSize() {
+        return cachepixels * 256;
+    }
+
+    /**
+     * Convert world coordinates to chunk coordinates.
+     * @param worldCoord World X or Y coordinate
+     * @return Integer chunk coordinate
+     */
+    private int worldToChunkCoord(double worldCoord) {
+        double chunkSize = getBigChunkSize();
+        return (int) Math.floor(worldCoord / chunkSize);
+    }
+
+    /**
+     * Convert chunk coordinates to world coordinates (chunk origin).
+     * @param chunkCoord Integer chunk coordinate
+     * @return World coordinate of chunk origin
+     */
+    private double chunkToWorldCoord(int chunkCoord) {
+        double chunkSize = getBigChunkSize();
+        return chunkCoord * chunkSize;
+    }
+
+    /**
+     * Get or create a BigChunk for the specified world coordinates.
+     * If the chunk doesn't exist or hasn't been computed, it will be created and computed.
+     */
+    private BigChunk getOrCreateBigChunk(double x, double y) {
+        // Convert world coordinates to chunk coordinates
+        int chunkX = worldToChunkCoord(x);
+        int chunkY = worldToChunkCoord(y);
+
+        // Get world origin of this chunk
+        double worldX = chunkToWorldCoord(chunkX);
+        double worldY = chunkToWorldCoord(chunkY);
+
+        // Get or create chunk from cache
+        BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY, worldX, worldY);
+
+        // Compute if not already done
+        if (!chunk.computed) {
+            computeBigChunk(chunk);
+            chunk.computed = true;
+        }
+
+        return chunk;
+    }
+
+    /**
+     * Compute all block values for a BigChunk.
+     * This is the main PIXEL_RIVER computation method.
+     */
+    private void computeBigChunk(BigChunk chunk) {
+        double chunkSize = getBigChunkSize();
+
+        // A. Collect all segments from nearby cells that could influence this chunk
+        List<Segment3D> segments = new ArrayList<>();
+        List<Integer> levels = new ArrayList<>();  // Parallel array for segment levels
+
+        collectSegmentsForBigChunk(chunk, chunkSize, segments, levels);
+
+        // C. Process each segment
+        for (int i = 0; i < segments.size(); i++) {
+            Segment3D seg = segments.get(i);
+            int level = levels.get(i);
+
+            // Sample and project this segment onto the bigchunk
+            sampleSegmentAlongSpline(seg, level, chunk, chunkSize);
+        }
+    }
+
+    /**
+     * Collect all segments from nearby cells that could influence the bigchunk.
+     * Segments are filtered to only include those within maxDist of the chunk boundary.
+     */
+    private void collectSegmentsForBigChunk(BigChunk chunk, double chunkSize,
+                                           List<Segment3D> outSegments, List<Integer> outLevels) {
+        // Determine the range of cells that could contain relevant segments
+        // A cell can influence the chunk if any point in the cell is within maxDist of the chunk
+        double minX = chunk.worldX - maxDist;
+        double maxX = chunk.worldX + chunkSize + maxDist;
+        double minY = chunk.worldY - maxDist;
+        double maxY = chunk.worldY + chunkSize + maxDist;
+
+        // Convert to cell coordinates
+        int minCellX = (int) Math.floor(minX / gridsize);
+        int maxCellX = (int) Math.floor(maxX / gridsize);
+        int minCellY = (int) Math.floor(minY / gridsize);
+        int maxCellY = (int) Math.floor(maxY / gridsize);
+
+        // B. For each cell, get or compute SegmentList
+        for (int cellY = minCellY; cellY <= maxCellY; cellY++) {
+            for (int cellX = minCellX; cellX <= maxCellX; cellX++) {
+                // Try to get from cache first
+                double cellWorldX = cellX * gridsize;
+                double cellWorldY = cellY * gridsize;
+
+                SegmentList segmentList = segmentListCache.get(cellWorldX, cellWorldY);
+
+                // If not in cache, compute it
+                if (segmentList == null) {
+                    segmentList = computeAllSegmentsForCell(salt, cellX, cellY);
+                    segmentListCache.put(cellWorldX, cellWorldY, segmentList);
+                }
+
+                // Convert SegmentList to Segment3D and filter by distance
+                for (SegmentIdx segIdx : segmentList.getSegments()) {
+                    // Check if at least one endpoint is within maxDist of chunk boundary
+                    Point3D srt = segIdx.getSrt(segmentList);
+                    Point3D end = segIdx.getEnd(segmentList);
+
+                    boolean srtNear = isPointNearChunk(srt, chunk, chunkSize, maxDist);
+                    boolean endNear = isPointNearChunk(end, chunk, chunkSize, maxDist);
+
+                    if (srtNear || endNear) {
+                        // Convert to Segment3D and add to list
+                        Segment3D seg3d = segIdx.resolve(segmentList);
+                        outSegments.add(seg3d);
+                        outLevels.add(segIdx.level);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Check if a point is within maxDist of a chunk boundary (using Manhattan distance).
+     */
+    private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSize, double maxDist) {
+        // Expanded chunk bounds
+        double minX = chunk.worldX - maxDist;
+        double maxX = chunk.worldX + chunkSize + maxDist;
+        double minY = chunk.worldY - maxDist;
+        double maxY = chunk.worldY + chunkSize + maxDist;
+
+        return point.x >= minX && point.x <= maxX &&
+               point.y >= minY && point.y <= maxY;
+    }
+
+    /**
+     * Sample a segment along its hermite spline and project influence onto bigchunk blocks.
+     */
+    private void sampleSegmentAlongSpline(Segment3D seg, int level, BigChunk chunk, double chunkSize) {
+        // Calculate number of samples needed
+        double segmentLength = seg.length();
+        int numSamples = (int) Math.ceil((segmentLength / cachepixels) * 0.8);
+        if (numSamples < 2) numSamples = 2;  // At least 2 samples
+
+        // Get river width for this level
+        double riverWidth = calculateRiverWidth(level, seg.srt.x, seg.srt.y);
+
+        // Sample along the segment
+        for (int i = 0; i < numSamples; i++) {
+            double t = (double) i / (numSamples - 1);  // 0.0 to 1.0
+
+            // Interpolate position
+            Point3D samplePoint = seg.lerp(t);
+
+            // Skip if outside chunk boundary (Manhattan distance check)
+            if (!isPointNearChunk(samplePoint, chunk, chunkSize, maxDist)) {
+                continue;
+            }
+
+            // Calculate tangents at this point
+            dendryterra.math.Vec2D currentTangent = interpolateTangent(seg, t);
+            dendryterra.math.Vec2D prevTangent = (i > 0) ? interpolateTangent(seg, Math.max(0, t - 1.0 / (numSamples - 1))) : currentTangent;
+            dendryterra.math.Vec2D nextTangent = (i < numSamples - 1) ? interpolateTangent(seg, Math.min(1, t + 1.0 / (numSamples - 1))) : currentTangent;
+
+            // Compute elevation at this point (linear interpolation)
+            double elevation = seg.srt.z + t * (seg.end.z - seg.srt.z);
+
+            // Project cone from this sample point
+            projectConeToBoxes(samplePoint, currentTangent, prevTangent, nextTangent,
+                             elevation, riverWidth, chunk, chunkSize);
+        }
+    }
+
+    /**
+     * Interpolate tangent at parameter t along the segment.
+     */
+    private dendryterra.math.Vec2D interpolateTangent(Segment3D seg, double t) {
+        if (seg.tangentSrt != null && seg.tangentEnd != null) {
+            // Lerp between tangents
+            return new dendryterra.math.Vec2D(
+                seg.tangentSrt.x + t * (seg.tangentEnd.x - seg.tangentSrt.x),
+                seg.tangentSrt.y + t * (seg.tangentEnd.y - seg.tangentSrt.y)
+            ).normalize();
+        } else if (seg.tangentSrt != null) {
+            return seg.tangentSrt;
+        } else if (seg.tangentEnd != null) {
+            return seg.tangentEnd;
+        } else {
+            // No tangents - use segment direction
+            double dx = seg.end.x - seg.srt.x;
+            double dy = seg.end.y - seg.srt.y;
+            double len = Math.sqrt(dx * dx + dy * dy);
+            if (len > 0) {
+                return new dendryterra.math.Vec2D(dx / len, dy / len);
+            } else {
+                return new dendryterra.math.Vec2D(1, 0);  // Default
+            }
+        }
+    }
+
+    /**
+     * Project a cone of influence from a sample point onto bigchunk boxes.
+     */
+    private void projectConeToBoxes(Point3D samplePoint, dendryterra.math.Vec2D currentTangent,
+                                   dendryterra.math.Vec2D prevTangent, dendryterra.math.Vec2D nextTangent,
+                                   double elevation, double riverWidth,
+                                   BigChunk chunk, double chunkSize) {
+        // Normalize elevation to uint8
+        int elevationU8 = (int) Math.min(255, Math.max(0, (elevation / max) * 255));
+
+        // f. Set box at sample point
+        int sampleGridX = worldToGridCoord(samplePoint.x, chunk.worldX, cachepixels);
+        int sampleGridY = worldToGridCoord(samplePoint.y, chunk.worldY, cachepixels);
+
+        if (sampleGridX >= 0 && sampleGridX < 256 && sampleGridY >= 0 && sampleGridY < 256) {
+            BigChunk.BigChunkBlock box = chunk.getBlock(sampleGridX, sampleGridY);
+            updateBox(box, 0.0, elevation, riverWidth);  // Distance = 0 at sample point
+        }
+
+        // g. Determine rotation direction and project cone
+        double coneAngle = calculateConeAngle(prevTangent, currentTangent, nextTangent);
+        boolean bowsRight = calculateBowDirection(prevTangent, currentTangent, nextTangent);
+
+        // Compute perpendicular direction
+        dendryterra.math.Vec2D perpendicular = new dendryterra.math.Vec2D(-currentTangent.y, currentTangent.x);
+        if (!bowsRight) {
+            perpendicular = new dendryterra.math.Vec2D(currentTangent.y, -currentTangent.x);
+        }
+
+        // Project outward along perpendicular up to maxDist
+        int maxSteps = (int) Math.ceil(maxDist / cachepixels);
+        for (int step = 1; step <= maxSteps; step++) {
+            double distance = step * cachepixels;
+            if (distance > maxDist) break;
+
+            // Position along perpendicular
+            double px = samplePoint.x + perpendicular.x * distance;
+            double py = samplePoint.y + perpendicular.y * distance;
+
+            // Convert to grid coordinates
+            int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
+            int gridY = worldToGridCoord(py, chunk.worldY, cachepixels);
+
+            if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
+                BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
+                updateBox(box, distance, elevation, riverWidth);
+            }
+
+            // Check if we need multiple arc samples
+            double arcLength = coneAngle * distance;
+            if (arcLength > cachepixels / 2.0) {
+                int arcSamples = (int) Math.ceil(arcLength / (cachepixels / 2.0));
+                sampleArc(samplePoint, distance, coneAngle, currentTangent, bowsRight,
+                        elevation, riverWidth, chunk, arcSamples);
+            }
+        }
+    }
+
+    /**
+     * Convert world coordinate to grid coordinate within a chunk.
+     */
+    private int worldToGridCoord(double worldCoord, double chunkOrigin, double pixelSize) {
+        return (int) Math.floor((worldCoord - chunkOrigin) / pixelSize);
+    }
+
+    /**
+     * Calculate the cone angle from three consecutive tangent vectors.
+     */
+    private double calculateConeAngle(dendryterra.math.Vec2D prev, dendryterra.math.Vec2D current, dendryterra.math.Vec2D next) {
+        // Angle between prev and current
+        double angle1 = Math.atan2(current.y, current.x) - Math.atan2(prev.y, prev.x);
+        // Angle between current and next
+        double angle2 = Math.atan2(next.y, next.x) - Math.atan2(current.y, current.x);
+
+        // Normalize to [-PI, PI]
+        angle1 = normalizeAngle(angle1);
+        angle2 = normalizeAngle(angle2);
+
+        // Return maximum absolute angle change
+        return Math.max(Math.abs(angle1), Math.abs(angle2));
+    }
+
+    /**
+     * Determine if the segment is bowing to the right (counter-clockwise rotation).
+     */
+    private boolean calculateBowDirection(dendryterra.math.Vec2D prev, dendryterra.math.Vec2D current, dendryterra.math.Vec2D next) {
+        // Cross product: if positive, counter-clockwise (right)
+        double cross1 = prev.x * current.y - prev.y * current.x;
+        double cross2 = current.x * next.y - current.y * next.x;
+
+        return (cross1 + cross2) > 0;
+    }
+
+    /**
+     * Normalize angle to range [-PI, PI].
+     */
+    private double normalizeAngle(double angle) {
+        while (angle > Math.PI) angle -= 2 * Math.PI;
+        while (angle < -Math.PI) angle += 2 * Math.PI;
+        return angle;
+    }
+
+    /**
+     * Sample multiple points along an arc.
+     */
+    private void sampleArc(Point3D center, double radius, double coneAngle,
+                          dendryterra.math.Vec2D tangent, boolean bowsRight,
+                          double elevation, double riverWidth,
+                          BigChunk chunk, int numSamples) {
+        // Perpendicular direction
+        dendryterra.math.Vec2D perpendicular = new dendryterra.math.Vec2D(-tangent.y, tangent.x);
+        if (!bowsRight) {
+            perpendicular = new dendryterra.math.Vec2D(tangent.y, -tangent.x);
+        }
+
+        // Base angle
+        double baseAngle = Math.atan2(perpendicular.y, perpendicular.x);
+
+        // Sample along arc
+        for (int i = 0; i < numSamples; i++) {
+            double angleOffset = coneAngle * (i / (double)(numSamples - 1) - 0.5);
+            double angle = baseAngle + angleOffset;
+
+            double px = center.x + Math.cos(angle) * radius;
+            double py = center.y + Math.sin(angle) * radius;
+
+            int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
+            int gridY = worldToGridCoord(py, chunk.worldY, cachepixels);
+
+            if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
+                BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
+                updateBox(box, radius, elevation, riverWidth);
+            }
+        }
+    }
+
+    /**
+     * Update a bigchunk block with new distance and elevation values.
+     */
+    private void updateBox(BigChunk.BigChunkBlock box, double distance,
+                          double elevation, double riverWidth) {
+        // Compute normalized distance
+        double normalizedDist;
+        if (distance < riverWidth) {
+            normalizedDist = distance / riverWidth;
+        } else {
+            normalizedDist = distance - riverWidth;
+        }
+
+        // Convert to uint8 (0-255), clamped
+        int distU8 = (int) Math.min(255, Math.max(0, normalizedDist));
+        int elevU8 = (int) Math.min(255, Math.max(0, (elevation / max) * 255));
+
+        // Update distance if lower
+        if (distU8 < box.getDistanceUnsigned()) {
+            box.setDistanceUnsigned(distU8);
+        }
+
+        // Update elevation if higher
+        if (elevU8 > box.getElevationUnsigned()) {
+            box.setElevationUnsigned(elevU8);
+        }
     }
 }

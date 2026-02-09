@@ -276,6 +276,23 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double defaultBorderwidth = 20.0;
 
+    /**
+     * Maximum expected elevation/control function value for PIXEL_RIVER normalization.
+     * Used to quantize elevation values to UInt8 (0-255) in bigchunk cache.
+     */
+    @Value("max")
+    @Default
+    private @Meta double max = 2.0;
+
+    /**
+     * Maximum expected distance for PIXEL_RIVER normalization.
+     * Used to quantize distance values to UInt8 (0-255) in bigchunk cache.
+     * Must be >= defaultRiverwidth + defaultBorderwidth.
+     */
+    @Value("max-dist")
+    @Default
+    private @Meta double maxDist = 50.0;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -326,6 +343,16 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (slopeWhenStraight < 0 || slopeWhenStraight > 1) {
             throw new ValidationException("slope-when-straight must be in range [0, 1], got: " + slopeWhenStraight);
         }
+        if (max <= 0) {
+            throw new ValidationException("max must be positive, got: " + max);
+        }
+        if (maxDist <= 0) {
+            throw new ValidationException("max-dist must be positive, got: " + maxDist);
+        }
+        if (maxDist < defaultRiverwidth + defaultBorderwidth) {
+            throw new ValidationException("max-dist must be >= default-riverwidth + default-borderwidth, got: " +
+                maxDist + " < " + (defaultRiverwidth + defaultBorderwidth));
+        }
         return true;
     }
 
@@ -345,7 +372,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             slopeWhenStraight, lowestSlopeCutoff,
             debug, minimum,
             riverwidthSampler, defaultRiverwidth,
-            borderwidthSampler, defaultBorderwidth
+            borderwidthSampler, defaultBorderwidth,
+            max, maxDist
         );
     }
 }

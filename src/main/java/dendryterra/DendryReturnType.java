@@ -56,5 +56,13 @@ public enum DendryReturnType {
      *   1 - Within border (distance to segment < river width + border width)
      *   2 - Outside river and border
      */
-    PIXEL_RIVER_LEGACY
+    PIXEL_RIVER_LEGACY,
+
+    /**
+     * Optimized river detection mode using chunked caching system.
+     * Each chunk is 256x256 blocks, where each block stores normalized elevation and distance.
+     * Uses bigchunk cache (20 MB) and segment list cache (20 MB) for performance.
+     * Returns normalized distance as a double value.
+     */
+    PIXEL_RIVER
 }

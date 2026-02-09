@@ -37,7 +37,8 @@ public class DendryBenchmarkRunner {
     private static List<TestCase> createTestCases(int n, double epsilon, double delta, double slope, double gridsize,
             DendryReturnType returnType, long salt, int defaultBranches, double curvature, double curvatureFalloff,
             double connectDistance, double connectDistanceFactor, int parallelThreshold, int ConstellationScale,
-            ConstellationShape constellationShape, double tangentAngle, double tangentStrength) {
+            ConstellationShape constellationShape, double tangentAngle, double tangentStrength,
+            double max, double maxDist) {
 
         List<TestCase> cases = new ArrayList<>();
 
@@ -60,7 +61,8 @@ public class DendryBenchmarkRunner {
             0,          // debug
             0,          // minimum
             null, 16.0, // riverwidthSampler, defaultRiverwidth
-            null, 20.0  // borderwidthSampler, defaultBorderwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
         );
         cases.add(new TestCase("Baseline", "cache=ON, parallel=ON, splines=ON, n=2", baseline, null));
 
@@ -83,7 +85,8 @@ public class DendryBenchmarkRunner {
             0,          // debug
             0,          // minimum
             null, 16.0, // riverwidthSampler, defaultRiverwidth
-            null, 20.0  // borderwidthSampler, defaultBorderwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
         );
         cases.add(new TestCase("No Cache", "cache=OFF, parallel=ON, splines=ON", noCache, "Baseline"));
         
@@ -106,7 +109,8 @@ public class DendryBenchmarkRunner {
             0,          // debug
             0,          // minimum
             null, 16.0, // riverwidthSampler, defaultRiverwidth
-            null, 20.0  // borderwidthSampler, defaultBorderwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
         );
         cases.add(new TestCase("No Parallel", "cache=ON, parallel=OFF, splines=ON", noParallel, "Baseline"));
 
@@ -129,7 +133,8 @@ public class DendryBenchmarkRunner {
             0,          // debug
             0,          // minimum
             null, 16.0, // riverwidthSampler, defaultRiverwidth
-            null, 20.0  // borderwidthSampler, defaultBorderwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
         );
         cases.add(new TestCase("No Splines", "cache=ON, parallel=ON, splines=OFF", noSplines, "Baseline"));
 
@@ -152,7 +157,8 @@ public class DendryBenchmarkRunner {
             0,          // debug
             0,          // minimum
             null, 16.0, // riverwidthSampler, defaultRiverwidth
-            null, 20.0  // borderwidthSampler, defaultBorderwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
         );
         cases.add(new TestCase("Minimal", "cache=OFF, parallel=OFF, splines=OFF", minimal, "Baseline"));
 
@@ -172,7 +178,8 @@ public class DendryBenchmarkRunner {
             0,          // debug
             0,          // minimum
             null, 16.0, // riverwidthSampler, defaultRiverwidth
-            null, 20.0  // borderwidthSampler, defaultBorderwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
         );
         cases.add(new TestCase("High Resolution", "n=3, all optimizations ON", highRes, "Baseline"));
 
@@ -195,9 +202,58 @@ public class DendryBenchmarkRunner {
             0,          // debug
             0,          // minimum
             null, 16.0, // riverwidthSampler, defaultRiverwidth
-            null, 20.0  // borderwidthSampler, defaultBorderwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
         );
         cases.add(new TestCase("CachePixels Enabled", "cache=ON, parallel=ON, splines=ON, cachepixels=1.0", cachePixelsEnabled, "Baseline"));
+
+        // 8. PIXEL_RIVER (NEW TEST)
+        DendrySampler pixelRiver = new DendrySampler(
+            n, epsilon, delta, slope, gridsize,
+            DendryReturnType.PIXEL_RIVER, null, salt,
+            null, defaultBranches,
+            curvature, curvatureFalloff,
+            connectDistance, connectDistanceFactor,
+            true,   // useCache
+            true,   // useParallel
+            true,   // useSplines
+            false,  // debugTiming
+            parallelThreshold,
+            ConstellationScale, constellationShape,
+            tangentAngle, tangentStrength,
+            1.0,    // cachepixels enabled (required for PIXEL_RIVER)
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0,          // debug
+            0,          // minimum
+            null, 16.0, // riverwidthSampler, defaultRiverwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
+        );
+        cases.add(new TestCase("PIXEL_RIVER", "new chunked cache, cachepixels=1.0, max=2.0, maxDist=50.0", pixelRiver, "PIXEL_RIVER_LEGACY"));
+
+        // 9. PIXEL_RIVER_LEGACY (for comparison)
+        DendrySampler pixelRiverLegacy = new DendrySampler(
+            n, epsilon, delta, slope, gridsize,
+            DendryReturnType.PIXEL_RIVER_LEGACY, null, salt,
+            null, defaultBranches,
+            curvature, curvatureFalloff,
+            connectDistance, connectDistanceFactor,
+            true,   // useCache
+            true,   // useParallel
+            true,   // useSplines
+            false,  // debugTiming
+            parallelThreshold,
+            ConstellationScale, constellationShape,
+            tangentAngle, tangentStrength,
+            1.0,    // cachepixels enabled
+            0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
+            0,          // debug
+            0,          // minimum
+            null, 16.0, // riverwidthSampler, defaultRiverwidth
+            null, 20.0, // borderwidthSampler, defaultBorderwidth
+            max, maxDist // max, maxDist
+        );
+        cases.add(new TestCase("PIXEL_RIVER_LEGACY", "legacy pixel cache implementation", pixelRiverLegacy, "Baseline"));
 
         return cases;
     }
@@ -243,11 +299,14 @@ public class DendryBenchmarkRunner {
         double tangentAngle = Math.toRadians(45);  // 45 degrees max deviation
         double tangentStrength = 0.4;  // Tangent length as fraction of segment
         double cachepixels = 0;  // Pixel cache disabled for benchmarks (use 0)
+        double max = 2.0;  // Maximum expected elevation for PIXEL_RIVER
+        double maxDist = 50.0;  // Maximum expected distance for PIXEL_RIVER
 
         // Create test cases in table-like format
         List<TestCase> testCases = createTestCases(n, epsilon, delta, slope, gridsize, returnType, salt,
             defaultBranches, curvature, curvatureFalloff, connectDistance, connectDistanceFactor,
-            parallelThreshold, ConstellationScale, constellationShape, tangentAngle, tangentStrength);
+            parallelThreshold, ConstellationScale, constellationShape, tangentAngle, tangentStrength,
+            max, maxDist);
 
         // Run benchmarks
         double worldScale = 1.0;

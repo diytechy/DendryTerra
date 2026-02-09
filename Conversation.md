@@ -1278,39 +1278,38 @@ Returns 2 for not river.
 
 #########################################################
 
-In order to reduce memory consumed by segment lists, rename the class "Segment3D" to "SegmentIdx" and remove the depricated "Point3D" fields in the class.
+In order to reduce memory consumed by SegmentList elements, rename the class "Segment3D" to "SegmentIdx" and remove the depricated "Point3D" fields in that class.
 
 Unused / depricated funcitons need not be updated for compatability, they will be addressed on a case-by-case basis.
 
-Then create a new class "Segment3D" which includes the following fields:
-
+Then create a new class "Segment3D" in "Segment3D.java" which has the following fields:
 
     public final Point3D srt;  // Start point of the segment
     public final Point3D end;  // End point of the segment
     public final Vec2D tangentSrt;  // Tangent direction at start point (may be null)
     public final Vec2D tangentEnd;  // Tangent direction at end point (may be null)
 
-
-
-
-
-
-
-
+This newer "Segment3D" class will be used in the further evaluations.
 
 ******************************************
 
-The new method is taking a long time to run as each point needs multiple iterations to evaluate, lets make some more significant changes which should speed up results.
+Rename the current return type PIXEL_RIVER to PIXEL_RIVER_LEGACY, as I will describe an updated implimentation.
 
-Add new parameters to define how stored information will be normalized in this new method:
+******************************************
+
+Lets make some more significant changes which should speed up results for a new return "PIXEL_RIVER".
+
+Add new sampler parameters to define how stored information will be normalized in this new method:
  - "max" defines the maximumm expected elevation / control function value to quantize results for.  Default 2.0, will be described further below.
- - "max-dist" defines the maximum expected distance computed, and affects how distance will be quantized for results.  Default 50.
+ - "max-dist" defines the maximum expected distance computed, and affects how distance will be quantized for results.  Default 50.  If "max-dist" is less than default-riverwidth + defaultBorderwidth produce an error.
 
-1. After evaluating a pruned cell for all levels, store the full segmentlist for that pruned cell.  Retain 20 MB for retained segment lists, removing the oldest access segment lists if space needs to be freed.
+1. After evaluating a pruned cell for all levels (the returned value from generateAllSegments), store the full segmentlist for that pruned cell.  Retain 20 MB for retained segment lists, removing the oldest access segment lists if space needs to be freed.  Note now if information is needed from that cell, the entire call can be loaded instead of regenerating the full asterism and segment permutations.
 
-2. Now, impliment a new cache for which each element is a fixed 256x256 size of blocks, where each block represents a pixel-cache sized square.  Each 256x256 grid here can be referred to as a chunk.
- - Each grid / chunk is located in world coordinates using 2 doubles or pixelcache coordinates using uint32.  If using pixelcache coordinates it's okay to produce an error when out of the 32-bit integer bounds.
- - Each grid / chunk contains 2 values: a UInt8 normalized elevation, and a UInt8 normalized distance.
+2. Now, impliment a new cache for which each element is a fixed 256x256 size of blocks, where each block represents a pixel-cache sized square.  Each 256x256 grid here can be referred to as a bigchunk.
+ - Each grid / bigchunk is located in world coordinates using 2 doubles or bigchunk coordinates using uint32.  If using bigchunk coordinates it's okay to produce an error when out of the 32-bit integer bounds.  (As the pixelcache value * 256 (the size of a bigchunk) is the real world coordinate where an error would be produced)
+ - Each grid / bigchunk contains 2 values: a UInt8 normalized elevation, and a UInt8 normalized distance.
+ - Normalized elevation should be initialized to 0.
+ - Normalized distance should be initialized to 255.
  - Each grid / chunk may need to hold a flag or similar that indicates it has been computed.
 
 Thus, each chunk should consume 256x256x2 = 131072 bytes + 8 byte locator + 4 byte age ~ 132 kb.
@@ -1319,12 +1318,30 @@ Similar to the existing cache, this cache should be allowed to consume up to 20 
  
 I expect similar functions as getOrCreatePixelCache and evaluateWithPixelCache, but this time to evaluate when a chunk when it is not available.
 
- 4. Now a queried coordinate from the DendryTerra sampler can first determine if the pixel chunk exists in memory.  If not, it needs to be created.
+ 3. Now a queried coordinate from the DendryTerra sampler for a PIXEL_RIVER return type can first determine if the pixel chunk exists in memory (if the bigchunk has been created that contains information for that queried coordinate).  If not, the bigchunk needs to be defined.
 
- To create / fully define a pixel chunk:
+ To create / fully define a bigchunk:
 
- 1. Load all cells that are within the distance boundary "max-dist" of the query point.
- 2. Load all segments from all cells, note that now they are being evaluated and tracking connection points is not necessary, it may be simpler to convert from Segment list to a segment3D
+    A. Load / get a pointer to all cells that might contain segment information needed to compute the bigchunk.  Any cell boundaries that are within the "max-dist" of the query point may contain segments that will influence the bigchunk.
+    B. For each cell, convert the SegmentList elements into a list of Segment3Ds (as other context from the SegmentList class type is not necessary for the PIXEL_RIVER computations). Only segments that have a single point within "max-dist" for the bigchunk border need to be retained / kept as they are the only ones which will likely be able to influence the bigchunk.  Each Segment3D should also be accompanied by a uint8 level, which can also be taken from the SegmentList.
+    C. Now all segments have been collected that could influence the bigchunk.  Loop through each segment:
+        i. For the segment, compute the selected river width according to the nominal river width and the level.
+        ii. Compute how many samples need to be taken along the hermite spline to effectively populate each box / pixel of the bigchunk. For each value t in the segment:
+            a. If it's position is NOT within the boundary of the bigchunk (can just use manhatten distance), continue to the next evaluation along the segment..
+            b. At each sample point on the spline (t), compute the next tangent, the current tangent, and the previous tangent (clamping the previous tangent to the current tangent on the first sample and the next tangent to the current tangent on the last sample.)
+            c. The range / angle change in the 3 tangent vectors will define the "cone angle" where box / pixel information can be populated by the current segment.
+            d. Now solve to populate all boxes that are influenced by the current segment partition from it's start point to it's end point.
+            e. First, compute the potential elevation for the current point on the segment t by using linear interpolation bbetween the start point and the end point.  Then divide this elevation by the "max" parameter value, saturate it to 1, multiply it by 255, and store it as a the current segment elevation in uint8.
+            f. Compute the location of the sample point on the bigchunk box and set it's distance to 0 and it's elevation to the segment elevation so long as it's potential elevation is greater than the current elevation of the box's current value.
+            g. Compute the perpendiculars / cones of the current sample, moving outward along each perpendicular (of the current tangent) to see which box the sample should be allocated to over the "max-dist" in each direction.  At each step moving outward, the distance from the segment would increase linearly, and the cone arc can be calculated knowing the cone angle and the radius.  If the cone arc for the current perpendicular sample is greater than half of the the pixelcache value, multiple samples along the arc must also be taken.  It is important the cone is only considered for the side of the segment that is bowing from.  Following the rules to compute the normalized distance populate the box value in the bigchunk's cache.
+                - If the distance / radius from the segment is less than the selected river width, the normalized distance will be calculated as the distance / selected river width.
+                - Else the normalized distance will be calculated as the distance - selected river width.
+                - If the normalized distance is less than current distance recorded in the corresponding box of the bigchunk, update the box with the lower distance of the current sample.
+                - If the elevation is higher than the current recorded elevation in the corresponding box of the bigchunk, update the box with the lower distance of the current sample.
+
+The returned value from "PIXEL_RIVER" can now return two values - the elevation and the distance, converted from their stored quantized uint8 values back to the standard return type.
+
+The test cases should be updated so that PIXEL_RIVER_LEGACY and PIXEL_RIVER can be evaluated for comparison.
 
 
 #########################################################
