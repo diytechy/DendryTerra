@@ -4416,6 +4416,27 @@ public class DendrySampler implements Sampler {
                         elevation, riverWidth, chunk, arcSamples);
             }
         }
+
+        // Project outward along negative perpendicular up to maxDist
+        for (int step = 1; step <= maxSteps; step++) {
+            double distance = step * cachepixels;
+            if (distance > maxDist) break;
+
+            // Position along negative perpendicular
+            double px = samplePoint.x - perpendicular.x * distance;
+            double py = samplePoint.y - perpendicular.y * distance;
+
+            // Convert to grid coordinates
+            int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
+            int gridY = worldToGridCoord(py, chunk.worldY, cachepixels);
+
+            if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
+                BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
+                updateBox(box, distance, elevation, riverWidth);
+            }
+
+            //NOTE: For the opposite side we do not need to fill the cone since this is the 
+        }
     }
 
     /**
