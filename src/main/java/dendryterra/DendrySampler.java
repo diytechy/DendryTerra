@@ -4100,10 +4100,8 @@ public class DendrySampler implements Sampler {
         double distQuantizeRes = 255.0 / maxDistGrid;
         double normalizedDistance = block.getDistanceUnsigned() / distQuantizeRes;
 
-        // Return the normalized distance value
-        // This is either a fraction (0-1) of riverWidth, or an absolute distance in grid coords
-        // The spec says to return "the distance scaled according to quantized resolution"
-        return normalizedDistance;
+        // Return the normalized distance value in sampler coordinates (0 to maxDistGrid)
+        return (normalizedDistance*gridsize);
     }
 
     /**
@@ -4591,8 +4589,11 @@ public class DendrySampler implements Sampler {
         // Compute normalized distance
         double normalizedDist;
         if (distanceGrid < riverWidthGrid) {
-            normalizedDist = distanceGrid / riverWidthGrid;
+            //River is ratiometric, inside river is less than 1.
+            //Divided by gridsize since this is the ratio in grid units, which is computed on the gridsize.
+            normalizedDist = (distanceGrid / riverWidthGrid)/gridsize;
         } else {
+            //Outside river is absolute distance to river's edge.
             normalizedDist = distanceGrid - riverWidthGrid;
         }
 
