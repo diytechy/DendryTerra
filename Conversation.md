@@ -1350,7 +1350,17 @@ The test cases should be updated so that PIXEL_RIVER_LEGACY and PIXEL_RIVER can 
 
 River return type - Input to specify the width for each level to report as river enum.  Input to point to sampler to define the width variation.  Refer to current river sampler, since "flats" or lowlands might be a special type that needs consideration?
 
+############################################################3
 
+1. Looking at sampleSegmentAlongSpline it appears to be performing linear interpolation for both point selection and tangent computation, but it should be using hermite interpolation for both so long as curvature is available and the splines option is set.  Please confirm.
+
+2. The returned distance should be scaled according to the quantized resolution. The quanitize resolution is 255/max-dist.  This was not clarified before, so the distance stored in the cache should be the normalized distance * the quantize resolution and capped to uint8 max, and when the value is returned from the DendryTerra sampler, the uint8 value should be divided by the quantize resolution.
+
+3. Since there is a single return type now, add another type "PIXEL_RIVER_CTRL" which returns the elevation.  Like distance, the elevation should also use it's quantize resolution to store in UInt8 and converted back when returned from the sampler.  So with a parameter max of 2.0 and min of 0.0, a UInt8 value of 0 should be stored for 0 elevation, and a UInt8 value of 255 should be stored for 2.0 elevation.
+
+####################################################3
+
+When I run PIXEL_DEBUG, I see multiple segment structures as expected verifying the segment tree is working as expected, but when I run PIXEL_RIVER, I only see a single dot in the coordinates 0,0, everywhere else is a color that represents 50 (the default max-dist parameter).  It seems there is a defect in PIXEL_RIVER, perhaps an issue in properly evaluating the correct coordinates or evaluating the segments, or in the normalized distance calculation which should be using defaultRiverwidth and defaultBorderwidth as real world distances to normalize against.  There should have been multiple 0-distance returns in PIXEL_RIVER, but there is only a single 0 distance getting returned.
 
 
 Reminder: Final ToDo:

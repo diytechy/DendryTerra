@@ -4281,7 +4281,7 @@ public class DendrySampler implements Sampler {
     private void sampleSegmentAlongSpline(Segment3D seg, int level, BigChunk chunk, double chunkSize) {
         // Calculate number of samples needed
         double segmentLength = seg.length();
-        int numSamples = (int) Math.ceil((segmentLength / cachepixels) * 1.5);
+        int numSamples = (int) Math.ceil(((segmentLength*gridsize) / cachepixels) * 1.5);
         if (numSamples < 2) numSamples = 2;  // At least 2 samples
 
         boxUpdatesThisSegment = 0;
@@ -4417,12 +4417,13 @@ public class DendrySampler implements Sampler {
         // Project outward along perpendicular up to maxDist
         int maxSteps = (int) Math.ceil(maxDist / cachepixels);
         for (int step = 1; step <= maxSteps; step++) {
+            //Distance here is in true units (same coordinate system as sampler is queried in)
             double distance = step * cachepixels;
             if (distance > maxDist) break;
 
             // Position along perpendicular
-            double px = samplePoint.x + perpendicular.x * distance;
-            double py = samplePoint.y + perpendicular.y * distance;
+            double px = samplePoint.x + perpendicular.x * distance/gridsize;
+            double py = samplePoint.y + perpendicular.y * distance/gridsize;
 
             // Convert to grid coordinates
             int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
@@ -4444,12 +4445,13 @@ public class DendrySampler implements Sampler {
 
         // Project outward along negative perpendicular up to maxDist
         for (int step = 1; step <= maxSteps; step++) {
+            //Distance here is in true units (same coordinate system as sampler is queried in)
             double distance = step * cachepixels;
             if (distance > maxDist) break;
 
             // Position along negative perpendicular
-            double px = samplePoint.x - perpendicular.x * distance;
-            double py = samplePoint.y - perpendicular.y * distance;
+            double px = samplePoint.x - perpendicular.x * distance/gridsize;
+            double py = samplePoint.y - perpendicular.y * distance/gridsize;
 
             // Convert to grid coordinates
             int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
@@ -4529,8 +4531,8 @@ public class DendrySampler implements Sampler {
             double angleOffset = coneAngle * (i / (double)(numSamples - 1) - 0.5);
             double angle = baseAngle + angleOffset;
 
-            double px = center.x + Math.cos(angle) * radius;
-            double py = center.y + Math.sin(angle) * radius;
+            double px = center.x + Math.cos(angle) * radius/gridsize;
+            double py = center.y + Math.sin(angle) * radius/gridsize;
 
             int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
             int gridY = worldToGridCoord(py, chunk.worldY, cachepixels);
