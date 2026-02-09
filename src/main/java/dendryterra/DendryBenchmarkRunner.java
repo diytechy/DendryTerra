@@ -345,27 +345,67 @@ public class DendryBenchmarkRunner {
 
         // Summary
         System.out.println();
-        System.out.println("=".repeat(60));
-        System.out.println("SUMMARY (samples/sec - higher is better)");
-        System.out.println("=".repeat(60));
-        
+        System.out.println("=".repeat(80));
+        System.out.println("SUMMARY");
+        System.out.println("=".repeat(80));
+
+        // Print header
+        System.out.printf("  %-22s %12s %15s %15s%n", "Test Case", "Samples", "Samples/sec", "vs Baseline");
+        System.out.println("  " + "-".repeat(76));
+
+        // Print baseline first
         DendryBenchmark.BenchmarkResult baselineResult = results.get("Baseline");
         if (baselineResult != null) {
-            System.out.printf("  %-18s %,.0f samples/sec%n", "Baseline", baselineResult.samplesPerSecond);
+            System.out.printf("  %-22s %,12d %,15.0f %15s%n",
+                "Baseline", baselineResult.totalSamples, baselineResult.samplesPerSecond, "-");
         }
-        
+
+        // Print all other tests with their comparisons
         for (TestCase testCase : testCases) {
             if (testCase.compareAgainst != null) {
                 DendryBenchmark.BenchmarkResult result = results.get(testCase.name);
-                DendryBenchmark.BenchmarkResult baseline = results.get(testCase.compareAgainst);
-                if (result != null && baseline != null) {
-                    double change = percentChange(baseline, result);
-                    System.out.printf("  %-18s %,.0f samples/sec (%+.1f%%)%n", 
-                        testCase.name, result.samplesPerSecond, change);
+                DendryBenchmark.BenchmarkResult comparisonTarget = results.get(testCase.compareAgainst);
+                if (result != null && comparisonTarget != null) {
+                    double change = percentChange(comparisonTarget, result);
+                    String changeStr = String.format("%+.1f%%", change);
+
+                    // Add indicator for what we're comparing against
+                    String comparison = testCase.compareAgainst.equals("Baseline")
+                        ? changeStr
+                        : String.format("%s (vs %s)", changeStr, testCase.compareAgainst);
+
+                    System.out.printf("  %-22s %,12d %,15.0f %15s%n",
+                        testCase.name, result.totalSamples, result.samplesPerSecond,
+                        testCase.compareAgainst.equals("Baseline") ? changeStr : "see below");
                 }
             }
         }
+
+        // Print special comparisons section for non-baseline comparisons
         System.out.println();
+        System.out.println("  Special Comparisons:");
+        System.out.println("  " + "-".repeat(76));
+
+        for (TestCase testCase : testCases) {
+            if (testCase.compareAgainst != null && !testCase.compareAgainst.equals("Baseline")) {
+                DendryBenchmark.BenchmarkResult result = results.get(testCase.name);
+                DendryBenchmark.BenchmarkResult comparisonTarget = results.get(testCase.compareAgainst);
+                if (result != null && comparisonTarget != null) {
+                    double change = percentChange(comparisonTarget, result);
+                    String direction = change >= 0 ? "FASTER" : "SLOWER";
+
+                    System.out.printf("  %-22s vs %-22s: %+.1f%% %s%n",
+                        testCase.name, testCase.compareAgainst, change, direction);
+                    System.out.printf("    %s: %,15.0f samples/sec (%,d samples)%n",
+                        testCase.name, result.samplesPerSecond, result.totalSamples);
+                    System.out.printf("    %s: %,15.0f samples/sec (%,d samples)%n",
+                        testCase.compareAgainst, comparisonTarget.samplesPerSecond, comparisonTarget.totalSamples);
+                    System.out.println();
+                }
+            }
+        }
+
+        System.out.println("=".repeat(80));
         System.out.println("Benchmark complete.");
     }
 
