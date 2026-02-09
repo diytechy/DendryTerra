@@ -1242,7 +1242,7 @@ Now I'm seeing the sampler return 0 or near 0 values continuously.  I think ther
 
 In the code there are multiple comments about a "world coordinate", but there are only 3 coordinate systems:
 
-1. The sampler coordinate, the literal coordinate system is receiving queries from.  If anything>gg this would be the world coordinate, but the code does not align with that.
+1. The sampler coordinate, the literal coordinate system is receiving queries from.  If anything this would be the world coordinate, but the code does not align with that.
 2. The grid coordinates, this is the literal coordinates divided by the gridsize, and is used to normalize cellular information.  It appears sometimes these are referred to as world coordinates, incorrectly.
 3. The bigChunk coordinates, which are located in the sampler coordinates at each 256*pixelcache increment.
 
@@ -1250,9 +1250,22 @@ Review the code and fix naming conventions to align with what is described above
 
 The parameter inputs for distance are defining distances in sampler coordinate system.  Review the code and ensure the parameters are properly converted for the distance they are being evaluated against, and rename relevant functions / comments to help clarify if they are acting on sampler coordinates, grid coordinates, or bigChunk coordinates.
 
-blad
+###################################################
+
+Note: When performing a test, to guarantee results (changing output values as a function of different sampled points), the gridsize must be set equal to or smaller than the span of the region being queried (so if the query is from x = 0 to x = 64, the gridsize should be 64 or smaller to guarantee segment generation at level 0 within the query region), and the pixelcache must be be no smaller than the resolution of the points being sampled. (If sampling at each 10 increments x=0, x = 10, x = 20, the pixelcache must be at least 10 or greater so information can be returned for the query region instead  of being hidden in an un-queried location (like x = 5 in this example)).  As the gridsize get's smaller, it will result in more level 0 segments being produced, which will likely significantly impact performance.
+
+####################################################
+
+Issues:
+
+2. Space within the river is not 0 to 1, are we not normalizing the inner part of the river correctly?  The part within the river boundaries?
 
 
+1. Go from lowest level segments up.  (Sort by before evaluating)
+
+3. At terminating nodes (N connections = 1), set cone angle to tangent (if start point), else set to opposite.  Then set cone sweep to 180 degrees.
+
+4. If elevation for box is greater (it is going to get set), and it was previously set (check distance < 1?>), add some probabilistic noise according to the segment 
 
 Reminder: Final ToDo:
 

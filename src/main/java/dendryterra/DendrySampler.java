@@ -4201,28 +4201,14 @@ public class DendrySampler implements Sampler {
     private void computeBigChunk(BigChunk chunk) {
         double chunkSizeGrid = getBigChunkSizeGrid();
 
-        System.out.println("[DEBUG] computeBigChunk: origin=(" + chunk.gridOriginX + "," + chunk.gridOriginY + "), sizeGrid=" + chunkSizeGrid + ", maxDistGrid=" + maxDistGrid);
-
         // A. Collect all segments from nearby cells that could influence this chunk
         List<Segment3D> segments = new ArrayList<>();
         List<Integer> levels = new ArrayList<>();  // Parallel array for segment levels
 
         collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels);
 
-        System.out.println("[DEBUG]   Collected " + segments.size() + " segments");
-
         // C. Process each segment
-        for (int i = 0; i < segments.size() && i < 3; i++) {
-            Segment3D seg = segments.get(i);
-            int level = levels.get(i);
-
-            System.out.println("[DEBUG]   Segment " + i + ": (" + seg.srt.x + "," + seg.srt.y + ") to (" + seg.end.x + "," + seg.end.y + "), level=" + level);
-
-            // Sample and project this segment onto the bigchunk
-            sampleSegmentAlongSpline(seg, level, chunk, chunkSizeGrid);
-        }
-        // Process remaining segments without debug
-        for (int i = 3; i < segments.size(); i++) {
+        for (int i = 0; i < segments.size(); i++) {
             sampleSegmentAlongSpline(segments.get(i), levels.get(i), chunk, chunkSizeGrid);
         }
     }

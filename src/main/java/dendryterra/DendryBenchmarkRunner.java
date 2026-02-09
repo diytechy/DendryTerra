@@ -309,7 +309,9 @@ public class DendryBenchmarkRunner {
         double epsilon = 0.0;
         double delta = 0.05;
         double slope = 0.005;
-        double gridsize = 1000.0;
+        // gridsize must be ≤ query span to guarantee segments in query region
+        // For 64x64 grid at worldScale=1.0, query span is 0-63, so use gridsize=64
+        double gridsize = 64.0;
         DendryReturnType returnType = DendryReturnType.DISTANCE;
         long salt = 12345;
         int defaultBranches = 2;
