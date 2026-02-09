@@ -32,11 +32,11 @@ public class BigChunkCache {
      * Get or create a BigChunk at the specified chunk coordinates.
      * @param chunkX Integer chunk X coordinate
      * @param chunkY Integer chunk Y coordinate
-     * @param worldX World X coordinate of chunk origin
-     * @param worldY World Y coordinate of chunk origin
+     * @param gridOriginX Grid X coordinate of chunk origin (normalized space)
+     * @param gridOriginY Grid Y coordinate of chunk origin (normalized space)
      * @return The BigChunk (may be newly created or from cache)
      */
-    public BigChunk getOrCreate(int chunkX, int chunkY, double worldX, double worldY) {
+    public BigChunk getOrCreate(int chunkX, int chunkY, double gridOriginX, double gridOriginY) {
         ChunkKey key = new ChunkKey(chunkX, chunkY);
         BigChunk chunk = cache.get(key);
 
@@ -49,7 +49,7 @@ public class BigChunkCache {
 
         // Cache miss - create new chunk
         misses++;
-        chunk = new BigChunk(worldX, worldY);
+        chunk = new BigChunk(gridOriginX, gridOriginY);
         chunk.lruCounter = ++lruCounter;
 
         // Evict oldest if cache is full

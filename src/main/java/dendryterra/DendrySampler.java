@@ -149,7 +149,8 @@ public class DendrySampler implements Sampler {
 
     // PIXEL_RIVER parameters
     private final double max;         // Maximum expected elevation for normalization
-    private final double maxDist;     // Maximum expected distance for normalization
+    private final double maxDist;     // Maximum distance in sampler coordinates
+    private final double maxDistGrid; // Maximum distance in grid coordinates (maxDist / gridsize)
 
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
@@ -345,6 +346,7 @@ public class DendrySampler implements Sampler {
         this.defaultBorderwidth = defaultBorderwidth;
         this.max = max;
         this.maxDist = maxDist;
+        this.maxDistGrid = maxDist / gridsize;  // Convert from sampler to grid coordinates
 
         // Calculate pixel grid size
         if (cachepixels > 0) {
@@ -2688,11 +2690,26 @@ public class DendrySampler implements Sampler {
      * @param y World Y coordinate for sampling
      * @return River width in world units
      */
-    private double calculateRiverWidth(int level, double x, double y) {
-        double baseWidth = (riverwidthSampler != null)
-            ? riverwidthSampler.getSample(salt, x, 0, y)
+    /**
+     * Calculate river width at a given position and level.
+     * @param level River level (0 = main river, higher = tributaries)
+     * @param gridX Grid X coordinate (normalized)
+     * @param gridY Grid Y coordinate (normalized)
+     * @return River width in grid coordinates
+     */
+    private double calculateRiverWidth(int level, double gridX, double gridY) {
+        // Convert grid coordinates to sampler coordinates for the width sampler
+        double samplerX = gridX * gridsize;
+        double samplerY = gridY * gridsize;
+
+        // Get base width in sampler coordinates
+        double baseWidthSampler = (riverwidthSampler != null)
+            ? riverwidthSampler.getSample(salt, samplerX, 0, samplerY)
             : defaultRiverwidth;
-        return baseWidth * Math.pow(RIVER_WIDTH_FALLOFF, level);
+
+        // Convert to grid coordinates and apply level falloff
+        double baseWidthGrid = baseWidthSampler / gridsize;
+        return baseWidthGrid * Math.pow(RIVER_WIDTH_FALLOFF, level);
     }
 
     /**
@@ -4058,54 +4075,59 @@ public class DendrySampler implements Sampler {
     /**
      * Evaluate using the BigChunk cache system for PIXEL_RIVER return type.
      * Returns the de-quantized distance value from the cached bigchunk.
+     * @param gridX Grid X coordinate (normalized)
+     * @param gridY Grid Y coordinate (normalized)
+     * @return Distance value in sampler coordinates
      */
-    private double evaluateWithBigChunkDistance(double x, double y) {
-        // Get or create the bigchunk containing this point
-        BigChunk chunk = getOrCreateBigChunk(x, y);
+    private double evaluateWithBigChunkDistance(double gridX, double gridY) {
+        // Get or create the bigchunk containing this point (in grid coordinates)
+        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
 
-        // Convert world coordinates to block coordinates within the chunk
-        int gridX = worldToGridCoord(x, chunk.worldX, cachepixels);
-        int gridY = worldToGridCoord(y, chunk.worldY, cachepixels);
+        // Convert grid coordinates to block index within the chunk
+        double cachepixelsGrid = cachepixels / gridsize;
+        int blockX = gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid);
+        int blockY = gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid);
 
         // Clamp to valid range
-        gridX = Math.max(0, Math.min(255, gridX));
-        gridY = Math.max(0, Math.min(255, gridY));
+        blockX = Math.max(0, Math.min(255, blockX));
+        blockY = Math.max(0, Math.min(255, blockY));
 
         // Get the block
-        BigChunk.BigChunkBlock block = chunk.getBlock(gridX, gridY);
+        BigChunk.BigChunkBlock block = chunk.getBlock(blockX, blockY);
 
-        // Return de-quantized distance
-        // Convert from uint8 back to actual distance value
-        // De-quantization: value / quantizeResolution = value * maxDist / 255
-        double distQuantizeRes = 255.0 / maxDist;
-        double result = block.getDistanceUnsigned() / distQuantizeRes;
+        // De-quantize distance from uint8 back to normalized distance value
+        // De-quantization: value / quantizeResolution = value * maxDistGrid / 255
+        double distQuantizeRes = 255.0 / maxDistGrid;
+        double normalizedDistance = block.getDistanceUnsigned() / distQuantizeRes;
 
-        // DEBUG: Log specific evaluations to trace the issue
-        if ((x == 0.0 && y <= 5.0) || (x == 5.0 && y == 5.0) || (x == 10.0 && y == 10.0)) {
-            System.out.println("[DEBUG] eval(" + x + "," + y + "): gridX=" + gridX + ", gridY=" + gridY + ", distU8=" + block.getDistanceUnsigned() + ", result=" + String.format("%.2f", result));
-        }
-
-        return result;
+        // Return the normalized distance value
+        // This is either a fraction (0-1) of riverWidth, or an absolute distance in grid coords
+        // The spec says to return "the distance scaled according to quantized resolution"
+        return normalizedDistance;
     }
 
     /**
      * Evaluate using the BigChunk cache system for PIXEL_RIVER_CTRL return type.
      * Returns the de-quantized elevation value from the cached bigchunk.
+     * @param gridX Grid X coordinate (normalized)
+     * @param gridY Grid Y coordinate (normalized)
+     * @return Elevation value
      */
-    private double evaluateWithBigChunkElevation(double x, double y) {
-        // Get or create the bigchunk containing this point
-        BigChunk chunk = getOrCreateBigChunk(x, y);
+    private double evaluateWithBigChunkElevation(double gridX, double gridY) {
+        // Get or create the bigchunk containing this point (in grid coordinates)
+        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
 
-        // Convert world coordinates to block coordinates within the chunk
-        int gridX = worldToGridCoord(x, chunk.worldX, cachepixels);
-        int gridY = worldToGridCoord(y, chunk.worldY, cachepixels);
+        // Convert grid coordinates to block index within the chunk
+        double cachepixelsGrid = cachepixels / gridsize;
+        int blockX = gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid);
+        int blockY = gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid);
 
         // Clamp to valid range
-        gridX = Math.max(0, Math.min(255, gridX));
-        gridY = Math.max(0, Math.min(255, gridY));
+        blockX = Math.max(0, Math.min(255, blockX));
+        blockY = Math.max(0, Math.min(255, blockY));
 
         // Get the block
-        BigChunk.BigChunkBlock block = chunk.getBlock(gridX, gridY);
+        BigChunk.BigChunkBlock block = chunk.getBlock(blockX, blockY);
 
         // Return de-quantized elevation
         // Convert from uint8 back to actual elevation value
@@ -4115,55 +4137,57 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Get the size of a bigchunk in world units.
-     * A bigchunk is 256 blocks, each block is pixelcache sized.
+     * Get the size of a bigchunk in grid coordinate units.
+     * A bigchunk is 256 blocks, each block is cachepixels sized.
+     * cachepixels is in sampler coordinates, so we convert to grid coordinates.
      */
-    private double getBigChunkSize() {
-        return cachepixels * 256;
+    private double getBigChunkSizeGrid() {
+        double cachepixelsGrid = cachepixels / gridsize;
+        return cachepixelsGrid * 256;
     }
 
     /**
-     * Convert world coordinates to chunk coordinates.
-     * @param worldCoord World X or Y coordinate
+     * Convert grid coordinates to chunk coordinates.
+     * @param gridCoord Grid X or Y coordinate (sampler coord / gridsize)
      * @return Integer chunk coordinate
      */
-    private int worldToChunkCoord(double worldCoord) {
-        double chunkSize = getBigChunkSize();
-        return (int) Math.floor(worldCoord / chunkSize);
+    private int gridToChunkCoord(double gridCoord) {
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        return (int) Math.floor(gridCoord / chunkSizeGrid);
     }
 
     /**
-     * Convert chunk coordinates to world coordinates (chunk origin).
+     * Convert chunk coordinates to grid coordinates (chunk origin).
      * @param chunkCoord Integer chunk coordinate
-     * @return World coordinate of chunk origin
+     * @return Grid coordinate of chunk origin (in normalized space)
      */
-    private double chunkToWorldCoord(int chunkCoord) {
-        double chunkSize = getBigChunkSize();
-        return chunkCoord * chunkSize;
+    private double chunkToGridCoord(int chunkCoord) {
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        return chunkCoord * chunkSizeGrid;
     }
 
     /**
-     * Get or create a BigChunk for the specified world coordinates.
-     * If the chunk doesn't exist or hasn't been computed, it will be created and computed.
+     * Get or create a BigChunk for the specified grid coordinates.
+     * @param gridX Grid X coordinate (sampler X / gridsize)
+     * @param gridY Grid Y coordinate (sampler Y / gridsize)
+     * @return BigChunk containing the specified grid position
      */
-    private BigChunk getOrCreateBigChunk(double x, double y) {
-        // Convert world coordinates to chunk coordinates
-        int chunkX = worldToChunkCoord(x);
-        int chunkY = worldToChunkCoord(y);
+    private BigChunk getOrCreateBigChunk(double gridX, double gridY) {
+        // Convert grid coordinates to chunk coordinates
+        int chunkX = gridToChunkCoord(gridX);
+        int chunkY = gridToChunkCoord(gridY);
 
-        // Get world origin of this chunk
-        double worldX = chunkToWorldCoord(chunkX);
-        double worldY = chunkToWorldCoord(chunkY);
+        // Get grid origin of this chunk
+        double gridOriginX = chunkToGridCoord(chunkX);
+        double gridOriginY = chunkToGridCoord(chunkY);
 
         // Get or create chunk from cache
-        BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY, worldX, worldY);
+        BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY, gridOriginX, gridOriginY);
 
         // Compute if not already done
         if (!chunk.computed) {
-            System.out.println("[DEBUG] Computing chunk at (" + chunkX + "," + chunkY + ") world=(" + worldX + "," + worldY + ")");
             computeBigChunk(chunk);
             chunk.computed = true;
-            System.out.println("[DEBUG] Chunk computation complete");
         }
 
         return chunk;
@@ -4172,101 +4196,110 @@ public class DendrySampler implements Sampler {
     /**
      * Compute all block values for a BigChunk.
      * This is the main PIXEL_RIVER computation method.
+     * All coordinates are in grid coordinate space.
      */
     private void computeBigChunk(BigChunk chunk) {
-        double chunkSize = getBigChunkSize();
+        double chunkSizeGrid = getBigChunkSizeGrid();
+
+        System.out.println("[DEBUG] computeBigChunk: origin=(" + chunk.gridOriginX + "," + chunk.gridOriginY + "), sizeGrid=" + chunkSizeGrid + ", maxDistGrid=" + maxDistGrid);
 
         // A. Collect all segments from nearby cells that could influence this chunk
         List<Segment3D> segments = new ArrayList<>();
         List<Integer> levels = new ArrayList<>();  // Parallel array for segment levels
 
-        collectSegmentsForBigChunk(chunk, chunkSize, segments, levels);
+        collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels);
+
+        System.out.println("[DEBUG]   Collected " + segments.size() + " segments");
 
         // C. Process each segment
-        for (int i = 0; i < segments.size(); i++) {
+        for (int i = 0; i < segments.size() && i < 3; i++) {
             Segment3D seg = segments.get(i);
             int level = levels.get(i);
 
+            System.out.println("[DEBUG]   Segment " + i + ": (" + seg.srt.x + "," + seg.srt.y + ") to (" + seg.end.x + "," + seg.end.y + "), level=" + level);
+
             // Sample and project this segment onto the bigchunk
-            sampleSegmentAlongSpline(seg, level, chunk, chunkSize);
+            sampleSegmentAlongSpline(seg, level, chunk, chunkSizeGrid);
+        }
+        // Process remaining segments without debug
+        for (int i = 3; i < segments.size(); i++) {
+            sampleSegmentAlongSpline(segments.get(i), levels.get(i), chunk, chunkSizeGrid);
         }
     }
 
     /**
      * Collect all segments from nearby cells that could influence the bigchunk.
-     * Segments are filtered to only include those within maxDist of the chunk boundary.
+     * Segments are filtered to only include those within maxDistGrid of the chunk boundary.
+     * All coordinates are in grid coordinate space.
+     * @param chunk The BigChunk to collect segments for (chunk.gridOriginX/Y are in grid coordinates)
+     * @param chunkSizeGrid Size of chunk in grid coordinates
+     * @param outSegments Output list for segments
+     * @param outLevels Output list for segment levels (parallel to outSegments)
      */
-    private void collectSegmentsForBigChunk(BigChunk chunk, double chunkSize,
+    private void collectSegmentsForBigChunk(BigChunk chunk, double chunkSizeGrid,
                                            List<Segment3D> outSegments, List<Integer> outLevels) {
         // Determine the range of cells that could contain relevant segments
-        // A cell can influence the chunk if any point in the cell is within maxDist of the chunk
-        double minX = chunk.worldX - maxDist;
-        double maxX = chunk.worldX + chunkSize + maxDist;
-        double minY = chunk.worldY - maxDist;
-        double maxY = chunk.worldY + chunkSize + maxDist;
+        // Grid coordinates are already normalized (sampler / gridsize), so cell boundaries are at integer values
+        double minGridX = chunk.gridOriginX - maxDistGrid;
+        double maxGridX = chunk.gridOriginX + chunkSizeGrid + maxDistGrid;
+        double minGridY = chunk.gridOriginY - maxDistGrid;
+        double maxGridY = chunk.gridOriginY + chunkSizeGrid + maxDistGrid;
 
-        // Convert to cell coordinates
-        int minCellX = (int) Math.floor(minX / gridsize);
-        int maxCellX = (int) Math.floor(maxX / gridsize);
-        int minCellY = (int) Math.floor(minY / gridsize);
-        int maxCellY = (int) Math.floor(maxY / gridsize);
-
-        // DEBUG: Log cell range
-        System.out.println("[DEBUG] collectSegmentsForBigChunk: searching cells (" + minCellX + "," + minCellY + ") to (" + maxCellX + "," + maxCellY + ")");
+        // Convert to cell coordinates (cells are at integer boundaries in grid space)
+        int minCellX = (int) Math.floor(minGridX);
+        int maxCellX = (int) Math.floor(maxGridX);
+        int minCellY = (int) Math.floor(minGridY);
+        int maxCellY = (int) Math.floor(maxGridY);
 
         // B. For each cell, get or compute SegmentList
         for (int cellY = minCellY; cellY <= maxCellY; cellY++) {
             for (int cellX = minCellX; cellX <= maxCellX; cellX++) {
-                // Try to get from cache first
-                double cellWorldX = cellX * gridsize;
-                double cellWorldY = cellY * gridsize;
+                // Cache key is in sampler coordinates for compatibility with existing cache
+                double cellSamplerX = cellX * gridsize;
+                double cellSamplerY = cellY * gridsize;
 
-                SegmentList segmentList = segmentListCache.get(cellWorldX, cellWorldY);
+                SegmentList segmentList = segmentListCache.get(cellSamplerX, cellSamplerY);
 
                 // If not in cache, compute it
                 if (segmentList == null) {
                     segmentList = computeAllSegmentsForCell(salt, cellX, cellY);
-                    segmentListCache.put(cellWorldX, cellWorldY, segmentList);
+                    segmentListCache.put(cellSamplerX, cellSamplerY, segmentList);
                 }
-
-                // DEBUG: Log segment count for this cell
-                int cellSegCount = 0;
 
                 // Convert SegmentList to Segment3D and filter by distance
                 for (SegmentIdx segIdx : segmentList.getSegments()) {
-                    // Check if at least one endpoint is within maxDist of chunk boundary
+                    // Check if at least one endpoint is within maxDistGrid of chunk boundary
+                    // Segments are in grid coordinates
                     Point3D srt = segIdx.getSrt(segmentList);
                     Point3D end = segIdx.getEnd(segmentList);
 
-                    boolean srtNear = isPointNearChunk(srt, chunk, chunkSize, maxDist);
-                    boolean endNear = isPointNearChunk(end, chunk, chunkSize, maxDist);
+                    boolean srtNear = isPointNearChunk(srt, chunk, chunkSizeGrid);
+                    boolean endNear = isPointNearChunk(end, chunk, chunkSizeGrid);
 
                     if (srtNear || endNear) {
                         // Convert to Segment3D and add to list
                         Segment3D seg3d = segIdx.resolve(segmentList);
                         outSegments.add(seg3d);
                         outLevels.add(segIdx.level);
-                        cellSegCount++;
                     }
-                }
-
-                // DEBUG: Log cell results
-                if (cellSegCount > 0) {
-                    System.out.println("[DEBUG]   Cell (" + cellX + "," + cellY + "): found " + cellSegCount + " segments (total in cell: " + segmentList.getSegments().size() + ")");
                 }
             }
         }
     }
 
     /**
-     * Check if a point is within maxDist of a chunk boundary (using Manhattan distance).
+     * Check if a point is within maxDistGrid of a chunk boundary.
+     * All coordinates are in grid coordinate space.
+     * @param point Point in grid coordinates
+     * @param chunk BigChunk with gridOriginX/Y in grid coordinates
+     * @param chunkSizeGrid Size of chunk in grid coordinates
      */
-    private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSize, double maxDist) {
-        // Expanded chunk bounds
-        double minX = chunk.worldX - maxDist;
-        double maxX = chunk.worldX + chunkSize + maxDist;
-        double minY = chunk.worldY - maxDist;
-        double maxY = chunk.worldY + chunkSize + maxDist;
+    private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSizeGrid) {
+        // Expanded chunk bounds in grid coordinates
+        double minX = chunk.gridOriginX - maxDistGrid;
+        double maxX = chunk.gridOriginX + chunkSizeGrid + maxDistGrid;
+        double minY = chunk.gridOriginY - maxDistGrid;
+        double maxY = chunk.gridOriginY + chunkSizeGrid + maxDistGrid;
 
         return point.x >= minX && point.x <= maxX &&
                point.y >= minY && point.y <= maxY;
@@ -4277,14 +4310,19 @@ public class DendrySampler implements Sampler {
 
     /**
      * Sample a segment along its hermite spline and project influence onto bigchunk blocks.
+     * All coordinates are in grid coordinate space.
+     * @param seg Segment in grid coordinates
+     * @param level River level
+     * @param chunk BigChunk to project onto
+     * @param chunkSizeGrid Size of chunk in grid coordinates
      */
-    private void sampleSegmentAlongSpline(Segment3D seg, int level, BigChunk chunk, double chunkSize) {
+    private void sampleSegmentAlongSpline(Segment3D seg, int level, BigChunk chunk, double chunkSizeGrid) {
         // Calculate number of samples needed
+        // Segment length is in grid coordinates, convert to understand spacing
         double segmentLength = seg.length();
-        int numSamples = (int) Math.ceil(((segmentLength*gridsize) / cachepixels) * 1.5);
+        double cachepixelsGrid = cachepixels / gridsize;
+        int numSamples = (int) Math.ceil((segmentLength / cachepixelsGrid) * 1.5);
         if (numSamples < 2) numSamples = 2;  // At least 2 samples
-
-        boxUpdatesThisSegment = 0;
 
         // Sample along the segment
         for (int i = 0; i < numSamples; i++) {
@@ -4293,8 +4331,8 @@ public class DendrySampler implements Sampler {
             // Interpolate position using Hermite spline (falls back to linear if no tangents)
             Point3D samplePoint = evaluateHermiteSpline(seg, t);
 
-            // Skip if outside chunk boundary (Manhattan distance check)
-            if (!isPointNearChunk(samplePoint, chunk, chunkSize, maxDist)) {
+            // Skip if outside chunk boundary
+            if (!isPointNearChunk(samplePoint, chunk, chunkSizeGrid)) {
                 continue;
             }
 
@@ -4306,12 +4344,12 @@ public class DendrySampler implements Sampler {
             // Elevation comes from the Hermite-interpolated point
             double elevation = samplePoint.z;
 
-            // Get river width for this level
-            double riverWidth = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
+            // Get river width for this level (in grid coordinates)
+            double riverWidthGrid = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
 
             // Project cone from this sample point
             projectConeToBoxes(samplePoint, currentTangent, prevTangent, nextTangent,
-                             elevation, riverWidth, chunk, chunkSize);
+                             elevation, riverWidthGrid, chunk, chunkSizeGrid);
         }
     }
 
@@ -4387,21 +4425,25 @@ public class DendrySampler implements Sampler {
 
     /**
      * Project a cone of influence from a sample point onto bigchunk boxes.
+     * All coordinates and distances are in grid coordinate space.
+     * @param samplePoint Sample position in grid coordinates
+     * @param elevation Elevation value
+     * @param riverWidthGrid River width in grid coordinates
+     * @param chunkSizeGrid Chunk size in grid coordinates
      */
     private void projectConeToBoxes(Point3D samplePoint, dendryterra.math.Vec2D currentTangent,
                                    dendryterra.math.Vec2D prevTangent, dendryterra.math.Vec2D nextTangent,
-                                   double elevation, double riverWidth,
-                                   BigChunk chunk, double chunkSize) {
-        // Normalize elevation to uint8
-        int elevationU8 = (int) Math.min(255, Math.max(0, (elevation / max) * 255));
+                                   double elevation, double riverWidthGrid,
+                                   BigChunk chunk, double chunkSizeGrid) {
+        double cachepixelsGrid = cachepixels / gridsize;
 
         // f. Set box at sample point
-        int sampleGridX = worldToGridCoord(samplePoint.x, chunk.worldX, cachepixels);
-        int sampleGridY = worldToGridCoord(samplePoint.y, chunk.worldY, cachepixels);
+        int sampleGridX = gridToBlockIndex(samplePoint.x, chunk.gridOriginX, cachepixelsGrid);
+        int sampleGridY = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
 
         if (sampleGridX >= 0 && sampleGridX < 256 && sampleGridY >= 0 && sampleGridY < 256) {
             BigChunk.BigChunkBlock box = chunk.getBlock(sampleGridX, sampleGridY);
-            updateBox(box, 0.0, elevation, riverWidth);  // Distance = 0 at sample point
+            updateBox(box, 0.0, elevation, riverWidthGrid);  // Distance = 0 at sample point
         }
 
         // g. Determine rotation direction and project cone
@@ -4414,63 +4456,67 @@ public class DendrySampler implements Sampler {
             perpendicular = new dendryterra.math.Vec2D(currentTangent.y, -currentTangent.x);
         }
 
-        // Project outward along perpendicular up to maxDist
-        int maxSteps = (int) Math.ceil(maxDist / cachepixels);
+        // Project outward along perpendicular up to maxDistGrid
+        int maxSteps = (int) Math.ceil(maxDistGrid / cachepixelsGrid);
         for (int step = 1; step <= maxSteps; step++) {
-            //Distance here is in true units (same coordinate system as sampler is queried in)
-            double distance = step * cachepixels;
-            if (distance > maxDist) break;
+            // Distance in grid coordinates
+            double distanceGrid = step * cachepixelsGrid;
+            if (distanceGrid > maxDistGrid) break;
 
-            // Position along perpendicular
-            double px = samplePoint.x + perpendicular.x * distance/gridsize;
-            double py = samplePoint.y + perpendicular.y * distance/gridsize;
+            // Position along perpendicular (grid coordinates)
+            double px = samplePoint.x + perpendicular.x * distanceGrid;
+            double py = samplePoint.y + perpendicular.y * distanceGrid;
 
-            // Convert to grid coordinates
-            int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
-            int gridY = worldToGridCoord(py, chunk.worldY, cachepixels);
+            // Convert to block index
+            int gridX = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
+            int gridY = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
 
             if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
                 BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
-                updateBox(box, distance, elevation, riverWidth);
+                updateBox(box, distanceGrid, elevation, riverWidthGrid);
             }
 
             // Check if we need multiple arc samples
-            double arcLength = coneAngle * distance;
-            if (arcLength > cachepixels / 2.0) {
-                int arcSamples = (int) Math.ceil(arcLength / (cachepixels / 2.0));
-                sampleArc(samplePoint, distance, coneAngle, currentTangent, bowsRight,
-                        elevation, riverWidth, chunk, arcSamples);
+            double arcLength = coneAngle * distanceGrid;
+            if (arcLength > cachepixelsGrid / 2.0) {
+                int arcSamples = (int) Math.ceil(arcLength / (cachepixelsGrid / 2.0));
+                sampleArc(samplePoint, distanceGrid, coneAngle, currentTangent, bowsRight,
+                        elevation, riverWidthGrid, chunk, cachepixelsGrid, arcSamples);
             }
         }
 
-        // Project outward along negative perpendicular up to maxDist
+        // Project outward along negative perpendicular up to maxDistGrid
         for (int step = 1; step <= maxSteps; step++) {
-            //Distance here is in true units (same coordinate system as sampler is queried in)
-            double distance = step * cachepixels;
-            if (distance > maxDist) break;
+            // Distance in grid coordinates
+            double distanceGrid = step * cachepixelsGrid;
+            if (distanceGrid > maxDistGrid) break;
 
-            // Position along negative perpendicular
-            double px = samplePoint.x - perpendicular.x * distance/gridsize;
-            double py = samplePoint.y - perpendicular.y * distance/gridsize;
+            // Position along negative perpendicular (grid coordinates)
+            double px = samplePoint.x - perpendicular.x * distanceGrid;
+            double py = samplePoint.y - perpendicular.y * distanceGrid;
 
-            // Convert to grid coordinates
-            int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
-            int gridY = worldToGridCoord(py, chunk.worldY, cachepixels);
+            // Convert to block index
+            int gridX = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
+            int gridY = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
 
             if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
                 BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
-                updateBox(box, distance, elevation, riverWidth);
+                updateBox(box, distanceGrid, elevation, riverWidthGrid);
             }
 
-            //NOTE: For the opposite side we do not need to fill the cone since this is the 
+            //NOTE: For the opposite side we do not need to fill the cone since this is the
         }
     }
 
     /**
-     * Convert world coordinate to grid coordinate within a chunk.
+     * Convert grid coordinate to block index within a chunk.
+     * @param gridCoord Grid coordinate (in normalized space)
+     * @param chunkGridOrigin Grid origin of the chunk
+     * @param blockSizeGrid Size of one block in grid coordinates (cachepixels / gridsize)
+     * @return Block index (0-255)
      */
-    private int worldToGridCoord(double worldCoord, double chunkOrigin, double pixelSize) {
-        return (int) Math.floor((worldCoord - chunkOrigin) / pixelSize);
+    private int gridToBlockIndex(double gridCoord, double chunkGridOrigin, double blockSizeGrid) {
+        return (int) Math.floor((gridCoord - chunkGridOrigin) / blockSizeGrid);
     }
 
     /**
@@ -4512,11 +4558,12 @@ public class DendrySampler implements Sampler {
 
     /**
      * Sample multiple points along an arc.
+     * All coordinates and distances are in grid coordinate space.
      */
-    private void sampleArc(Point3D center, double radius, double coneAngle,
+    private void sampleArc(Point3D center, double radiusGrid, double coneAngle,
                           dendryterra.math.Vec2D tangent, boolean bowsRight,
-                          double elevation, double riverWidth,
-                          BigChunk chunk, int numSamples) {
+                          double elevation, double riverWidthGrid,
+                          BigChunk chunk, double cachepixelsGrid, int numSamples) {
         // Perpendicular direction
         dendryterra.math.Vec2D perpendicular = new dendryterra.math.Vec2D(-tangent.y, tangent.x);
         if (!bowsRight) {
@@ -4531,36 +4578,42 @@ public class DendrySampler implements Sampler {
             double angleOffset = coneAngle * (i / (double)(numSamples - 1) - 0.5);
             double angle = baseAngle + angleOffset;
 
-            double px = center.x + Math.cos(angle) * radius/gridsize;
-            double py = center.y + Math.sin(angle) * radius/gridsize;
+            // Position in grid coordinates
+            double px = center.x + Math.cos(angle) * radiusGrid;
+            double py = center.y + Math.sin(angle) * radiusGrid;
 
-            int gridX = worldToGridCoord(px, chunk.worldX, cachepixels);
-            int gridY = worldToGridCoord(py, chunk.worldY, cachepixels);
+            int gridX = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
+            int gridY = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
 
             if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
                 BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
-                updateBox(box, radius, elevation, riverWidth);
+                updateBox(box, radiusGrid, elevation, riverWidthGrid);
             }
         }
     }
 
     /**
      * Update a bigchunk block with new distance and elevation values.
+     * All distances are in grid coordinate space.
+     * @param box Block to update
+     * @param distanceGrid Distance in grid coordinates
+     * @param elevation Elevation value
+     * @param riverWidthGrid River width in grid coordinates
      */
-    private void updateBox(BigChunk.BigChunkBlock box, double distance,
-                          double elevation, double riverWidth) {
+    private void updateBox(BigChunk.BigChunkBlock box, double distanceGrid,
+                          double elevation, double riverWidthGrid) {
         // Compute normalized distance
         double normalizedDist;
-        if (distance < riverWidth) {
-            normalizedDist = distance / riverWidth;
+        if (distanceGrid < riverWidthGrid) {
+            normalizedDist = distanceGrid / riverWidthGrid;
         } else {
-            normalizedDist = distance - riverWidth;
+            normalizedDist = distanceGrid - riverWidthGrid;
         }
 
         // Quantize to uint8 using quantization resolution
-        // Distance: quantizeResolution = 255 / maxDist
+        // Distance: quantizeResolution = 255 / maxDistGrid
         // Elevation: quantizeResolution = 255 / max
-        double distQuantizeRes = 255.0 / maxDist;
+        double distQuantizeRes = 255.0 / maxDistGrid;
         int distU8 = (int) Math.min(255, Math.max(0, normalizedDist * distQuantizeRes));
 
         double elevQuantizeRes = 255.0 / max;
@@ -4569,7 +4622,6 @@ public class DendrySampler implements Sampler {
         // Update distance if lower
         if (distU8 < box.getDistanceUnsigned()) {
             box.setDistanceUnsigned(distU8);
-            boxUpdatesThisSegment++;
         }
 
         // Update elevation if higher

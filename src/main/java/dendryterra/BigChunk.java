@@ -8,11 +8,11 @@ package dendryterra;
  * Memory usage: 256*256*2 bytes + overhead ≈ 132 KB per chunk.
  */
 public class BigChunk {
-    /** World X coordinate of this chunk's origin */
-    public final double worldX;
+    /** Grid X coordinate of this chunk's origin (in normalized grid space) */
+    public final double gridOriginX;
 
-    /** World Y coordinate of this chunk's origin */
-    public final double worldY;
+    /** Grid Y coordinate of this chunk's origin (in normalized grid space) */
+    public final double gridOriginY;
 
     /** 256x256 grid of blocks */
     public final BigChunkBlock[][] blocks;
@@ -24,12 +24,13 @@ public class BigChunk {
     public int lruCounter;
 
     /**
-     * Create a new BigChunk at the specified world coordinates.
+     * Create a new BigChunk at the specified grid coordinates.
+     * Grid coordinates are in normalized space (sampler coordinates / gridsize).
      * All blocks are initialized with elevation=0, distance=255.
      */
-    public BigChunk(double worldX, double worldY) {
-        this.worldX = worldX;
-        this.worldY = worldY;
+    public BigChunk(double gridOriginX, double gridOriginY) {
+        this.gridOriginX = gridOriginX;
+        this.gridOriginY = gridOriginY;
         this.blocks = new BigChunkBlock[256][256];
 
         // Initialize all blocks
