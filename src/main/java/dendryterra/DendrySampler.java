@@ -420,9 +420,9 @@ public class DendrySampler implements Sampler {
 
         // Use bigchunk cache for PIXEL_RIVER and PIXEL_RIVER_CTRL return types
         if (returnType == DendryReturnType.PIXEL_RIVER) {
-            result = evaluateWithBigChunkDistance(x, z);
+            result = evaluateWithBigChunkDistance(normalizedX, normalizedZ);
         } else if (returnType == DendryReturnType.PIXEL_RIVER_CTRL) {
-            result = evaluateWithBigChunkElevation(x, z);
+            result = evaluateWithBigChunkElevation(normalizedX, normalizedZ);
         }
         // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
         else if (usesPixelCache()) {
@@ -4078,7 +4078,14 @@ public class DendrySampler implements Sampler {
         // Convert from uint8 back to actual distance value
         // De-quantization: value / quantizeResolution = value * maxDist / 255
         double distQuantizeRes = 255.0 / maxDist;
-        return block.getDistanceUnsigned() / distQuantizeRes;
+        double result = block.getDistanceUnsigned() / distQuantizeRes;
+
+        // DEBUG: Log specific evaluations to trace the issue
+        if ((x == 0.0 && y <= 5.0) || (x == 5.0 && y == 5.0) || (x == 10.0 && y == 10.0)) {
+            System.out.println("[DEBUG] eval(" + x + "," + y + "): gridX=" + gridX + ", gridY=" + gridY + ", distU8=" + block.getDistanceUnsigned() + ", result=" + String.format("%.2f", result));
+        }
+
+        return result;
     }
 
     /**
@@ -4153,8 +4160,10 @@ public class DendrySampler implements Sampler {
 
         // Compute if not already done
         if (!chunk.computed) {
+            System.out.println("[DEBUG] Computing chunk at (" + chunkX + "," + chunkY + ") world=(" + worldX + "," + worldY + ")");
             computeBigChunk(chunk);
             chunk.computed = true;
+            System.out.println("[DEBUG] Chunk computation complete");
         }
 
         return chunk;
@@ -4202,6 +4211,9 @@ public class DendrySampler implements Sampler {
         int minCellY = (int) Math.floor(minY / gridsize);
         int maxCellY = (int) Math.floor(maxY / gridsize);
 
+        // DEBUG: Log cell range
+        System.out.println("[DEBUG] collectSegmentsForBigChunk: searching cells (" + minCellX + "," + minCellY + ") to (" + maxCellX + "," + maxCellY + ")");
+
         // B. For each cell, get or compute SegmentList
         for (int cellY = minCellY; cellY <= maxCellY; cellY++) {
             for (int cellX = minCellX; cellX <= maxCellX; cellX++) {
@@ -4217,6 +4229,9 @@ public class DendrySampler implements Sampler {
                     segmentListCache.put(cellWorldX, cellWorldY, segmentList);
                 }
 
+                // DEBUG: Log segment count for this cell
+                int cellSegCount = 0;
+
                 // Convert SegmentList to Segment3D and filter by distance
                 for (SegmentIdx segIdx : segmentList.getSegments()) {
                     // Check if at least one endpoint is within maxDist of chunk boundary
@@ -4231,7 +4246,13 @@ public class DendrySampler implements Sampler {
                         Segment3D seg3d = segIdx.resolve(segmentList);
                         outSegments.add(seg3d);
                         outLevels.add(segIdx.level);
+                        cellSegCount++;
                     }
+                }
+
+                // DEBUG: Log cell results
+                if (cellSegCount > 0) {
+                    System.out.println("[DEBUG]   Cell (" + cellX + "," + cellY + "): found " + cellSegCount + " segments (total in cell: " + segmentList.getSegments().size() + ")");
                 }
             }
         }
@@ -4251,6 +4272,9 @@ public class DendrySampler implements Sampler {
                point.y >= minY && point.y <= maxY;
     }
 
+    // DEBUG: Track box updates per segment
+    private int boxUpdatesThisSegment = 0;
+
     /**
      * Sample a segment along its hermite spline and project influence onto bigchunk blocks.
      */
@@ -4260,6 +4284,7 @@ public class DendrySampler implements Sampler {
         int numSamples = (int) Math.ceil((segmentLength / cachepixels) * 1.5);
         if (numSamples < 2) numSamples = 2;  // At least 2 samples
 
+        boxUpdatesThisSegment = 0;
 
         // Sample along the segment
         for (int i = 0; i < numSamples; i++) {
@@ -4542,6 +4567,7 @@ public class DendrySampler implements Sampler {
         // Update distance if lower
         if (distU8 < box.getDistanceUnsigned()) {
             box.setDistanceUnsigned(distU8);
+            boxUpdatesThisSegment++;
         }
 
         // Update elevation if higher
