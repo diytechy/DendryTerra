@@ -4588,13 +4588,16 @@ public class DendrySampler implements Sampler {
                           double elevation, double riverWidthGrid) {
         // Compute normalized distance
         double normalizedDist;
+        double NormDistFromRiverCenter;
         if (distanceGrid < riverWidthGrid) {
             //River is ratiometric, inside river is less than 1.
             //Divided by gridsize since this is the ratio in grid units, which is computed on the gridsize.
-            normalizedDist = (distanceGrid / riverWidthGrid)/gridsize;
+            NormDistFromRiverCenter = distanceGrid / riverWidthGrid;
+            normalizedDist = NormDistFromRiverCenter / gridsize;
         } else {
             //Outside river is absolute distance to river's edge.
             normalizedDist = distanceGrid - riverWidthGrid;
+            NormDistFromRiverCenter = 1;
         }
 
         // Quantize to uint8 using quantization resolution
