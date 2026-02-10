@@ -1264,32 +1264,38 @@ Fixed?:
 
 ########################################################
 
+Goals:
+ - Fill in missing sections from the ends of segments.
+ - Fill in pin-holes in the returned values where some boxes aren't getting values populated, likely due to the way positions are rounded around arcs.
+ - Smooth out elevation changes to have more of a curved shape flowing toward the downward slope of a river / segment flow, with "straighter" falloff as the slope increases.
+ - Make sure transitions to new segments are relatively clean.
+
 Make additional updates to the RIVER_PIXEL solver:
 
 1. Initialize BigChunk box elevation or control values to UInt8 max instead of 0.
 
 2. When collecting segments to evaluate for PIXEL_RIVER, also add 2 sister lists that contains the number of connections for each segment's end connection and start connection.
 
-3. When iterating over segments for PIXEL_RIVER, go from highest level segments down.  (Sort segment by before evaluating).  Note any sister arrays (level, start connections, end connections) must be evaluated in the same order per corresponding segment.
+3. When iterating over segments for PIXEL_RIVER, go from highest level segments down.  (Sort segment  before evaluating).  Note any sister arrays (level, start connections, end connections) must be evaluated in the same order per corresponding segment.
 
-4. Update functions that set the quantized elevation to directly use the quantized elevation value instead of scaling as a part of it's function, as the quantized elevation must be known for other logic when resolving a segment.
+4. Update functions that set the quantized elevation to directly use the quantized elevation value as an input instead of scaling as a part of it's function, as the quantized elevation must be known for other logic when evaluating a segment.
 
-5. Make various updates to the ways segments are sampled and boxes are solved.  For each evaluation of t (for loop below "// Sample along the segment"):
+5. Make various updates to the ways segments are sampled and boxes for BigChunks are solved.  Calculate the slope of the segment as it's euclidean distance / change in height and for each evaluation of t (for loop below "// Sample along the segment"):
 
     A. If this is the first segment position (i=0), or if the previous sampled segment points was out of bounds:
-     - initialize 3 UInt8 elevation variables for the outer, inner, and central river elevation to "elevation * elevQuantizeRes".
+     - initialize 3 UInt8 elevation variables for the outer, inner, and central river elevation to "elevation * elevQuantizeRes".  T
      - initialize 3 float elevation radius variables for the outer, inner, and central river elevation to 0.
      - compute the previous tangent and current tangent as the current tangent of the segment.
      - compute the previous and current position as the current position.
      - consider this the start of a new segment stream (boolean)
 
-    B. Else this sample is not a part of a new segment stream (it is a continued segment stream)
-     - The previous tangent and previous position should be retained from the last solved sampler sample to compare to the current sample.
+    B. Else this sample is not a part of a new segment stream (it is a continued segment stream from the previous iteration)
+     - The previous tangent and previous position should be retained from the last solved sampler sample to compare to the current sample, that is previous tangent = tangent, previous position = position
 
     C. Perform boundary checks as is today to continue to the next sample if the current sample is out of bounds, else compute the other properties of the sample:
      - The point will be calculated as normal for the new sample.
-     - A potential elevation will be computed as "elevation * elevQuantizeRes".
-     - If the potential elevation is different from the central river elevation, all elevations must be updated:
+     - A potential elevation will be computed as "elevation * elevQuantizeRes", where elevation is calculated the same way it is today, interpolated along the hermite spline.
+     - If the potential elevation is different from the central river elevation, this means the quantized elevation has changed and all elevations must be updated:
         - The outer elevation = inner elevation
         - Inner elevation = central elevation
         - Central elevation = potential elevation.
@@ -1300,8 +1306,9 @@ Make additional updates to the RIVER_PIXEL solver:
 
     D. If the sample is a part of a new segment stream or if the tangent vs the previous tangent difference exceeds an absolute difference of 90 degrees or the distance between the current sample position and the previous sample position exceeds 70% of the pixelcache /gridsize distance or this is the last sample in the segment or if the elevation changed this sample, the sample should be used to populate the bigChunk boxes similar to how it is done today, else the loop should continue to evaluate the next sample.
 
-    E. Update the elevation radii if the elevation did NOT change this sample:
-        - All elevation radii will be decremented by the distance to the previous evaluated point, with a minimum value of 0.
+    E. Update the elevation radii :
+        - if the elevation did NOT change this sample all elevation radii will be decremented by the distance to the previous evaluated point, with a minimum value of 0.
+        - For all elevation radii, saturate them to the (distance to the end segment point - 1), this will ensure the elevation radii is forced to 0 as the segment reaches 0, which will prevent elevation artifacts from overlapping lower level rivers inconsistently.
 
     F. If the segment sample is at the start or end and the number of connections is 1, set a fill flag that will be used by projectConeToBoxes.
 
@@ -1309,9 +1316,13 @@ Make additional updates to the RIVER_PIXEL solver:
         i. Will now only require current tangent and previous tangent, in addition to all the new elevation parameters and the fill flag.
         ii. calculateConeAngle and calculateBowDirection also only require current and previous tangent.
         iii. If the fill flag is set, compute the cone angle as 180 degrees clockwise, set the perpendicular as 90 degrees clockwise from the current tangent for start points and 90 degrees counterclockwise for end points.  This way the entire semicircle surrounding the end of the point will be filled.
-        iiii. For each step outward, if there is an elevation radius that is non-zero, determine which elevation should be applied by calculating the distance to the elevation center as sqrt((distanceGrid / riverWidthGrid)^2 + elevation radius^2) that is closest to but exceeds 1 for all elevation radius values greater than 0. 
-
-5. Update the updateBox function so that it has a flag indicating if the 4 adjacent boxes should be filled with the same value (excluding any adjacent boxes that are outside the edge of the bigchunk).  This flag may be evaluated
+        iiii. For each step outward, if there is an elevation radius that is non-zero and the normalized distance is less than 1, determine which elevation should be applied.  For each non-zero elevation radii from biggest to smallest:
+            - Calculate the samples distance to the elevation centroid (centroid distance) as sqrt(normalized outward distance ^2 + (selected elevation radius * min(0,(1- current slope / max slope))) ^2).
+            If this value is less than one, the selected elevation will be the elevation corresponding to the elevation radius evaluated.
+            - Else continue to the next largest elevation radius.
+            - If no centroid distances are less than 1, ues the central elevation.
+        v. For each step outward, if the step is not the first step outward, set the flag that will allow adjacent box filling for the updateBox function.  This should be implemented with a compile-time option that allows the flag to be disabled so it can be evaluated with / without adjacent box fills. 
+5. Update the updateBox function so that it has a flag input indicating if the 4 adjacent boxes should be filled with the same value (excluding any adjacent boxes that are outside the edge of the bigchunk).  This flag may be evaluated la
 
 5. If elevation for box is currently greater than what it is about to be updated to and it was previously set (check distance < 255), and the box is getting set for level 1+ or level 0+ and the outward step is 1 pixelcache distance away from the river edge add some random flat noise that will allow the elevation set in the box to be any value between it's current value and the value that would have been set.
 
