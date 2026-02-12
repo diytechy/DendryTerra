@@ -26,7 +26,7 @@ public class BigChunk {
     /**
      * Create a new BigChunk at the specified grid coordinates.
      * Grid coordinates are in normalized space (sampler coordinates / gridsize).
-     * All blocks are initialized with elevation=0, distance=255.
+     * All blocks are initialized with elevation=255, distance=255.
      */
     public BigChunk(double gridOriginX, double gridOriginY) {
         this.gridOriginX = gridOriginX;
@@ -66,11 +66,11 @@ public class BigChunk {
 
         /**
          * Create a new block with default values:
-         * elevation = 0, distance = 255 (maximum)
+         * elevation = 255 (unset), distance = 255 (maximum)
          */
         public BigChunkBlock() {
-            this.elevation = 0;
-            this.distance = (byte) 255;  // Max distance initially
+            this.elevation = (byte) 255;  // Max elevation initially (unset marker)
+            this.distance = (byte) 255;   // Max distance initially
         }
 
         /**

@@ -4201,13 +4201,21 @@ public class DendrySampler implements Sampler {
 
         // A. Collect all segments from nearby cells that could influence this chunk
         List<Segment3D> segments = new ArrayList<>();
-        List<Integer> levels = new ArrayList<>();  // Parallel array for segment levels
+        List<Integer> levels = new ArrayList<>();
+        List<Integer> startConns = new ArrayList<>();
+        List<Integer> endConns = new ArrayList<>();
 
-        collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels);
+        collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels, startConns, endConns);
 
-        // C. Process each segment
-        for (int i = 0; i < segments.size(); i++) {
-            sampleSegmentAlongSpline(segments.get(i), levels.get(i), chunk, chunkSizeGrid);
+        // B. Sort by level descending (highest level segments processed first)
+        Integer[] sortedIndices = new Integer[segments.size()];
+        for (int i = 0; i < sortedIndices.length; i++) sortedIndices[i] = i;
+        java.util.Arrays.sort(sortedIndices, (a, b) -> Integer.compare(levels.get(b), levels.get(a)));
+
+        // C. Process each segment in sorted order
+        for (int idx : sortedIndices) {
+            sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
+                startConns.get(idx), endConns.get(idx), chunk, chunkSizeGrid);
         }
     }
 
@@ -4219,9 +4227,12 @@ public class DendrySampler implements Sampler {
      * @param chunkSizeGrid Size of chunk in grid coordinates
      * @param outSegments Output list for segments
      * @param outLevels Output list for segment levels (parallel to outSegments)
+     * @param outStartConns Output list for start endpoint connection counts
+     * @param outEndConns Output list for end endpoint connection counts
      */
     private void collectSegmentsForBigChunk(BigChunk chunk, double chunkSizeGrid,
-                                           List<Segment3D> outSegments, List<Integer> outLevels) {
+                                           List<Segment3D> outSegments, List<Integer> outLevels,
+                                           List<Integer> outStartConns, List<Integer> outEndConns) {
         // Determine the range of cells that could contain relevant segments
         // Grid coordinates are already normalized (sampler / gridsize), so cell boundaries are at integer values
         double minGridX = chunk.gridOriginX - maxDistGrid;
@@ -4265,6 +4276,9 @@ public class DendrySampler implements Sampler {
                         Segment3D seg3d = segIdx.resolve(segmentList);
                         outSegments.add(seg3d);
                         outLevels.add(segIdx.level);
+                        // Extract connection counts from endpoint NetworkPoints
+                        outStartConns.add(segmentList.getPoint(segIdx.srtIdx).connections);
+                        outEndConns.add(segmentList.getPoint(segIdx.endIdx).connections);
                     }
                 }
             }
@@ -4289,51 +4303,175 @@ public class DendrySampler implements Sampler {
                point.y >= minY && point.y <= maxY;
     }
 
-    // DEBUG: Track box updates per segment
-    private int boxUpdatesThisSegment = 0;
-
     /**
      * Sample a segment along its hermite spline and project influence onto bigchunk blocks.
+     * Uses 3-layer elevation tracking and adaptive sample evaluation criteria.
      * All coordinates are in grid coordinate space.
      * @param seg Segment in grid coordinates
      * @param level River level
+     * @param startConnections Number of connections at start endpoint
+     * @param endConnections Number of connections at end endpoint
      * @param chunk BigChunk to project onto
      * @param chunkSizeGrid Size of chunk in grid coordinates
      */
-    private void sampleSegmentAlongSpline(Segment3D seg, int level, BigChunk chunk, double chunkSizeGrid) {
-        // Calculate number of samples needed
-        // Segment length is in grid coordinates, convert to understand spacing
+    private void sampleSegmentAlongSpline(Segment3D seg, int level,
+                                          int startConnections, int endConnections,
+                                          BigChunk chunk, double chunkSizeGrid) {
+        // Pre-compute constants
         double segmentLength = seg.length();
         double cachepixelsGrid = cachepixels / gridsize;
+        double elevQuantizeRes = 255.0 / max;
         int numSamples = (int) Math.ceil((segmentLength / cachepixelsGrid) * 1.5);
-        if (numSamples < 2) numSamples = 2;  // At least 2 samples
+        if (numSamples < 2) numSamples = 2;
+
+        // Segment slope: abs(height change / euclidean distance)
+        double heightChange = Math.abs(seg.end.z - seg.srt.z);
+        double segmentSlope = (segmentLength > MathUtils.EPSILON)
+            ? heightChange / segmentLength : 0.0;
+
+        // Evaluation distance threshold: 70% of cachepixels in grid coordinates
+        double evalDistThreshold = 0.7 * cachepixelsGrid;
+
+        // === Elevation tracking state (3 layers) ===
+        int outerElev = 0, innerElev = 0, centralElev = 0;
+        double outerRadius = 0, innerRadius = 0, centralRadius = 0;
+
+        // === Stream tracking state ===
+        boolean isNewStream = true;
+        boolean wasOutOfBounds = true;
+        dendryterra.math.Vec2D prevEvalTangent = null;
+        Point3D prevEvalPos = null;
+        dendryterra.math.Vec2D prevLoopTangent = null;
 
         // Sample along the segment
         for (int i = 0; i < numSamples; i++) {
-            double t = (double) i / (numSamples - 1);  // 0.0 to 1.0
+            double t = (double) i / (numSamples - 1);
 
-            // Interpolate position using Hermite spline (falls back to linear if no tangents)
+            // Interpolate position and tangent
             Point3D samplePoint = evaluateHermiteSpline(seg, t);
+            dendryterra.math.Vec2D currentTangent = interpolateTangent(seg, t);
 
-            // Skip if outside chunk boundary
+            // === Step A: New stream initialization ===
+            if (i == 0 || wasOutOfBounds) {
+                int quantizedElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
+                outerElev = innerElev = centralElev = quantizedElev;
+                outerRadius = innerRadius = centralRadius = 0;
+                prevLoopTangent = currentTangent;
+                prevEvalPos = samplePoint;
+                prevEvalTangent = currentTangent;
+                isNewStream = true;
+            }
+            // === Step B: Continued stream ===
+            // prevLoopTangent already holds previous loop iteration's currentTangent
+
+            // === Step C: Boundary check ===
             if (!isPointNearChunk(samplePoint, chunk, chunkSizeGrid)) {
+                wasOutOfBounds = true;
+                prevLoopTangent = currentTangent;
+                continue;
+            }
+            wasOutOfBounds = false;
+
+            // Compute potential quantized elevation
+            int potentialElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
+            boolean elevationChanged = false;
+
+            // Check if quantized elevation changed
+            if (potentialElev != centralElev) {
+                outerElev = innerElev;
+                innerElev = centralElev;
+                centralElev = potentialElev;
+                outerRadius = innerRadius;
+                innerRadius = centralRadius;
+                centralRadius = 1.0;  // 1.0 in normalized (river-width) space
+                elevationChanged = true;
+            }
+
+            // === Step D: Should this sample be evaluated/projected? ===
+            boolean shouldEvaluate = false;
+
+            if (isNewStream) {
+                shouldEvaluate = true;
+            } else {
+                // Check tangent angle difference > 90 degrees
+                if (prevEvalTangent != null) {
+                    double dotProduct = prevEvalTangent.x * currentTangent.x
+                                      + prevEvalTangent.y * currentTangent.y;
+                    dotProduct = Math.max(-1.0, Math.min(1.0, dotProduct));
+                    double angleDeg = Math.toDegrees(Math.acos(dotProduct));
+                    if (angleDeg > 90.0) {
+                        shouldEvaluate = true;
+                    }
+                }
+
+                // Check distance from previous evaluated position
+                if (prevEvalPos != null) {
+                    double dx = samplePoint.x - prevEvalPos.x;
+                    double dy = samplePoint.y - prevEvalPos.y;
+                    double dist2D = Math.sqrt(dx * dx + dy * dy);
+                    if (dist2D > evalDistThreshold) {
+                        shouldEvaluate = true;
+                    }
+                }
+
+                // Last sample in segment
+                if (i == numSamples - 1) {
+                    shouldEvaluate = true;
+                }
+
+                // Elevation changed
+                if (elevationChanged) {
+                    shouldEvaluate = true;
+                }
+            }
+
+            if (!shouldEvaluate) {
+                prevLoopTangent = currentTangent;
                 continue;
             }
 
-            // Calculate tangents at this point
-            dendryterra.math.Vec2D currentTangent = interpolateTangent(seg, t);
-            dendryterra.math.Vec2D prevTangent = (i > 0) ? interpolateTangent(seg, Math.max(0, t - 1.0 / (numSamples - 1))) : currentTangent;
-            dendryterra.math.Vec2D nextTangent = (i < numSamples - 1) ? interpolateTangent(seg, Math.min(1, t + 1.0 / (numSamples - 1))) : currentTangent;
-
-            // Elevation comes from the Hermite-interpolated point
-            double elevation = samplePoint.z;
-
-            // Get river width for this level (in grid coordinates)
+            // === Step E: Update elevation radii ===
             double riverWidthGrid = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
 
-            // Project cone from this sample point
-            projectConeToBoxes(samplePoint, currentTangent, prevTangent, nextTangent,
-                             elevation, riverWidthGrid, chunk, chunkSizeGrid);
+            if (!elevationChanged && prevEvalPos != null && riverWidthGrid > 0) {
+                double dx = samplePoint.x - prevEvalPos.x;
+                double dy = samplePoint.y - prevEvalPos.y;
+                double distSinceLastEval = Math.sqrt(dx * dx + dy * dy) / riverWidthGrid;
+                outerRadius = Math.max(0, outerRadius - distSinceLastEval);
+                innerRadius = Math.max(0, innerRadius - distSinceLastEval);
+                centralRadius = Math.max(0, centralRadius - distSinceLastEval);
+            }
+
+            // Saturate radii to distance from segment end (normalized by river width)
+            if (riverWidthGrid > 0) {
+                double dxEnd = samplePoint.x - seg.end.x;
+                double dyEnd = samplePoint.y - seg.end.y;
+                double distToEndNorm = Math.sqrt(dxEnd * dxEnd + dyEnd * dyEnd) / riverWidthGrid;
+                double maxRadius = Math.max(0, distToEndNorm - 1);
+                outerRadius = Math.min(outerRadius, maxRadius);
+                innerRadius = Math.min(innerRadius, maxRadius);
+                centralRadius = Math.min(centralRadius, maxRadius);
+            }
+
+            // === Step F: Segment fill flag ===
+            boolean segmentFill = false;
+            boolean isStartPoint = (i == 0);
+            boolean isEndPoint = (i == numSamples - 1);
+            if (isStartPoint && startConnections == 1) segmentFill = true;
+            if (isEndPoint && endConnections == 1) segmentFill = true;
+
+            // === Project to boxes ===
+            projectConeToBoxes(samplePoint, currentTangent, prevEvalTangent,
+                centralElev, innerElev, outerElev,
+                centralRadius, innerRadius, outerRadius,
+                riverWidthGrid, segmentFill, isStartPoint,
+                segmentSlope, chunk, chunkSizeGrid);
+
+            // Update state for next iteration
+            prevEvalPos = samplePoint;
+            prevEvalTangent = currentTangent;
+            isNewStream = false;
+            prevLoopTangent = currentTangent;
         }
     }
 
@@ -4415,80 +4553,138 @@ public class DendrySampler implements Sampler {
      * @param riverWidthGrid River width in grid coordinates
      * @param chunkSizeGrid Chunk size in grid coordinates
      */
+    /**
+     * Project a cone of influence from a sample point onto bigchunk boxes.
+     * All coordinates and distances are in grid coordinate space.
+     * @param samplePoint Sample position in grid coordinates
+     * @param currentTangent Current tangent direction at sample point
+     * @param prevTangent Previous evaluated tangent direction
+     * @param centralElev Pre-quantized central elevation (UInt8)
+     * @param innerElev Pre-quantized inner elevation (UInt8)
+     * @param outerElev Pre-quantized outer elevation (UInt8)
+     * @param centralRadius Central elevation radius (normalized by river width, 0-1)
+     * @param innerRadius Inner elevation radius (normalized by river width, 0-1)
+     * @param outerRadius Outer elevation radius (normalized by river width, 0-1)
+     * @param riverWidthGrid River width in grid coordinates
+     * @param segmentFill If true, fill a 180° semicircle at segment endpoint
+     * @param isStartPoint True if this is the start of the segment (affects semicircle direction)
+     * @param segmentSlope Segment slope (abs(height change / euclidean distance))
+     * @param chunk BigChunk to project onto
+     * @param chunkSizeGrid Chunk size in grid coordinates
+     */
     private void projectConeToBoxes(Point3D samplePoint, dendryterra.math.Vec2D currentTangent,
-                                   dendryterra.math.Vec2D prevTangent, dendryterra.math.Vec2D nextTangent,
-                                   double elevation, double riverWidthGrid,
-                                   BigChunk chunk, double chunkSizeGrid) {
+                                   dendryterra.math.Vec2D prevTangent,
+                                   int centralElev, int innerElev, int outerElev,
+                                   double centralRadius, double innerRadius, double outerRadius,
+                                   double riverWidthGrid, boolean segmentFill, boolean isStartPoint,
+                                   double segmentSlope, BigChunk chunk, double chunkSizeGrid) {
         double cachepixelsGrid = cachepixels / gridsize;
 
-        // f. Set box at sample point
-        int sampleGridX = gridToBlockIndex(samplePoint.x, chunk.gridOriginX, cachepixelsGrid);
-        int sampleGridY = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
+        // Determine cone angle and bow direction
+        double coneAngle;
+        double bowDirectionRad;  // Center angle of the cone sweep (radians)
 
-        if (sampleGridX >= 0 && sampleGridX < 256 && sampleGridY >= 0 && sampleGridY < 256) {
-            BigChunk.BigChunkBlock box = chunk.getBlock(sampleGridX, sampleGridY);
-            updateBox(box, 0.0, elevation, riverWidthGrid);  // Distance = 0 at sample point
+        if (segmentFill) {
+            // Semicircle fill for endpoints with 1 connection
+            coneAngle = Math.PI;  // 180 degrees
+            if (isStartPoint) {
+                // Perpendicular 90° clockwise from currentTangent (faces backward from segment)
+                bowDirectionRad = Math.atan2(currentTangent.y, currentTangent.x) - Math.PI / 2;
+            } else {
+                // Perpendicular 90° counterclockwise from currentTangent (faces forward from segment)
+                bowDirectionRad = Math.atan2(currentTangent.y, currentTangent.x) + Math.PI / 2;
+            }
+        } else {
+            // Normal cone: sweep from prevTangent to currentTangent
+            coneAngle = calculateConeAngle(prevTangent, currentTangent);
+            bowDirectionRad = calculateBowDirectionRad(prevTangent, currentTangent);
         }
 
-        // g. Determine rotation direction and project cone
-        double coneAngle = calculateConeAngle(prevTangent, currentTangent, nextTangent);
-        boolean bowsRight = calculateBowDirection(prevTangent, currentTangent, nextTangent);
+        // Slope factor for elevation centroid distance
+        double slopeFactor = Math.max(0, 1.0 - segmentSlope / slopeWhenStraight);
 
-        // Compute perpendicular direction
-        dendryterra.math.Vec2D perpendicular = new dendryterra.math.Vec2D(-currentTangent.y, currentTangent.x);
-        if (!bowsRight) {
-            perpendicular = new dendryterra.math.Vec2D(currentTangent.y, -currentTangent.x);
-        }
-
-        // Project outward along perpendicular up to maxDistGrid
+        // Project outward from sample point
         int maxSteps = (int) Math.ceil(maxDistGrid / cachepixelsGrid);
-        for (int step = 1; step <= maxSteps; step++) {
-            // Distance in grid coordinates
+        for (int step = 0; step <= maxSteps; step++) {
             double distanceGrid = step * cachepixelsGrid;
-            if (distanceGrid > maxDistGrid) break;
+            if (step > 0 && distanceGrid > maxDistGrid) break;
 
-            // Position along perpendicular (grid coordinates)
-            double px = samplePoint.x + perpendicular.x * distanceGrid;
-            double py = samplePoint.y + perpendicular.y * distanceGrid;
+            // Normalized distance from river center (in river-width units)
+            double normDistFromCenter = (riverWidthGrid > 0) ? distanceGrid / riverWidthGrid : 1.0;
 
-            // Convert to block index
-            int gridX = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
-            int gridY = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
-
-            if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
-                BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
-                updateBox(box, distanceGrid, elevation, riverWidthGrid);
+            // Determine which elevation to use based on centroid distances
+            int selectedElev = centralElev;  // Default
+            if (normDistFromCenter < 1.0) {
+                // Check elevation layers from biggest radius to smallest
+                if (outerRadius > 0) {
+                    double centroidDist = Math.sqrt(
+                        normDistFromCenter * normDistFromCenter +
+                        Math.pow(outerRadius * slopeFactor, 2)
+                    );
+                    if (centroidDist < 1.0) {
+                        selectedElev = outerElev;
+                    }
+                }
+                if (selectedElev == centralElev && innerRadius > 0) {
+                    double centroidDist = Math.sqrt(
+                        normDistFromCenter * normDistFromCenter +
+                        Math.pow(innerRadius * slopeFactor, 2)
+                    );
+                    if (centroidDist < 1.0) {
+                        selectedElev = innerElev;
+                    }
+                }
+                // Otherwise centralElev (already set)
             }
 
-            // Check if we need multiple arc samples
-            double arcLength = coneAngle * distanceGrid;
-            if (arcLength > cachepixelsGrid / 2.0) {
-                int arcSamples = (int) Math.ceil(arcLength / (cachepixelsGrid / 2.0));
-                sampleArc(samplePoint, distanceGrid, coneAngle, currentTangent, bowsRight,
-                        elevation, riverWidthGrid, chunk, cachepixelsGrid, arcSamples);
+            boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING && (step > 0);
+
+            if (step == 0) {
+                // Center point - set the box at samplePoint
+                int bx = gridToBlockIndex(samplePoint.x, chunk.gridOriginX, cachepixelsGrid);
+                int by = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
+                if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
+                    updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid,
+                             false, bx, by, chunk, step);
+                }
+            } else {
+                // Arc samples at this radius - positive side
+                double arcLength = coneAngle * distanceGrid;
+                int numArcSamples = Math.max(2, (int) Math.ceil(arcLength / (cachepixelsGrid * 0.5)));
+
+                for (int a = 0; a < numArcSamples; a++) {
+                    double angleOffset = coneAngle * ((double) a / (numArcSamples - 1) - 0.5);
+                    double angle = bowDirectionRad + angleOffset;
+
+                    double px = samplePoint.x + Math.cos(angle) * distanceGrid;
+                    double py = samplePoint.y + Math.sin(angle) * distanceGrid;
+
+                    int bx = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
+                    int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
+
+                    if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
+                        updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
+                                 riverWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
+                    }
+                }
+
+                // Arc samples at this radius - opposite side
+                for (int a = 0; a < numArcSamples; a++) {
+                    double angleOffset = coneAngle * ((double) a / (numArcSamples - 1) - 0.5);
+                    double angle = bowDirectionRad + Math.PI + angleOffset;
+
+                    double px = samplePoint.x + Math.cos(angle) * distanceGrid;
+                    double py = samplePoint.y + Math.sin(angle) * distanceGrid;
+
+                    int bx = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
+                    int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
+
+                    if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
+                        updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
+                                 riverWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
+                    }
+                }
             }
-        }
-
-        // Project outward along negative perpendicular up to maxDistGrid
-        for (int step = 1; step <= maxSteps; step++) {
-            // Distance in grid coordinates
-            double distanceGrid = step * cachepixelsGrid;
-            if (distanceGrid > maxDistGrid) break;
-
-            // Position along negative perpendicular (grid coordinates)
-            double px = samplePoint.x - perpendicular.x * distanceGrid;
-            double py = samplePoint.y - perpendicular.y * distanceGrid;
-
-            // Convert to block index
-            int gridX = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
-            int gridY = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
-
-            if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
-                BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
-                updateBox(box, distanceGrid, elevation, riverWidthGrid);
-            }
-
-            //NOTE: For the opposite side we do not need to fill the cone since this is the
         }
     }
 
@@ -4504,31 +4700,31 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Calculate the cone angle from three consecutive tangent vectors.
+     * Calculate the cone angle between previous and current tangent vectors.
+     * Returns the absolute angle change in radians.
      */
-    private double calculateConeAngle(dendryterra.math.Vec2D prev, dendryterra.math.Vec2D current, dendryterra.math.Vec2D next) {
-        // Angle between prev and current
-        double angle1 = Math.atan2(current.y, current.x) - Math.atan2(prev.y, prev.x);
-        // Angle between current and next
-        double angle2 = Math.atan2(next.y, next.x) - Math.atan2(current.y, current.x);
-
-        // Normalize to [-PI, PI]
-        angle1 = normalizeAngle(angle1);
-        angle2 = normalizeAngle(angle2);
-
-        // Return maximum absolute angle change
-        return Math.max(Math.abs(angle1), Math.abs(angle2));
+    private double calculateConeAngle(dendryterra.math.Vec2D prev, dendryterra.math.Vec2D current) {
+        double angle = Math.atan2(current.y, current.x) - Math.atan2(prev.y, prev.x);
+        angle = normalizeAngle(angle);
+        return Math.abs(angle);
     }
 
     /**
-     * Determine if the segment is bowing to the right (counter-clockwise rotation).
+     * Calculate the bow direction (center angle of cone sweep) between previous and current tangent.
+     * Returns the perpendicular direction in radians, on the side the curve bows toward.
      */
-    private boolean calculateBowDirection(dendryterra.math.Vec2D prev, dendryterra.math.Vec2D current, dendryterra.math.Vec2D next) {
-        // Cross product: if positive, counter-clockwise (right)
-        double cross1 = prev.x * current.y - prev.y * current.x;
-        double cross2 = current.x * next.y - current.y * next.x;
+    private double calculateBowDirectionRad(dendryterra.math.Vec2D prev, dendryterra.math.Vec2D current) {
+        // Cross product to determine which side the curve bows toward
+        double cross = prev.x * current.y - prev.y * current.x;
 
-        return (cross1 + cross2) > 0;
+        // Perpendicular to current tangent, on the bowing side
+        if (cross > 0) {
+            // Bows right: perpendicular is (-y, x)
+            return Math.atan2(current.x, -current.y);
+        } else {
+            // Bows left: perpendicular is (y, -x)
+            return Math.atan2(-current.x, current.y);
+        }
     }
 
     /**
@@ -4540,82 +4736,79 @@ public class DendrySampler implements Sampler {
         return angle;
     }
 
-    /**
-     * Sample multiple points along an arc.
-     * All coordinates and distances are in grid coordinate space.
-     */
-    private void sampleArc(Point3D center, double radiusGrid, double coneAngle,
-                          dendryterra.math.Vec2D tangent, boolean bowsRight,
-                          double elevation, double riverWidthGrid,
-                          BigChunk chunk, double cachepixelsGrid, int numSamples) {
-        // Perpendicular direction
-        dendryterra.math.Vec2D perpendicular = new dendryterra.math.Vec2D(-tangent.y, tangent.x);
-        if (!bowsRight) {
-            perpendicular = new dendryterra.math.Vec2D(tangent.y, -tangent.x);
-        }
-
-        // Base angle
-        double baseAngle = Math.atan2(perpendicular.y, perpendicular.x);
-
-        // Sample along arc
-        for (int i = 0; i < numSamples; i++) {
-            double angleOffset = coneAngle * (i / (double)(numSamples - 1) - 0.5);
-            double angle = baseAngle + angleOffset;
-
-            // Position in grid coordinates
-            double px = center.x + Math.cos(angle) * radiusGrid;
-            double py = center.y + Math.sin(angle) * radiusGrid;
-
-            int gridX = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
-            int gridY = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
-
-            if (gridX >= 0 && gridX < 256 && gridY >= 0 && gridY < 256) {
-                BigChunk.BigChunkBlock box = chunk.getBlock(gridX, gridY);
-                updateBox(box, radiusGrid, elevation, riverWidthGrid);
-            }
-        }
-    }
+    /** Compile-time toggle for adjacent box blot filling */
+    private static final boolean ENABLE_BLOT_FILLING = true;
 
     /**
      * Update a bigchunk block with new distance and elevation values.
      * All distances are in grid coordinate space.
      * @param box Block to update
      * @param distanceGrid Distance in grid coordinates
-     * @param elevation Elevation value
+     * @param elevationU8 Pre-quantized elevation value (0-255)
      * @param riverWidthGrid River width in grid coordinates
+     * @param blotAdjacentBoxes If true, also fill 4 adjacent boxes with same values
+     * @param blockX Block X index within chunk (for adjacent access)
+     * @param blockY Block Y index within chunk (for adjacent access)
+     * @param chunk BigChunk for adjacent box access
+     * @param outwardStep The outward step index (0 = center, 1 = first ring, etc.)
      */
     private void updateBox(BigChunk.BigChunkBlock box, double distanceGrid,
-                          double elevation, double riverWidthGrid) {
+                          int elevationU8, double riverWidthGrid,
+                          boolean blotAdjacentBoxes, int blockX, int blockY,
+                          BigChunk chunk, int outwardStep) {
         // Compute normalized distance
         double normalizedDist;
-        double NormDistFromRiverCenter;
         if (distanceGrid < riverWidthGrid) {
-            //River is ratiometric, inside river is less than 1.
-            //Divided by gridsize since this is the ratio in grid units, which is computed on the gridsize.
-            NormDistFromRiverCenter = distanceGrid / riverWidthGrid;
-            normalizedDist = NormDistFromRiverCenter / gridsize;
+            // River is ratiometric, inside river is less than 1.
+            // Divided by gridsize since this is the ratio in grid units.
+            normalizedDist = (distanceGrid / riverWidthGrid) / gridsize;
         } else {
-            //Outside river is absolute distance to river's edge.
+            // Outside river is absolute distance to river's edge.
             normalizedDist = distanceGrid - riverWidthGrid;
-            NormDistFromRiverCenter = 1;
         }
 
-        // Quantize to uint8 using quantization resolution
-        // Distance: quantizeResolution = 255 / maxDistGrid
-        // Elevation: quantizeResolution = 255 / max
+        // Quantize distance to uint8
         double distQuantizeRes = 255.0 / maxDistGrid;
         int distU8 = (int) Math.min(255, Math.max(0, normalizedDist * distQuantizeRes));
 
-        double elevQuantizeRes = 255.0 / max;
-        int elevU8 = (int) Math.min(255, Math.max(0, elevation * elevQuantizeRes));
+        // Apply elevation smoothing noise at river edge transitions
+        int finalElevU8 = elevationU8;
+        int currentElev = box.getElevationUnsigned();
+        int currentDist = box.getDistanceUnsigned();
 
-        // Update distance if lower
+        // If box was previously set (distance < 255), new elevation is lower,
+        // and we're at the first outward step from river edge, add random noise
+        if (currentElev > elevationU8 && currentDist < 255 && outwardStep == 1) {
+            int range = currentElev - elevationU8;
+            int noise = (int)(Math.random() * range);
+            finalElevU8 = elevationU8 + noise;
+        }
+
+        // Update this box
+        applyBoxUpdate(box, distU8, finalElevU8);
+
+        // Blot: fill 4 adjacent boxes with same values (pin-hole filling)
+        if (ENABLE_BLOT_FILLING && blotAdjacentBoxes) {
+            int[][] neighbors = {{-1,0},{1,0},{0,-1},{0,1}};
+            for (int[] d : neighbors) {
+                int nx = blockX + d[0], ny = blockY + d[1];
+                if (nx >= 0 && nx < 256 && ny >= 0 && ny < 256) {
+                    applyBoxUpdate(chunk.getBlock(nx, ny), distU8, finalElevU8);
+                }
+            }
+        }
+    }
+
+    /**
+     * Apply distance and elevation updates to a single box.
+     * Distance: lower wins (closer to river).
+     * Elevation: lower wins (river valley).
+     */
+    private void applyBoxUpdate(BigChunk.BigChunkBlock box, int distU8, int elevU8) {
         if (distU8 < box.getDistanceUnsigned()) {
             box.setDistanceUnsigned(distU8);
         }
-
-        // Update elevation if higher
-        if (elevU8 > box.getElevationUnsigned()) {
+        if (elevU8 < box.getElevationUnsigned()) {
             box.setElevationUnsigned(elevU8);
         }
     }
