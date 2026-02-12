@@ -16,7 +16,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -155,7 +154,6 @@ public class DendrySampler implements Sampler {
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
     private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
-    private static final int PIXEL_DATA_SIZE = 9; // 2 (x) + 2 (y) + 4 (elevation) + 1 (level) bytes
 
     // Lazy LRU cache (optional based on useCache flag)
     private final LoadingCache<Long, CellData> cellCache;
@@ -958,39 +956,7 @@ public class DendrySampler implements Sampler {
      * @param level The level (0-indexed, where 0 = level 1 cells)
      * @return Resolution multiplier (1 for level 0, 2 for level 1, etc.)
      */
-    private int getCellResolutionForLevel(int level) {
-        if (level <= 0) return 1;
-        return (int) Math.pow(2, level - 1);
-    }
 
-    private Point3D[][] generateNeighboringPoints3D(Cell cell, int size) {
-        Point3D[][] points = new Point3D[size][size];
-        int half = size / 2;
-
-        // First pass: create all points with position and elevation
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                int px = cell.x + j - half;
-                int py = cell.y + i - half;
-
-                CellData data = getCellData(px, py);
-                Point2D p2d = data.point;
-
-                Point2D scaled = new Point2D(p2d.x / cell.resolution, p2d.y / cell.resolution);
-                double elevation = evaluateControlFunction(scaled.x, scaled.y);
-                points[i][j] = new Point3D(scaled.x, scaled.y, elevation);
-            }
-        }
-
-        // Second pass: compute slopes for each point using 2 closest neighbors at least 30 degrees apart
-        Point3D[][] pointsWithSlopes = new Point3D[size][size];
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                pointsWithSlopes[i][j] = computeSlopeForPoint(points, i, j, size);
-            }
-        }
-        return pointsWithSlopes;
-    }
 
     /**
      * Generate points for a single cell at a given level using DIVISIONS_PER_LEVEL configuration.
@@ -1034,70 +1000,6 @@ public class DendrySampler implements Sampler {
     /** Minimum angle (in radians) between two neighbors for slope estimation. */
     private static final double MIN_NEIGHBOR_ANGLE_RAD = Math.toRadians(30);
 
-    /**
-     * Compute slope for a point using its 2 closest neighbors that are at least 30 degrees apart.
-     */
-    private Point3D computeSlopeForPoint(Point3D[][] points, int i, int j, int size) {
-        Point3D center = points[i][j];
-
-        // Collect all valid neighbors with their distances and angles
-        List<NeighborInfo> neighbors = new ArrayList<>();
-        for (int di = -1; di <= 1; di++) {
-            for (int dj = -1; dj <= 1; dj++) {
-                if (di == 0 && dj == 0) continue;
-                int ni = i + di;
-                int nj = j + dj;
-                if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
-
-                Point3D neighbor = points[ni][nj];
-                double dx = neighbor.x - center.x;
-                double dy = neighbor.y - center.y;
-                double dz = neighbor.z - center.z;
-                double dist = Math.sqrt(dx * dx + dy * dy);
-                double angle = Math.atan2(dy, dx);
-                neighbors.add(new NeighborInfo(dx, dy, dz, dist, angle));
-            }
-        }
-
-        // Sort by distance (closest first)
-        neighbors.sort((a, b) -> Double.compare(a.dist, b.dist));
-
-        // Find closest 2 neighbors that are at least 30 degrees apart
-        NeighborInfo n1 = null;
-        NeighborInfo n2 = null;
-        for (int k = 0; k < neighbors.size() && n2 == null; k++) {
-            NeighborInfo candidate = neighbors.get(k);
-            if (n1 == null) {
-                n1 = candidate;
-            } else {
-                double angleDiff = Math.abs(candidate.angle - n1.angle);
-                // Normalize to [0, PI]
-                if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
-                if (angleDiff >= MIN_NEIGHBOR_ANGLE_RAD) {
-                    n2 = candidate;
-                }
-            }
-        }
-
-        // If we couldn't find 2 suitable neighbors, return point without slope
-        if (n1 == null || n2 == null) {
-            return center;
-        }
-
-        // Solve 2x2 linear system to find slopeX and slopeY:
-        // slopeX * dx1 + slopeY * dy1 = dz1
-        // slopeX * dx2 + slopeY * dy2 = dz2
-        double det = n1.dx * n2.dy - n2.dx * n1.dy;
-        if (Math.abs(det) < MathUtils.EPSILON) {
-            // Neighbors are collinear, can't solve
-            return center;
-        }
-
-        double slopeX = (n1.dz * n2.dy - n2.dz * n1.dy) / det;
-        double slopeY = (n1.dx * n2.dz - n2.dx * n1.dz) / det;
-
-        return center.withSlopes(slopeX, slopeY);
-    }
 
     private static class NeighborInfo {
         final double dx, dy, dz;
@@ -1388,20 +1290,6 @@ public class DendrySampler implements Sampler {
         return closest;
     }
 
-    /**
-     * @deprecated Use findClosestConstellations instead
-     */
-    private List<long[]> findFourClosestConstellations(Cell queryCell1) {
-        List<ConstellationInfo> infos = findClosestConstellations(queryCell1);
-        List<long[]> result = new ArrayList<>();
-        for (ConstellationInfo info : infos) {
-            // Use quantized center coordinates for backwards compatibility
-            int qx = (int) Math.round(info.centerX * 100);
-            int qy = (int) Math.round(info.centerY * 100);
-            result.add(new long[] { qx, qy, 0 });
-        }
-        return result;
-    }
 
     /**
      * Generate the asterism (level 0 network) for the query region.
@@ -1736,11 +1624,8 @@ public class DendrySampler implements Sampler {
             }
         }
 
-        // Step 4: Merge stars that are closer than MERGE_POINT_SPACING
-        List<Point3D> mergedStars = mergeCloseStars(boundedStars);
-
-        // Step 5: Compute slopes for each star based on neighboring stars
-        List<Point3D> starsWithSlopes = computeSlopesForPoints(mergedStars);
+        // Step 4: Compute slopes for each star based on neighboring stars
+        List<Point3D> starsWithSlopes = computeSlopesForPoints(boundedStars);
 
         // Debug logging for star counts
         if (debug > 0) {
@@ -1767,24 +1652,6 @@ public class DendrySampler implements Sampler {
     /**
      * Get level 1 cells that circumscribe a constellation using ConstellationInfo.
      */
-    private List<int[]> getCircumscribingCells(ConstellationInfo info) {
-        Point2D center = info.getCenter();
-        double size = getConstellationSize();
-
-        List<int[]> cells = new ArrayList<>();
-        for (int dy = 0; dy < info.cellCountY; dy++) {
-            for (int dx = 0; dx < info.cellCountX; dx++) {
-                int x = info.startCellX + dx;
-                int y = info.startCellY + dy;
-                Point2D cellCenter = new Point2D(x + 0.5, y + 0.5);
-                if (cellOverlapsConstellation(cellCenter, center, size)) {
-                    cells.add(new int[] { x, y });
-                }
-            }
-        }
-        return cells;
-    }
-
     /**
      * Check if a cell overlaps with a constellation.
      */
@@ -1891,15 +1758,6 @@ public class DendrySampler implements Sampler {
         return new Point3D(selected[0], selected[1], selected[2]);
     }
 
-    /**
-     * Merge stars that are closer than MERGE_POINT_SPACING.
-     * Uses shared merge function, prioritizing lower elevation stars.
-     */
-    private List<Point3D> mergeCloseStars(List<Point3D> stars) {
-        //IMPORTANT: Suppressing merge to guarantee star availability in each cell.
-        //return mergePointsByDistance(stars, MERGE_POINT_SPACING, true);
-        return (stars);
-    }
 
     /**
      * Merge points that are within mergeDistance of each other.
@@ -1911,10 +1769,9 @@ public class DendrySampler implements Sampler {
      *
      * @param points List of points to merge
      * @param mergeDistance Minimum distance between kept points
-     * @param preferLowElevation Ignored - elevation is determined by control function
      * @return List of merged points with proper spacing
      */
-    private List<Point3D> mergePointsByDistance(List<Point3D> points, double mergeDistance, boolean preferLowElevation) {
+    private List<Point3D> mergePointsByDistance(List<Point3D> points, double mergeDistance) {
         if (points.size() <= 1) return new ArrayList<>(points);
 
         double mergeDistSq = mergeDistance * mergeDistance;
@@ -2048,16 +1905,6 @@ public class DendrySampler implements Sampler {
      * @param seedZ Z component for RNG seed
      * @return New point with jitter applied
      */
-    private Point3D applyJitter(Point3D point, double maxJitter, int seedX, int seedY, int seedZ) {
-        if (maxJitter <= MathUtils.EPSILON) {
-            return point;
-        }
-        Random rng = initRandomGenerator(seedX, seedY, seedZ);
-        double jitterX = (rng.nextDouble() * 2 - 1) * maxJitter;
-        double jitterY = (rng.nextDouble() * 2 - 1) * maxJitter;
-        return new Point3D(point.x + jitterX, point.y + jitterY, point.z);
-    }
-
 
     // ========== CleanAndNetworkPoints V2 Implementation ==========
     // New implementation using SegmentList and UnconnectedPoints
@@ -2121,7 +1968,7 @@ public class DendrySampler implements Sampler {
         // Step 1: Clean network points - merge points within merge distance (only for level > 0)
         List<Point3D> cleanedPoints;
         if (level > 0) {
-            cleanedPoints = cleanAndMergePoints(points, mergeDistance);
+            cleanedPoints = mergePointsByDistance(points, mergeDistance);
         } else {
             cleanedPoints = new ArrayList<>(points);
         }
@@ -2253,18 +2100,16 @@ public class DendrySampler implements Sampler {
             NetworkPoint unconnPt = unconnected.getPoint(unconnIdx);
 
             // Find best neighbor in SegmentList for this point
-            // This looks at the CURRENT segment list, which may include newly added points
             int neighborIdx = findBestNeighborV2(unconnPt, segList, maxDistSq, mergeDistSq, level);
 
             if (neighborIdx < 0) {
-                // No valid neighbor - mark as removed (can't connect)
                 unconnected.markRemoved(unconnIdx);
                 continue;
             }
 
             // Create connection: move point to SegmentList and create segment
-            // The newly added point becomes available for subsequent iterations
-            createSegmentV2(unconnected, unconnIdx, segList, neighborIdx, level, mergeDistance);
+            unconnected.markRemoved(unconnIdx);
+            segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
         }
     }
 
@@ -2293,14 +2138,9 @@ public class DendrySampler implements Sampler {
         while (iterations < maxIterations) {
             iterations++;
 
-            // For first segment, find neighbor from unconnected points based on startPt position
-            // For subsequent, use currentIdx in segList
-            int nextUnconnIdx;
-            if (firstSegment) {
-                nextUnconnIdx = findBestTrunkNeighborFromFirstPoint(unconnected, trunkStartPt.position, maxDistSq, level);
-            } else {
-                nextUnconnIdx = findBestTrunkNeighborV2(unconnected, segList, currentIdx, maxDistSq, level);
-            }
+            // Find best uphill neighbor from the current position
+            Point3D searchPos = firstSegment ? trunkStartPt.position : segList.getPoint(currentIdx).position;
+            int nextUnconnIdx = findBestTrunkNeighbor(unconnected, searchPos, maxDistSq, level);
 
             if (nextUnconnIdx < 0) {
                 // No more uphill connections
@@ -2349,13 +2189,12 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Find best trunk neighbor from a position (for first trunk segment).
-     * Looks for lowest uphill neighbor (positive slope).
+     * Find best uphill trunk neighbor from unconnected points.
+     * Searches for the steepest uphill candidate within maxDistSq.
      */
-    private int findBestTrunkNeighborFromFirstPoint(UnconnectedPoints unconnected, Point3D currentPos,
-                                                double maxDistSq, int level) {
+    private int findBestTrunkNeighbor(UnconnectedPoints unconnected, Point3D currentPos,
+                                       double maxDistSq, int level) {
         Point2D currentPos2D = currentPos.projectZ();
-
         double bestSlope = 0;  // Must be positive (uphill)
         int bestUnconnIdx = -1;
 
@@ -2366,16 +2205,12 @@ public class DendrySampler implements Sampler {
 
             Point2D candidatePos = candidate.position.projectZ();
             double distSq = currentPos2D.distanceSquaredTo(candidatePos);
-
             if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
 
-            // Calculate normalized slope using common helper
             double dist = Math.sqrt(distSq);
-            // Note: For trunk, we want uphill, so heightDiff is candidate - current (inverted from normal)
+            // For trunk, we want uphill: candidate - current (inverted from normal)
             double normalizedSlope = -calculateNormalizedSlope(currentPos.z, candidate.position.z, dist, level);
-
-            // Trunk requires uphill (positive slope)
-            if (normalizedSlope < 0) continue;
+            if (normalizedSlope <= 0) continue;
 
             if (normalizedSlope > bestSlope) {
                 bestSlope = normalizedSlope;
@@ -2444,88 +2279,8 @@ public class DendrySampler implements Sampler {
         return (bestNeighborWithinMerge >= 0) ? bestNeighborWithinMerge : bestNeighborOverall;
     }
 
-    /**
-     * V2: Find best trunk neighbor (must be uphill).
-     */
-    private int findBestTrunkNeighborV2(UnconnectedPoints unconnected, SegmentList segList,
-                                         int currentSegListIdx, double maxDistSq, int level) {
-        NetworkPoint currentPt = segList.getPoint(currentSegListIdx);
-        Point2D currentPos = currentPt.position.projectZ();
 
-        double bestSlope = 0;  // Must be positive (uphill)
-        int bestUnconnIdx = -1;
 
-        List<Integer> remaining = unconnected.getRemainingIndices();
-        for (int unconnIdx : remaining) {
-            NetworkPoint candidate = unconnected.getPoint(unconnIdx);
-            if (candidate.pointType == PointType.EDGE) continue;
-
-            Point2D candidatePos = candidate.position.projectZ();
-            double distSq = currentPos.distanceSquaredTo(candidatePos);
-
-            if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
-
-            // Calculate normalized slope using common helper
-            double dist = Math.sqrt(distSq);
-            // Note: For trunk, we want uphill, so heightDiff is candidate - current (inverted from normal)
-            double normalizedSlope = -calculateNormalizedSlope(currentPt.position.z, candidate.position.z, dist, level);
-
-            // Trunk requires uphill (positive slope)
-            if (normalizedSlope <= 0) continue;
-
-            if (normalizedSlope > bestSlope) {
-                bestSlope = normalizedSlope;
-                bestUnconnIdx = unconnIdx;
-            }
-        }
-
-        return bestUnconnIdx;
-    }
-
-    /**
-     * V2: Create a segment connecting an unconnected point to a SegmentList point.
-     * Uses SegmentList.addSegment which handles point addition, tangent computation, and subdivision.
-     */
-    private void createSegmentV2(UnconnectedPoints unconnected, int unconnIdx,
-                                  SegmentList segList, int neighborIdx,
-                                  int level, double mergeDistance) {
-        // Get the unconnected point
-        NetworkPoint unconnPt = unconnected.removeAndGet(unconnIdx);
-
-        // Use addSegmentWithDivisions which adds the point, computes tangents, and subdivides as needed
-        segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
-    }
-
-    /**
-     * Shift all segment elevations down so minimum is at 0 (for level 0 asterisms).
-     */
-    private List<Segment3D> shiftElevationsToZero(List<Segment3D> segments) {
-        if (segments.isEmpty()) return segments;
-
-        // Find minimum elevation
-        double minZ = Double.MAX_VALUE;
-        for (Segment3D seg : segments) {
-            minZ = Math.min(minZ, Math.min(seg.srt.z, seg.end.z));
-        }
-
-        // Shift all elevations
-        List<Segment3D> result = new ArrayList<>();
-        for (Segment3D seg : segments) {
-            Point3D newSrt = new Point3D(seg.srt.x, seg.srt.y, seg.srt.z - minZ);
-            Point3D newEnd = new Point3D(seg.end.x, seg.end.y, seg.end.z - minZ);
-            result.add(new Segment3D(newSrt, newEnd, seg.tangentSrt, seg.tangentEnd));
-        }
-
-        return result;
-    }
-
-    /**
-     * Clean and merge points that are within merge distance of each other.
-     */
-    private List<Point3D> cleanAndMergePoints(List<Point3D> points, double mergeDistance) {
-        // Use shared merge function, prioritizing lower elevation points
-        return mergePointsByDistance(points, mergeDistance, true);
-    }
 
     /**
      * Remove points that are within merge distance of any lower-level segment.
@@ -2653,34 +2408,7 @@ public class DendrySampler implements Sampler {
         return result;
     }
 
-    /**
-     * Probabilistically remove points based on branchesSampler only (legacy overload).
-     */
-    private List<Point3D> probabilisticallyRemovePoints(List<Point3D> points) {
-        return probabilisticallyRemovePoints(points, new SegmentList(new SegmentListConfig(salt)), 1.0);
-    }
 
-
-    /**
-     * Calculate slope (elevation change / horizontal distance).
-     */
-    private double calculateSlope(Point3D from, Point3D to) {
-        double dx = to.x - from.x;
-        double dy = to.y - from.y;
-        double horizontalDist = Math.sqrt(dx * dx + dy * dy);
-        if (horizontalDist < MathUtils.EPSILON) return 0;
-        return (to.z - from.z) / horizontalDist;
-    }
-
-    /**
-     * Check if two points match (within epsilon tolerance).
-     */
-    private static boolean pointsMatch(Point3D a, Point3D b) {
-        double dx = a.x - b.x;
-        double dy = a.y - b.y;
-        double dz = a.z - b.z;
-        return (dx * dx + dy * dy + dz * dz) < MathUtils.EPSILON * MathUtils.EPSILON;
-    }
 
     /**
      * Calculate river width for a given level.
@@ -2712,129 +2440,7 @@ public class DendrySampler implements Sampler {
         return baseWidthGrid * Math.pow(RIVER_WIDTH_FALLOFF, level);
     }
 
-    /**
-     * Subdivide and displace segments based on level.
-     */
-    private List<Segment3D> subdivideAndDisplaceSegments(List<Segment3D> segments, int level, int cellX, int cellY) {
-        // Subdivision count per level (can be adjusted)
-        int[] subdivisionsPerLevel = {2, 3, 4, 5, 6};  // Level 0-4
-        int subdivisions = level < subdivisionsPerLevel.length ? subdivisionsPerLevel[level] : 6;
 
-        List<Segment3D> result = new ArrayList<>();
-        for (Segment3D seg : segments) {
-            if (subdivisions <= 1) {
-                result.add(seg);
-            } else {
-                // Subdivide using spline interpolation if tangents are available
-                if (seg.hasTangents()) {
-                    result.addAll(subdivideWithSpline(seg, subdivisions, cellX, cellY));
-                } else {
-                    // Simple linear subdivision
-                    Point3D prev = seg.srt;
-                    for (int i = 0; i < subdivisions; i++) {
-                        double t = (double)(i + 1) / subdivisions;
-                        Point3D next = (i == subdivisions - 1) ? seg.end : Point3D.lerp(seg.srt, seg.end, t);
-                        result.add(new Segment3D(prev, next));
-                        prev = next;
-                    }
-                }
-            }
-        }
-
-        // Apply displacement to subdivided segments
-        return displaceSubdividedSegments(result, level, cellX, cellY);
-    }
-
-    /**
-     * Subdivide a segment using cubic Hermite spline interpolation.
-     */
-    private List<Segment3D> subdivideWithSpline(Segment3D seg, int subdivisions, int cellX, int cellY) {
-        List<Segment3D> result = new ArrayList<>();
-        Point3D prev = seg.srt;
-
-        for (int i = 1; i <= subdivisions; i++) {
-            double t = (double) i / subdivisions;
-            Point3D next;
-
-            if (i == subdivisions) {
-                next = seg.end;
-            } else {
-                // Cubic Hermite spline interpolation
-                double t2 = t * t;
-                double t3 = t2 * t;
-                double h00 = 2 * t3 - 3 * t2 + 1;
-                double h10 = t3 - 2 * t2 + t;
-                double h01 = -2 * t3 + 3 * t2;
-                double h11 = t3 - t2;
-
-                double segLength = seg.srt.projectZ().distanceTo(seg.end.projectZ());
-                double tangentScale = segLength * tangentStrength;
-
-                double x = h00 * seg.srt.x + h10 * (seg.tangentSrt != null ? seg.tangentSrt.x * tangentScale : 0)
-                         + h01 * seg.end.x + h11 * (seg.tangentEnd != null ? seg.tangentEnd.x * tangentScale : 0);
-                double y = h00 * seg.srt.y + h10 * (seg.tangentSrt != null ? seg.tangentSrt.y * tangentScale : 0)
-                         + h01 * seg.end.y + h11 * (seg.tangentEnd != null ? seg.tangentEnd.y * tangentScale : 0);
-                double z = MathUtils.lerp(seg.srt.z, seg.end.z, t);  // Linear interpolation for elevation
-
-                next = new Point3D(x, y, z);
-            }
-
-            result.add(new Segment3D(prev, next));
-            prev = next;
-        }
-
-        return result;
-    }
-
-    /**
-     * Apply small displacement to subdivided segments.
-     */
-    private List<Segment3D> displaceSubdividedSegments(List<Segment3D> segments, int level, int cellX, int cellY) {
-        // Apply small random displacement for natural appearance
-        // Displacement magnitude decreases with level
-        double displacementMagnitude = 0.05 / Math.pow(2, level);
-
-        List<Segment3D> result = new ArrayList<>();
-        for (Segment3D seg : segments) {
-            // Only displace interior points, not endpoints
-            Random rng = initRandomGenerator((int)(seg.srt.x * 1000 + seg.srt.y * 1000), (int)(seg.end.x * 1000), level + 200);
-            double dx = (rng.nextDouble() * 2 - 1) * displacementMagnitude;
-            double dy = (rng.nextDouble() * 2 - 1) * displacementMagnitude;
-
-            // Displace midpoint slightly
-            Point3D midA = new Point3D(seg.srt.x + dx * 0.3, seg.srt.y + dy * 0.3, seg.srt.z);
-            Point3D midB = new Point3D(seg.end.x + dx * 0.3, seg.end.y + dy * 0.3, seg.end.z);
-
-            result.add(new Segment3D(midA, midB, seg.tangentSrt, seg.tangentEnd));
-        }
-
-        return result;
-    }
-
-    // ========== Constellation Stitching ==========
-
-    /**
-     * Stitch constellations together by finding optimal connection points.
-     *
-     * Algorithm:
-     * 1. For each pair of adjacent constellations, find two points within max segment distance
-     *    with smallest absolute slope
-     * 2. Set tangents based on connection type:
-     *    - If connecting to end of line: use continuous tangent
-     *    - If connecting to middle of line: use 20-80° offset from continuous tangent
-     */
-    /**
-     * Stitch adjacent constellations together.
-     * For each pair of adjacent constellations:
-     * 1. Extract unique endpoints from segments
-     * 2. Find up to 6 closest pairs between them
-     * 3. Select the pair with lowest max elevation
-     * 4. Create stitch segment with proper tangents based on connection type
-     * 5. Subdivide the stitch segment using level 0 parameters
-     */
-    /**
-     * Stitch adjacent constellations together using ConstellationInfo.
-     */
     /**
      * Get the adjacency distance threshold for constellation center-to-center distance.
      * Adjacent constellations have centers within this distance (with small buffer for rounding).
@@ -2859,422 +2465,9 @@ public class DendrySampler implements Sampler {
         }
     }
 
-    // ========== Legacy constellation methods (kept for compatibility) ==========
 
-    /**
-     * @deprecated Use getConstellationCenterForPoint instead
-     */
-    private Cell getConstellation(int level1CellX, int level1CellY) {
-        Point2D center = getConstellationCenterForPoint(level1CellX + 0.5, level1CellY + 0.5);
-        // Return quantized center for backwards compatibility
-        int qx = (int) Math.round(center.x * 100);
-        int qy = (int) Math.round(center.y * 100);
-        return new Cell(qx, qy, 0);
-    }
 
-    /**
-     * @deprecated Use findClosestConstellations instead
-     */
-    private java.util.Set<Long> getRequiredConstellations(Cell queryCell1) {
-        List<ConstellationInfo> closest = findClosestConstellations(queryCell1);
-        java.util.Set<Long> result = new java.util.HashSet<>();
-        for (ConstellationInfo c : closest) {
-            result.add(c.getKey());
-        }
-        return result;
-    }
 
-    /**
-     * @deprecated Use generateConstellationStars(ConstellationInfo) instead
-     */
-    private Map<Long, Point3D> generateConstellationStarsLegacy(int cellX, int cellY) {
-        Point2D center = getConstellationCenterForPoint(cellX + 0.5, cellY + 0.5);
-        ConstellationInfo info = getConstellationInfoFromCenter(center.x, center.y);
-        List<Point3D> stars = generateConstellationStars(info);
-        Map<Long, Point3D> result = new HashMap<>();
-        for (int i = 0; i < stars.size(); i++) {
-            Point3D star = stars.get(i);
-            result.put(packKey((int)(star.x * 100), (int)(star.y * 100)), star);
-        }
-        return result;
-    }
-
-    /**
-     * @deprecated Use findStarInCelllLowestGrid instead
-     */
-    private Point3D findStarInCell(int cellX, int cellY) {
-        return findStarInCelllLowestGrid(cellX, cellY);
-    }
-
-    /**
-     * Build a tree structure (asterism) connecting all stars within a constellation.
-     * Algorithm:
-     * A. Connect each star to its closest neighbor (by 2D distance squared)
-     * B. While not all stars form a single tree, connect disconnected components
-     *    starting from lowest elevation stars
-     */
-    private List<Segment3D> buildTreeWithinConstellation(Map<Long, Point3D> stars, int constX, int constY) {
-        if (stars.size() <= 1) return new ArrayList<>();
-
-        List<Point3D> starList = new ArrayList<>(stars.values());
-        int n = starList.size();
-
-        // Build all edges sorted by distance squared (favors shorter connections more strongly)
-        List<Edge> edges = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            for (int j = i + 1; j < n; j++) {
-                Point3D star1 = starList.get(i);
-                Point3D star2 = starList.get(j);
-                double distSq = star1.projectZ().distanceSquaredTo(star2.projectZ());
-                edges.add(new Edge(i, j, distSq, star1, star2));
-            }
-        }
-        edges.sort(Comparator.comparingDouble(e -> e.distance));
-
-        // Phase A: Connect each star to its closest neighbor
-        List<Segment3D> asterismSegments = new ArrayList<>();
-        int[] parent = new int[n];
-        int[] rank = new int[n];
-        for (int i = 0; i < n; i++) {
-            parent[i] = i;
-            rank[i] = 0;
-        }
-
-        // For each star, find and add its closest neighbor connection (by distance squared)
-        boolean[] hasConnection = new boolean[n];
-        for (int i = 0; i < n; i++) {
-            double minDistSq = Double.MAX_VALUE;
-            int closest = -1;
-            Point3D current = starList.get(i);
-
-            for (int j = 0; j < n; j++) {
-                if (i == j) continue;
-                Point3D other = starList.get(j);
-                double distSq = current.projectZ().distanceSquaredTo(other.projectZ());
-                if (distSq < minDistSq) {
-                    minDistSq = distSq;
-                    closest = j;
-                }
-            }
-
-            if (closest >= 0) {
-                int rootI = find(parent, i);
-                int rootJ = find(parent, closest);
-
-                // Add asterism segment (avoid exact duplicates)
-                if (rootI != rootJ || !hasConnection[i]) {
-                    asterismSegments.add(new Segment3D(current, starList.get(closest)));
-                    hasConnection[i] = true;
-                    hasConnection[closest] = true;
-                    if (rootI != rootJ) {
-                        union(parent, rank, rootI, rootJ);
-                    }
-                }
-            }
-        }
-
-        // Phase B: Ensure all stars are connected (form a single tree)
-        // Sort stars by elevation for deterministic tie-breaking
-        List<Integer> starsByElevation = new ArrayList<>();
-        for (int i = 0; i < n; i++) starsByElevation.add(i);
-        starsByElevation.sort(Comparator.comparingDouble(i -> starList.get(i).z));
-
-        // Use Kruskal's to connect any remaining disconnected star components
-        for (Edge edge : edges) {
-            int rootA = find(parent, edge.idx1);
-            int rootB = find(parent, edge.idx2);
-
-            if (rootA != rootB) {
-                asterismSegments.add(new Segment3D(edge.p1, edge.p2));
-                union(parent, rank, rootA, rootB);
-            }
-        }
-
-        return asterismSegments;
-    }
-
-    /**
-     * Stitch adjacent constellations together at their boundaries.
-     * For each pair of adjacent constellations, find the boundary star
-     * with the lowest elevation on each side and connect them.
-     */
-    private List<Segment3D> stitchConstellations(java.util.Set<Long> constellations,
-                                                  Map<Long, Map<Long, Point3D>> constellationStars) {
-        List<Segment3D> stitchSegments = new ArrayList<>();
-        java.util.Set<Long> processedPairs = new java.util.HashSet<>();
-
-        for (long constKey : constellations) {
-            int constX = unpackX(constKey);
-            int constY = unpackY(constKey);
-
-            // Check right neighbor (+x direction)
-            long rightKey = packKey(constX + 1, constY);
-            if (constellations.contains(rightKey) && !processedPairs.contains(packKey(Math.min(constX, constX+1), Math.max(constX, constX+1) * 10000 + constY))) {
-                processedPairs.add(packKey(Math.min(constX, constX+1), Math.max(constX, constX+1) * 10000 + constY));
-                Segment3D stitch = stitchConstellationsVertical(constX, constY, constellationStars.get(constKey), constellationStars.get(rightKey));
-                if (stitch != null) stitchSegments.add(stitch);
-            }
-
-            // Check bottom neighbor (+y direction)
-            long bottomKey = packKey(constX, constY + 1);
-            if (constellations.contains(bottomKey) && !processedPairs.contains(packKey(constX, Math.min(constY, constY+1) * 10000 + Math.max(constY, constY+1)))) {
-                processedPairs.add(packKey(constX, Math.min(constY, constY+1) * 10000 + Math.max(constY, constY+1)));
-                Segment3D stitch = stitchConstellationsHorizontal(constX, constY, constellationStars.get(constKey), constellationStars.get(bottomKey));
-                if (stitch != null) stitchSegments.add(stitch);
-            }
-        }
-
-        return stitchSegments;
-    }
-
-    /**
-     * Stitch two constellations at a vertical boundary (between constX and constX+1).
-     * Finds the lowest elevation star on each side of the boundary and connects them.
-     */
-    private Segment3D stitchConstellationsVertical(int constX, int constY,
-                                                    Map<Long, Point3D> leftStars,
-                                                    Map<Long, Point3D> rightStars) {
-        // Right edge of left constellation: x = (constX + 1) * ConstellationScale - 1
-        // Left edge of right constellation: x = (constX + 1) * ConstellationScale
-        int leftEdgeX = (constX + 1) * ConstellationScale - 1;
-        int rightEdgeX = (constX + 1) * ConstellationScale;
-        int startY = constY * ConstellationScale;
-
-        Point3D lowestLeftStar = null;
-        Point3D lowestRightStar = null;
-        double lowestLeftElev = Double.MAX_VALUE;
-        double lowestRightElev = Double.MAX_VALUE;
-
-        for (int i = 0; i < ConstellationScale; i++) {
-            int y = startY + i;
-
-            Point3D leftStar = leftStars.get(packKey(leftEdgeX, y));
-            if (leftStar != null && leftStar.z < lowestLeftElev) {
-                lowestLeftElev = leftStar.z;
-                lowestLeftStar = leftStar;
-            }
-
-            Point3D rightStar = rightStars.get(packKey(rightEdgeX, y));
-            if (rightStar != null && rightStar.z < lowestRightElev) {
-                lowestRightElev = rightStar.z;
-                lowestRightStar = rightStar;
-            }
-        }
-
-        if (lowestLeftStar != null && lowestRightStar != null) {
-            return new Segment3D(lowestLeftStar, lowestRightStar);
-        }
-        return null;
-    }
-
-    /**
-     * Stitch two constellations at a horizontal boundary (between constY and constY+1).
-     */
-    private Segment3D stitchConstellationsHorizontal(int constX, int constY,
-                                                      Map<Long, Point3D> topStars,
-                                                      Map<Long, Point3D> bottomStars) {
-        int topEdgeY = (constY + 1) * ConstellationScale - 1;
-        int bottomEdgeY = (constY + 1) * ConstellationScale;
-        int startX = constX * ConstellationScale;
-
-        Point3D lowestTopStar = null;
-        Point3D lowestBottomStar = null;
-        double lowestTopElev = Double.MAX_VALUE;
-        double lowestBottomElev = Double.MAX_VALUE;
-
-        for (int i = 0; i < ConstellationScale; i++) {
-            int x = startX + i;
-
-            Point3D topStar = topStars.get(packKey(x, topEdgeY));
-            if (topStar != null && topStar.z < lowestTopElev) {
-                lowestTopElev = topStar.z;
-                lowestTopStar = topStar;
-            }
-
-            Point3D bottomStar = bottomStars.get(packKey(x, bottomEdgeY));
-            if (bottomStar != null && bottomStar.z < lowestBottomElev) {
-                lowestBottomElev = bottomStar.z;
-                lowestBottomStar = bottomStar;
-            }
-        }
-
-        if (lowestTopStar != null && lowestBottomStar != null) {
-            return new Segment3D(lowestTopStar, lowestBottomStar);
-        }
-        return null;
-    }
-
-    /**
-     * Prune asterism segments to only keep those relevant to the query cell and its neighbors.
-     * Keeps segments where at least one endpoint is within the 3x3 region around query cell.
-     */
-    private List<Segment3D> pruneToQueryRegion(List<Segment3D> segments, Cell queryCell1) {
-        double minX = queryCell1.x - 1;
-        double maxX = queryCell1.x + 2;
-        double minY = queryCell1.y - 1;
-        double maxY = queryCell1.y + 2;
-
-        return segments.stream()
-            .filter(seg -> {
-                boolean aInside = isPointInBounds(seg.srt, minX, minY, maxX, maxY);
-                boolean bInside = isPointInBounds(seg.end, minX, minY, maxX, maxY);
-                return aInside || bInside;
-            })
-            .collect(Collectors.toList());
-    }
-
-    /**
-     * Edge class for MST algorithm.
-     */
-    private static class Edge {
-        final int idx1, idx2;
-        final double distance;
-        final Point3D p1, p2;
-
-        Edge(int idx1, int idx2, double distance, Point3D p1, Point3D p2) {
-            this.idx1 = idx1;
-            this.idx2 = idx2;
-            this.distance = distance;
-            this.p1 = p1;
-            this.p2 = p2;
-        }
-    }
-
-    /**
-     * Find root with path compression (Union-Find).
-     */
-    private int find(int[] parent, int i) {
-        if (parent[i] != i) {
-            parent[i] = find(parent, parent[i]);
-        }
-        return parent[i];
-    }
-
-    /**
-     * Union by rank (Union-Find).
-     */
-    private void union(int[] parent, int[] rank, int x, int y) {
-        if (rank[x] < rank[y]) {
-            parent[x] = y;
-        } else if (rank[x] > rank[y]) {
-            parent[y] = x;
-        } else {
-            parent[y] = x;
-            rank[x]++;
-        }
-    }
-
-    /**
-     * Remove asterism segments that don't connect to the inner 3x3 cell region.
-     */
-    private List<Segment3D> pruneDisconnectedSegments(List<Segment3D> segments,
-                                                       double minX, double minY,
-                                                       double maxX, double maxY) {
-        return segments.stream()
-            .filter(seg -> {
-                // Keep if either endpoint is within inner region
-                boolean aInside = isPointInBounds(seg.srt, minX, minY, maxX, maxY);
-                boolean bInside = isPointInBounds(seg.end, minX, minY, maxX, maxY);
-                return aInside || bInside;
-            })
-            .collect(Collectors.toList());
-    }
-
-    private boolean isPointInBounds(Point3D p, double minX, double minY,
-                                     double maxX, double maxY) {
-        return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
-    }
-
-    /**
-     * Generate level 1 segments for 5x5 cell region around query cell.
-     * The wider region ensures proper tangent computation at the 3x3 boundary.
-     * Segments will be pruned to 3x3 after tangent computation.
-     */
-    private List<Segment3D> generateLevel1Segments(Cell queryCell, List<Segment3D> parentSegments, double minSlope) {
-        List<Segment3D> allSegments = new ArrayList<>();
-
-        // Process 5x5 grid of level 1 cells to ensure proper tangent computation
-        // at the edges of the 3x3 query region
-        for (int di = -2; di <= 2; di++) {
-            for (int dj = -2; dj <= 2; dj++) {
-                Cell cell = new Cell(queryCell.x + dj, queryCell.y + di, 1);
-
-                // Generate points for this cell's neighborhood (5x5 including neighbors)
-                Point3D[][] points = generateNeighboringPoints3D(cell, 5);
-
-                // Generate segments that connect to parent (level 0) segments
-                List<Segment3D> cellSegments = generateSubSegments(points, parentSegments, minSlope, 1);
-                allSegments.addAll(cellSegments);
-            }
-        }
-
-        return allSegments;
-    }
-
-    /**
-     * Generate level 1 segments for compact 3x3 cell region around query cell.
-     * Used when parent segments (L0) are already pruned to the 3x3 region,
-     * so there's no benefit to generating L1 for a wider area.
-     */
-    private List<Segment3D> generateLevel1SegmentsCompact(Cell queryCell, List<Segment3D> parentSegments, double minSlope) {
-        List<Segment3D> allSegments = new ArrayList<>();
-
-        // Process only 3x3 grid of level 1 cells (9 cells instead of 25)
-        for (int di = -1; di <= 1; di++) {
-            for (int dj = -1; dj <= 1; dj++) {
-                Cell cell = new Cell(queryCell.x + dj, queryCell.y + di, 1);
-
-                // Generate points for this cell's neighborhood (5x5 including neighbors)
-                Point3D[][] points = generateNeighboringPoints3D(cell, 5);
-
-                // Generate segments that connect to parent (level 0) segments
-                List<Segment3D> cellSegments = generateSubSegments(points, parentSegments, minSlope, 1);
-                allSegments.addAll(cellSegments);
-            }
-        }
-
-        return allSegments;
-    }
-
-    /**
-     * Prune segments that start outside query cell and move away from it.
-     */
-    private List<Segment3D> pruneAwaySegments(List<Segment3D> segments, Cell queryCell) {
-        // Query cell center in normalized coordinates
-        double centerX = (queryCell.x + 0.5) / queryCell.resolution;
-        double centerY = (queryCell.y + 0.5) / queryCell.resolution;
-        Point2D center = new Point2D(centerX, centerY);
-
-        // Query cell bounds
-        double cellMinX = (double) queryCell.x / queryCell.resolution;
-        double cellMaxX = (double) (queryCell.x + 1) / queryCell.resolution;
-        double cellMinY = (double) queryCell.y / queryCell.resolution;
-        double cellMaxY = (double) (queryCell.y + 1) / queryCell.resolution;
-
-        return segments.stream()
-            .filter(seg -> {
-                Point2D a = seg.srt.projectZ();
-                Point2D b = seg.end.projectZ();
-
-                // If segment starts inside query cell, keep it
-                if (isInCell(a, cellMinX, cellMinY, cellMaxX, cellMaxY)) {
-                    return true;
-                }
-
-                // Segment starts outside - check if it moves toward center
-                double distA = a.distanceTo(center);
-                double distB = b.distanceTo(center);
-
-                // Keep if endpoint B is closer to center than A (moving toward)
-                return distB < distA;
-            })
-            .collect(Collectors.toList());
-    }
-
-    private boolean isInCell(Point2D p, double minX, double minY,
-                              double maxX, double maxY) {
-        return p.x >= minX && p.x < maxX && p.y >= minY && p.y < maxY;
-    }
 
     private double evaluateControlFunction(double x, double y) {
         if (controlSampler != null) {
@@ -3283,160 +2476,7 @@ public class DendrySampler implements Sampler {
         return x * 0.1;
     }
 
-    private List<Segment3D> generateSegments(Point3D[][] points, int level) {
-        List<Segment3D> segments = new ArrayList<>();
-        int size = points.length;
 
-        for (int i = 1; i < size - 1; i++) {
-            for (int j = 1; j < size - 1; j++) {
-                Point3D current = points[i][j];
-
-                double lowestElevation = Double.MAX_VALUE;
-                int lowestI = i;
-                int lowestJ = j;
-
-                for (int di = -1; di <= 1; di++) {
-                    for (int dj = -1; dj <= 1; dj++) {
-                        Point3D neighbor = points[i + di][j + dj];
-                        if (neighbor.z < lowestElevation) {
-                            lowestElevation = neighbor.z;
-                            lowestI = i + di;
-                            lowestJ = j + dj;
-                        }
-                    }
-                }
-
-                Point3D lowest = points[lowestI][lowestJ];
-
-                if (current.distanceSquaredTo(lowest) > MathUtils.EPSILON) {
-                    segments.add(new Segment3D(current, lowest));
-                }
-            }
-        }
-        return segments;
-    }
-
-    /**
-     * Displace segments by splitting each into two segments with a displaced midpoint.
-     * Displacement is proportional to segment length for consistent curvature appearance.
-     * Returns a new list (does not modify input list structure).
-     * Uses absolute segment coordinates for deterministic displacement regardless of query position.
-     */
-    private List<Segment3D> displaceSegmentsWithSplit(List<Segment3D> segments, double displacementFactor, int level) {
-        if (displacementFactor < MathUtils.EPSILON) return segments;
-
-        List<Segment3D> result = new ArrayList<>();
-
-        for (Segment3D seg : segments) {
-            Vec2D dir = new Vec2D(seg.srt.projectZ(), seg.end.projectZ());
-            double segLength = dir.length();
-
-            if (segLength < MathUtils.EPSILON) {
-                result.add(seg);
-                continue;
-            }
-
-            Vec2D perp = dir.rotateCCW90().normalize();
-
-            // Use both endpoints for seed to ensure determinism based on segment identity
-            int seedX = (int)((seg.srt.x + seg.end.x) * 50);
-            int seedY = (int)((seg.srt.y + seg.end.y) * 50);
-            Random rng = initRandomGenerator(seedX, seedY, level);
-            // Displacement proportional to segment length
-            double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
-
-            Point3D mid = seg.midpoint();
-            Point3D displacedMid = new Point3D(
-                mid.x + perp.x * displacement,
-                mid.y + perp.y * displacement,
-                mid.z
-            );
-
-            // Split into two segments: a→mid and mid→b (preserves connectivity)
-            result.add(new Segment3D(seg.srt, displacedMid));
-            result.add(new Segment3D(displacedMid, seg.end));
-        }
-
-        return result;
-    }
-
-    /**
-     * Legacy displacement (modifies list in place, for chain-ordered segments).
-     */
-    private void displaceSegments(List<Segment3D> segments, double displacementFactor, Cell cell) {
-        if (displacementFactor < MathUtils.EPSILON) return;
-
-        for (int i = 0; i < segments.size(); i++) {
-            Segment3D seg = segments.get(i);
-
-            Vec2D dir = new Vec2D(seg.srt.projectZ(), seg.end.projectZ());
-            double segLength = dir.length();
-
-            if (segLength < MathUtils.EPSILON) continue;
-
-            Vec2D perp = dir.rotateCCW90().normalize();
-
-            Random rng = initRandomGenerator((int)(seg.srt.x * 100), (int)(seg.srt.y * 100), cell.resolution);
-            // Displacement proportional to segment length
-            double displacement = (rng.nextDouble() * 2.0 - 1.0) * displacementFactor * segLength;
-
-            Point3D mid = seg.midpoint();
-            Point3D displacedMid = new Point3D(
-                mid.x + perp.x * displacement,
-                mid.y + perp.y * displacement,
-                mid.z
-            );
-
-            segments.set(i, new Segment3D(seg.srt, displacedMid));
-
-            if (i + 1 < segments.size()) {
-                Segment3D next = segments.get(i + 1);
-                if (next.srt.equals(seg.end)) {
-                    segments.set(i + 1, new Segment3D(displacedMid, next.end));
-                }
-            }
-        }
-    }
-
-    private double getConnectDistance(int level) {
-        if (connectDistance > 0) {
-            return connectDistance / level;
-        }
-        double cellSize = 1.0 / Math.pow(2, level - 1);
-        return cellSize * connectDistanceFactor;
-    }
-
-    private List<Segment3D> generateSubSegments(Point3D[][] points, List<Segment3D> parentSegments,
-                                                 double minSlope, int level) {
-        List<Segment3D> subSegments = new ArrayList<>();
-        int size = points.length;
-        double maxDistance = getConnectDistance(level);
-
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                Point3D point = points[i][j];
-
-                NearestSegmentResult nearest = findNearestSegment(point.projectZ(), parentSegments);
-                if (nearest == null || nearest.distance > maxDistance) continue;
-
-                double elevationFromControl = evaluateControlFunction(point.x, point.y);
-                double elevationWithSlope = nearest.closestPoint.z + minSlope * nearest.distance;
-                double elevation = Math.max(elevationWithSlope, elevationFromControl);
-
-                Point3D adjustedPoint = new Point3D(point.x, point.y, elevation);
-
-                if (nearest.distance > MathUtils.EPSILON) {
-                    Point3D connectionPoint = new Point3D(
-                        nearest.closestPoint2D.x,
-                        nearest.closestPoint2D.y,
-                        nearest.closestPoint.z
-                    );
-                    subSegments.add(new Segment3D(adjustedPoint, connectionPoint));
-                }
-            }
-        }
-        return subSegments;
-    }
 
     private static class NearestSegmentResult {
         final double distance;
@@ -3456,9 +2496,10 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Find nearest segment - uses parallel streams if enabled and list is large enough.
+     * Find nearest segment by a given metric - uses parallel streams if enabled and list is large enough.
      */
-    private NearestSegmentResult findNearestSegment(Point2D point, List<Segment3D> segments) {
+    private NearestSegmentResult findNearestSegmentBy(Point2D point, List<Segment3D> segments,
+                                                       java.util.function.ToDoubleFunction<NearestSegmentResult> metric) {
         if (segments.isEmpty()) return null;
 
         Stream<Segment3D> stream;
@@ -3472,7 +2513,6 @@ public class DendrySampler implements Sampler {
             .map(seg -> {
                 MathUtils.DistanceResult result = MathUtils.distanceToLineSegment(point, seg);
                 double z = MathUtils.lerp(seg.srt.z, seg.end.z, result.parameter);
-                // Note: Segment3D no longer carries level info, using unweighted distance
                 double weightedDist = result.distance;
                 return new NearestSegmentResult(
                     result.distance,
@@ -3482,36 +2522,16 @@ public class DendrySampler implements Sampler {
                     seg
                 );
             })
-            .min(Comparator.comparingDouble(r -> r.distance))
+            .min(Comparator.comparingDouble(metric))
             .orElse(null);
     }
 
+    private NearestSegmentResult findNearestSegment(Point2D point, List<Segment3D> segments) {
+        return findNearestSegmentBy(point, segments, r -> r.distance);
+    }
+
     private NearestSegmentResult findNearestSegmentWeighted(Point2D point, List<Segment3D> segments) {
-        if (segments.isEmpty()) return null;
-
-        Stream<Segment3D> stream;
-        if (useParallel && segments.size() > parallelThreshold) {
-            stream = segments.parallelStream();
-        } else {
-            stream = segments.stream();
-        }
-
-        return stream
-            .map(seg -> {
-                MathUtils.DistanceResult result = MathUtils.distanceToLineSegment(point, seg);
-                double z = MathUtils.lerp(seg.srt.z, seg.end.z, result.parameter);
-                // Note: Segment3D no longer carries level info, using unweighted distance
-                double weightedDist = result.distance;
-                return new NearestSegmentResult(
-                    result.distance,
-                    weightedDist,
-                    result.closestPoint,
-                    new Point3D(result.closestPoint.x, result.closestPoint.y, z),
-                    seg
-                );
-            })
-            .min(Comparator.comparingDouble(r -> r.weightedDistance))
-            .orElse(null);
+        return findNearestSegmentBy(point, segments, r -> r.weightedDistance);
     }
 
     private double computeResult(double x, double y, List<Segment3D> segments) {
@@ -4079,57 +3099,25 @@ public class DendrySampler implements Sampler {
      * @param gridY Grid Y coordinate (normalized)
      * @return Distance value in sampler coordinates
      */
-    private double evaluateWithBigChunkDistance(double gridX, double gridY) {
-        // Get or create the bigchunk containing this point (in grid coordinates)
+    /**
+     * Look up the BigChunk block at the given grid coordinates.
+     */
+    private BigChunk.BigChunkBlock getBigChunkBlock(double gridX, double gridY) {
         BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
-
-        // Convert grid coordinates to block index within the chunk
         double cachepixelsGrid = cachepixels / gridsize;
-        int blockX = gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid);
-        int blockY = gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid);
-
-        // Clamp to valid range
-        blockX = Math.max(0, Math.min(255, blockX));
-        blockY = Math.max(0, Math.min(255, blockY));
-
-        // Get the block
-        BigChunk.BigChunkBlock block = chunk.getBlock(blockX, blockY);
-
-        // De-quantize distance from uint8 back to normalized distance value
-        // De-quantization: value / quantizeResolution = value * maxDistGrid / 255
-        double distQuantizeRes = 255.0 / maxDistGrid;
-        double normalizedDistance = block.getDistanceUnsigned() / distQuantizeRes;
-
-        // Return the normalized distance value in sampler coordinates (0 to maxDistGrid)
-        return (normalizedDistance*gridsize);
+        int blockX = Math.max(0, Math.min(255, gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid)));
+        int blockY = Math.max(0, Math.min(255, gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid)));
+        return chunk.getBlock(blockX, blockY);
     }
 
-    /**
-     * Evaluate using the BigChunk cache system for PIXEL_RIVER_CTRL return type.
-     * Returns the de-quantized elevation value from the cached bigchunk.
-     * @param gridX Grid X coordinate (normalized)
-     * @param gridY Grid Y coordinate (normalized)
-     * @return Elevation value
-     */
+    private double evaluateWithBigChunkDistance(double gridX, double gridY) {
+        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
+        double distQuantizeRes = 255.0 / maxDistGrid;
+        return (block.getDistanceUnsigned() / distQuantizeRes) * gridsize;
+    }
+
     private double evaluateWithBigChunkElevation(double gridX, double gridY) {
-        // Get or create the bigchunk containing this point (in grid coordinates)
-        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
-
-        // Convert grid coordinates to block index within the chunk
-        double cachepixelsGrid = cachepixels / gridsize;
-        int blockX = gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid);
-        int blockY = gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid);
-
-        // Clamp to valid range
-        blockX = Math.max(0, Math.min(255, blockX));
-        blockY = Math.max(0, Math.min(255, blockY));
-
-        // Get the block
-        BigChunk.BigChunkBlock block = chunk.getBlock(blockX, blockY);
-
-        // Return de-quantized elevation
-        // Convert from uint8 back to actual elevation value
-        // De-quantization: value / quantizeResolution = value * max / 255
+        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
         double elevQuantizeRes = 255.0 / max;
         return block.getElevationUnsigned() / elevQuantizeRes;
     }
@@ -4648,40 +3636,26 @@ public class DendrySampler implements Sampler {
                              false, bx, by, chunk, step);
                 }
             } else {
-                // Arc samples at this radius - positive side
+                // Arc samples at this radius - both sides (positive and opposite)
                 double arcLength = coneAngle * distanceGrid;
                 int numArcSamples = Math.max(2, (int) Math.ceil(arcLength / (cachepixelsGrid * 0.5)));
 
-                for (int a = 0; a < numArcSamples; a++) {
-                    double angleOffset = coneAngle * ((double) a / (numArcSamples - 1) - 0.5);
-                    double angle = bowDirectionRad + angleOffset;
+                for (int side = 0; side < 2; side++) {
+                    double sideOffset = side * Math.PI;
+                    for (int a = 0; a < numArcSamples; a++) {
+                        double angleOffset = coneAngle * ((double) a / (numArcSamples - 1) - 0.5);
+                        double angle = bowDirectionRad + sideOffset + angleOffset;
 
-                    double px = samplePoint.x + Math.cos(angle) * distanceGrid;
-                    double py = samplePoint.y + Math.sin(angle) * distanceGrid;
+                        double px = samplePoint.x + Math.cos(angle) * distanceGrid;
+                        double py = samplePoint.y + Math.sin(angle) * distanceGrid;
 
-                    int bx = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
-                    int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
+                        int bx = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
+                        int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
 
-                    if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
-                        updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
-                                 riverWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
-                    }
-                }
-
-                // Arc samples at this radius - opposite side
-                for (int a = 0; a < numArcSamples; a++) {
-                    double angleOffset = coneAngle * ((double) a / (numArcSamples - 1) - 0.5);
-                    double angle = bowDirectionRad + Math.PI + angleOffset;
-
-                    double px = samplePoint.x + Math.cos(angle) * distanceGrid;
-                    double py = samplePoint.y + Math.sin(angle) * distanceGrid;
-
-                    int bx = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
-                    int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
-
-                    if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
-                        updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
-                                 riverWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
+                        if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
+                            updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
+                                     riverWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
+                        }
                     }
                 }
             }
