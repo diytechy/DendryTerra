@@ -4,10 +4,10 @@ import java.util.*;
 
 /**
  * LRU cache for SegmentList instances from generateAllSegments.
- * Stores up to 20 MB of segment lists to avoid regenerating asterisms and segments.
+ * Stores up to 10 MB of segment lists to avoid regenerating asterisms and segments.
  */
 public class SegmentListCache {
-    private static final long MAX_MEMORY = 20 * 1024 * 1024; // 20 MB
+    private static final long MAX_MEMORY = 10 * 1024 * 1024; // 10 MB
 
     /** Estimated bytes per point (position + metadata) */
     private static final int BYTES_PER_POINT = 64;

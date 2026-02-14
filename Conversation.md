@@ -1348,3 +1348,5 @@ Only allocate memory for the return type requested
 Add capability to have 3 input points (not just 2d), if 3rd input is 1 and return type is PIXEL_RIVER actually return the elevation as is done today for PIXEL_RIVER_CTRL.  This way the return information can be triggered from this input selector instead of requiring a sampler return instance to change.
 
 Make default return type as PIXEL_RIVER.
+
+Add a config like "ENABLE_BLOT_FILLING" to allow both start and end segments with any number of connections to generate segmentFill.  Default to false.

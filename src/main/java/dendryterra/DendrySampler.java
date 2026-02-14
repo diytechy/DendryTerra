@@ -122,6 +122,12 @@ public class DendrySampler implements Sampler {
      */
     private static final boolean ERROR_ON_UNDEFINED_TANGENT = true;
 
+    /**
+     * When true, segmentFill (semicircle fill) is enabled for ALL segment start/end points,
+     * not just endpoints with exactly 1 connection.
+     */
+    private static final boolean ENABLE_SEGMENT_FILL_ALL = false;
+
     // Star sampling grid size (9x9 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
     // Star sample boundary margin (fraction of cell size)
@@ -153,12 +159,12 @@ public class DendrySampler implements Sampler {
 
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
-    private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
+    private static final int MAX_PIXEL_CACHE_BYTES = 10 * 1024 * 1024; // 10 MB max for pixel cache
 
     // Lazy LRU cache (optional based on useCache flag)
     private final LoadingCache<Long, CellData> cellCache;
 
-    // PIXEL_RIVER caches (20 MB each)
+    // PIXEL_RIVER caches (10 MB each, only allocated for PIXEL_RIVER/PIXEL_RIVER_CTRL)
     private final SegmentListCache segmentListCache;
     private final BigChunkCache bigChunkCache;
 
@@ -369,9 +375,14 @@ public class DendrySampler implements Sampler {
             this.pixelCache = null;
         }
 
-        // Initialize PIXEL_RIVER caches
-        this.segmentListCache = new SegmentListCache();
-        this.bigChunkCache = new BigChunkCache();
+        // Initialize PIXEL_RIVER caches only when using BigChunk-based return types
+        if (returnType == DendryReturnType.PIXEL_RIVER || returnType == DendryReturnType.PIXEL_RIVER_CTRL) {
+            this.segmentListCache = new SegmentListCache();
+            this.bigChunkCache = new BigChunkCache();
+        } else {
+            this.segmentListCache = null;
+            this.bigChunkCache = null;
+        }
 
         if (debugTiming) {
             LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useCache={}, useParallel={}, useSplines={}, parallelThreshold={}, cachepixels={}, pixelGridSize={}",
@@ -454,6 +465,10 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double y, double z) {
+        // When returnType is PIXEL_RIVER and y == 1.0, return elevation instead of distance
+        if (returnType == DendryReturnType.PIXEL_RIVER && y == 1.0) {
+            return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
+        }
         return getSample(seed, x, z);
     }
 
@@ -3445,8 +3460,12 @@ public class DendrySampler implements Sampler {
             boolean segmentFill = false;
             boolean isStartPoint = (i == 0);
             boolean isEndPoint = (i == numSamples - 1);
-            if (isStartPoint && startConnections == 1) segmentFill = true;
-            if (isEndPoint && endConnections == 1) segmentFill = true;
+            if (ENABLE_SEGMENT_FILL_ALL) {
+                if (isStartPoint || isEndPoint) segmentFill = true;
+            } else {
+                if (isStartPoint && startConnections == 1) segmentFill = true;
+                if (isEndPoint && endConnections == 1) segmentFill = true;
+            }
 
             // === Project to boxes ===
             projectConeToBoxes(samplePoint, currentTangent, prevEvalTangent,

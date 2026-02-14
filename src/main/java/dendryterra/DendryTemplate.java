@@ -40,7 +40,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
 
     @Value("return")
     @Default
-    private @Meta DendryReturnType returnType = DendryReturnType.ELEVATION;
+    private @Meta DendryReturnType returnType = DendryReturnType.PIXEL_RIVER;
 
     /**
      * Control sampler for base elevation.
