@@ -3309,7 +3309,7 @@ public class DendrySampler implements Sampler {
         double segmentLength = seg.length();
         double cachepixelsGrid = cachepixels / gridsize;
         double elevQuantizeRes = 255.0 / max;
-        int numSamples = (int) Math.ceil((segmentLength / cachepixelsGrid) * 1.5);
+        int numSamples = (int) Math.ceil((segmentLength / cachepixelsGrid) * 2.11);
         if (numSamples < 2) numSamples = 2;
 
         // Segment slope: abs(height change / euclidean distance)

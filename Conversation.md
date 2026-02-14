@@ -1329,11 +1329,22 @@ Make additional updates to the RIVER_PIXEL solver:
 
 ###############################################################################################
 
+Iniial view looks good.
+
 Reminder: Final ToDo:
 
-Remove all unused / legacy functions.
-Remove unnecessary fields in Point3D:
-    public final PointType srtType;
-    public final PointType endType;
-    public final Point3D srt;
-    public final Point3D end;
+Initial results appear sufficient.  There may be a bit more to iterate on and optomize on, but for now:
+
+Remove all unused / legacy /deprecated functions.
+Perform consolidation from repetitive code where reasonable to make the code base smaller and reduce likelihood of future changes missing parts that may need to be touched in multiple locations.
+
+###############################################################
+
+Limit the memory allocation for segments to 10 MB.
+Only allocate memory for the return type requested
+    - PIXEL_RIVER, PIXEL_RIVER_CTRL should cause caching for pixel grid.
+    - PIXEL_DEBUG, ect should cause cashing for pixels within the cell space.
+
+Add capability to have 3 input points (not just 2d), if 3rd input is 1 and return type is PIXEL_RIVER actually return the elevation as is done today for PIXEL_RIVER_CTRL.  This way the return information can be triggered from this input selector instead of requiring a sampler return instance to change.
+
+Make default return type as PIXEL_RIVER.
