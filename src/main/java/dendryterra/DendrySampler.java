@@ -3208,8 +3208,9 @@ public class DendrySampler implements Sampler {
         List<Integer> levels = new ArrayList<>();
         List<Integer> startConns = new ArrayList<>();
         List<Integer> endConns = new ArrayList<>();
+        List<Integer> endFlowLevels = new ArrayList<>();
 
-        collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels, startConns, endConns);
+        collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels, startConns, endConns, endFlowLevels);
 
         // B. Sort by level descending (highest level segments processed first)
         Integer[] sortedIndices = new Integer[segments.size()];
@@ -3219,7 +3220,8 @@ public class DendrySampler implements Sampler {
         // C. Process each segment in sorted order
         for (int idx : sortedIndices) {
             sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
-                startConns.get(idx), endConns.get(idx), chunk, chunkSizeGrid);
+                startConns.get(idx), endConns.get(idx), endFlowLevels.get(idx),
+                chunk, chunkSizeGrid);
         }
     }
 
@@ -3233,10 +3235,12 @@ public class DendrySampler implements Sampler {
      * @param outLevels Output list for segment levels (parallel to outSegments)
      * @param outStartConns Output list for start endpoint connection counts
      * @param outEndConns Output list for end endpoint connection counts
+     * @param outEndFlowLevel Output list: minimum level of a lower-level segment connected at end point, or -1 if none
      */
     private void collectSegmentsForBigChunk(BigChunk chunk, double chunkSizeGrid,
                                            List<Segment3D> outSegments, List<Integer> outLevels,
-                                           List<Integer> outStartConns, List<Integer> outEndConns) {
+                                           List<Integer> outStartConns, List<Integer> outEndConns,
+                                           List<Integer> outEndFlowLevel) {
         // Determine the range of cells that could contain relevant segments
         // Grid coordinates are already normalized (sampler / gridsize), so cell boundaries are at integer values
         double minGridX = chunk.gridOriginX - maxDistGrid;
@@ -3283,6 +3287,19 @@ public class DendrySampler implements Sampler {
                         // Extract connection counts from endpoint NetworkPoints
                         outStartConns.add(segmentList.getPoint(segIdx.srtIdx).connections);
                         outEndConns.add(segmentList.getPoint(segIdx.endIdx).connections);
+
+                        // Check if end point connects to a lower-level (wider) segment
+                        int endFlowLevel = -1;
+                        for (SegmentIdx otherSeg : segmentList.getSegments()) {
+                            if (otherSeg == segIdx) continue;
+                            if (otherSeg.level < segIdx.level
+                                    && (otherSeg.srtIdx == segIdx.endIdx || otherSeg.endIdx == segIdx.endIdx)) {
+                                if (endFlowLevel < 0 || otherSeg.level < endFlowLevel) {
+                                    endFlowLevel = otherSeg.level;
+                                }
+                            }
+                        }
+                        outEndFlowLevel.add(endFlowLevel);
                     }
                 }
             }
@@ -3315,11 +3332,13 @@ public class DendrySampler implements Sampler {
      * @param level River level
      * @param startConnections Number of connections at start endpoint
      * @param endConnections Number of connections at end endpoint
+     * @param endFlowLevel Level of lower-level segment connected at end point, or -1 if none
      * @param chunk BigChunk to project onto
      * @param chunkSizeGrid Size of chunk in grid coordinates
      */
     private void sampleSegmentAlongSpline(Segment3D seg, int level,
                                           int startConnections, int endConnections,
+                                          int endFlowLevel,
                                           BigChunk chunk, double chunkSizeGrid) {
         // Pre-compute constants
         double segmentLength = seg.length();
@@ -3436,6 +3455,12 @@ public class DendrySampler implements Sampler {
 
             // === Step E: Update elevation radii ===
             double riverWidthGrid = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
+
+            // Width transition: linearly widen to match lower-level river at endpoint
+            if (endFlowLevel >= 0 && endFlowLevel < level && endConnections == 1) {
+                double targetWidthGrid = calculateRiverWidth(endFlowLevel, samplePoint.x, samplePoint.y);
+                riverWidthGrid = riverWidthGrid + (targetWidthGrid - riverWidthGrid) * t;
+            }
 
             if (!elevationChanged && prevEvalPos != null && riverWidthGrid > 0) {
                 double dx = samplePoint.x - prevEvalPos.x;
