@@ -1350,3 +1350,14 @@ Add capability to have 3 input points (not just 2d), if 3rd input is 1 and retur
 Make default return type as PIXEL_RIVER.
 
 Add a config like "ENABLE_BLOT_FILLING" to allow both start and end segments with any number of connections to generate segmentFill.  Default to false.
+
+
+################################################################
+
+The pixel cache should also only be created when necessary (return types PIXEL_LEVEL, PIXEL_ELEVATION).
+
+The pixel cache (MAX_PIXEL_CACHE_BYTES) and big chunk cache (BigChunkCache) should remain 20 MB.
+
+##############################################################
+
+Now add a another array or similar (like the array tracking the number of connections for the big cache generation), with a boolean indicating if the segment ends on a point that is connected to a lower level segment (a higher level / narrower river flowing into a lower level / wider river).  While iterating through segments, if the segment is flowing into a lower level / wider river, and the end point only has a single connection, linearly increase the width over the length of the segment so that the width of the higher level segment matches the width of the lower level segment when it reaches the end point.  This will create a smooth transition when a single higher level river flows into a lower level river.
