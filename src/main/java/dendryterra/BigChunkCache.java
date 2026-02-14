@@ -4,10 +4,10 @@ import java.util.*;
 
 /**
  * LRU cache for BigChunk instances.
- * Stores up to 10 MB of bigchunks (~75 chunks at 132 KB each).
+ * Stores up to 20 MB of bigchunks (~150 chunks at 132 KB each).
  */
 public class BigChunkCache {
-    private static final long MAX_MEMORY = 10 * 1024 * 1024; // 10 MB
+    private static final long MAX_MEMORY = 20 * 1024 * 1024; // 20 MB
     private static final long CHUNK_SIZE = 132 * 1024; // ~132 KB per chunk
     private static final int MAX_CHUNKS = (int)(MAX_MEMORY / CHUNK_SIZE); // ~150 chunks
 

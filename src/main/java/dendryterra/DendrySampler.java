@@ -126,7 +126,7 @@ public class DendrySampler implements Sampler {
      * When true, segmentFill (semicircle fill) is enabled for ALL segment start/end points,
      * not just endpoints with exactly 1 connection.
      */
-    private static final boolean ENABLE_SEGMENT_FILL_ALL = false;
+    private static final boolean ENABLE_SEGMENT_FILL_ALL = true;
 
     // Star sampling grid size (9x9 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
@@ -159,7 +159,7 @@ public class DendrySampler implements Sampler {
 
     // Cache configuration
     private static final int MAX_CACHE_SIZE = 16384;
-    private static final int MAX_PIXEL_CACHE_BYTES = 10 * 1024 * 1024; // 10 MB max for pixel cache
+    private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
 
     // Lazy LRU cache (optional based on useCache flag)
     private final LoadingCache<Long, CellData> cellCache;
@@ -368,8 +368,9 @@ public class DendrySampler implements Sampler {
             this.cellCache = null;
         }
 
-        // Initialize pixel cache if cachepixels is enabled
-        if (cachepixels > 0) {
+        // Initialize pixel cache only for return types that use cell-based pixel caching
+        if (cachepixels > 0 && (returnType == DendryReturnType.PIXEL_LEVEL
+                || returnType == DendryReturnType.PIXEL_ELEVATION)) {
             this.pixelCache = new HashMap<>();
         } else {
             this.pixelCache = null;
