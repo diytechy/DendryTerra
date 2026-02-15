@@ -1,9 +1,10 @@
 plugins {
     java
     application
+    `maven-publish`
 }
 
-group = "dendryterra"
+group = "com.github.diytechy"
 version = "1.0.0"
 
 repositories {
@@ -59,6 +60,25 @@ tasks.register<JavaExec>("benchmark") {
 
 tasks.jar {
     archiveBaseName.set("DendryTerra")
+}
+
+publishing {
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/diytechy/DendryTerra")
+            credentials {
+                username = project.findProperty("gpr.user") as String? ?: System.getenv("GITHUB_ACTOR")
+                password = project.findProperty("gpr.key") as String? ?: System.getenv("GITHUB_TOKEN")
+            }
+        }
+    }
+    publications {
+        create<MavenPublication>("gpr") {
+            from(components["java"])
+            artifactId = "dendryterra"
+        }
+    }
 }
 
 // Make 'run' task use benchmark dependencies too
