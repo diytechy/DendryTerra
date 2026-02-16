@@ -22,13 +22,9 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double epsilon = 0.0;
 
-    @Value("delta")
-    @Default
-    private @Meta double delta = 0.05;
-
     @Value("slope")
     @Default
-    private @Meta double slope = 0.005;
+    private @Meta double slope = 0.1;
 
     /**
      * Grid cell size in world units. Replaces the old 'frequency' parameter.
@@ -36,7 +32,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("gridsize")
     @Default
-    private @Meta double gridsize = 1000.0;
+    private @Meta double gridsize = 2000.0;
 
     @Value("return")
     @Default
@@ -66,49 +62,17 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("default-branches")
     @Default
-    private @Meta int defaultBranches = 2;
+    private @Meta int defaultBranches = 1;
 
     /**
-     * Curvature factor for Catmull-Rom spline subdivision.
+     * Curvature factor for Hermite spline subdivision.
      * 0 = linear interpolation, 1 = full spline curvature.
      */
     @Value("curvature")
     @Default
-    private @Meta double curvature = 0.5;
-
-    /**
-     * Curvature falloff per level. Each level's curvature is multiplied by this.
-     * Lower values = less curvature at finer detail levels.
-     */
-    @Value("curvature-falloff")
-    @Default
-    private @Meta double curvatureFalloff = 0.7;
-
-    /**
-     * Maximum distance for sub-segment connection.
-     * 0 = auto-calculate based on grid size.
-     */
-    @Value("connect-distance")
-    @Default
-    private @Meta double connectDistance = 0;
-
-    /**
-     * Multiplier for auto-calculated connect distance.
-     * connectDistance = cellSize * connectDistanceFactor
-     */
-    @Value("connect-distance-factor")
-    @Default
-    private @Meta double connectDistanceFactor = 2.0;
+    private @Meta double curvature = 0.9;
 
     // ========== Performance Tuning Flags ==========
-
-    /**
-     * Enable LRU caching of cell data.
-     * Disable to test performance without caching overhead.
-     */
-    @Value("use-cache")
-    @Default
-    private @Meta boolean useCache = false;
 
     /**
      * Enable parallel stream processing for large segment lists.
@@ -117,14 +81,6 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Value("use-parallel")
     @Default
     private @Meta boolean useParallel = true;
-
-    /**
-     * Enable Catmull-Rom spline subdivision.
-     * Disable to use simple linear subdivision (faster).
-     */
-    @Value("use-splines")
-    @Default
-    private @Meta boolean useSplines = true;
 
     /**
      * Enable debug timing output to console.
@@ -202,7 +158,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("slope-when-straight")
     @Default
-    private @Meta double slopeWhenStraight = 0.1;
+    private @Meta double slopeWhenStraight = 10;
 
     /**
      * Minimum slope cutoff for point rejection.
@@ -214,7 +170,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("lowest-slope-cutoff")
     @Default
-    private @Meta double lowestSlopeCutoff = -0.01;
+    private @Meta double lowestSlopeCutoff = -1;
 
     /**
      * Debug level for segment visualization.
@@ -232,22 +188,19 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     private @Meta int debug = 0;
 
     /**
-     * Minimum elevation for level 0 (constellation) points.
-     * At level 0, all candidate points are assigned this elevation instead of
-     * the control function value. This flattens the elevation landscape at
-     * level 0, changing path preferences from "downhill flow" to distance-based.
-     * Default: 0 (disabled - uses control function elevation).
-     * When set, level 0 points use this value as their elevation.
+     * Maximum number of segments to create at the highest level (level == n).
+     * Includes subdivision segments. Used for debugging segment growth.
+     * When limit is reached mid-subdivision, only segments closest to the
+     * existing network endpoint are kept.
      */
-    @Value("minimum")
+    @Value("max-segments-per-level")
     @Default
-    private @Meta double minimum = 0;
+    private @Meta int maxSegmentsPerLevel = 500;
 
     /**
      * Sampler for river width at a given point.
      * The sampled value determines base river width in world units.
      * Actual river width per level = riverwidth * (0.6^level), minimum 2x pixel resolution.
-     * Used with PIXEL_RIVER_LEGACY return type.
      */
     @Value("riverwidth")
     @Default
@@ -301,9 +254,6 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (epsilon < 0 || epsilon >= 0.5) {
             throw new ValidationException("epsilon must be in range [0, 0.5), got: " + epsilon);
         }
-        if (delta < 0) {
-            throw new ValidationException("delta must be non-negative, got: " + delta);
-        }
         if (gridsize <= 0) {
             throw new ValidationException("gridsize must be positive, got: " + gridsize);
         }
@@ -312,15 +262,6 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         }
         if (curvature < 0 || curvature > 1) {
             throw new ValidationException("curvature must be in range [0, 1], got: " + curvature);
-        }
-        if (curvatureFalloff < 0 || curvatureFalloff > 1) {
-            throw new ValidationException("curvature-falloff must be in range [0, 1], got: " + curvatureFalloff);
-        }
-        if (connectDistance < 0) {
-            throw new ValidationException("connect-distance must be non-negative, got: " + connectDistance);
-        }
-        if (connectDistanceFactor <= 0) {
-            throw new ValidationException("connect-distance-factor must be positive, got: " + connectDistanceFactor);
         }
         if (ConstellationScale < 1 || ConstellationScale > 10) {
             throw new ValidationException("constellation-scale must be between 1 and 10, got: " + ConstellationScale);
@@ -340,9 +281,6 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (cachepixels > 0 && gridsize / cachepixels > 65535) {
             throw new ValidationException("gridsize/cachepixels exceeds UInt16 max (65535), got: " + (gridsize / cachepixels));
         }
-        if (slopeWhenStraight < 0 || slopeWhenStraight > 1) {
-            throw new ValidationException("slope-when-straight must be in range [0, 1], got: " + slopeWhenStraight);
-        }
         if (max <= 0) {
             throw new ValidationException("max must be positive, got: " + max);
         }
@@ -359,21 +297,21 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Override
     public Sampler get() {
         return new DendrySampler(
-            n, epsilon, delta, slope, gridsize,
+            n, epsilon, slope, gridsize,
             returnType, controlSampler, salt,
             branchesSampler, defaultBranches,
-            curvature, curvatureFalloff,
-            connectDistance, connectDistanceFactor,
-            useCache, useParallel, useSplines,
+            curvature,
+            useParallel,
             debugTiming, parallelThreshold,
             ConstellationScale, constellationShape,
             Math.toRadians(tangentAngle), tangentStrength,
             cachepixels,
             slopeWhenStraight, lowestSlopeCutoff,
-            debug, minimum,
+            debug,
             riverwidthSampler, defaultRiverwidth,
             borderwidthSampler, defaultBorderwidth,
-            max, maxDist
+            max, maxDist,
+            maxSegmentsPerLevel
         );
     }
 }

@@ -230,6 +230,16 @@ public class SegmentList {
      * @return The index of the newly added point (srtNetPnt)
      */
     public int addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength) {
+        return addSegmentWithDivisions(srtNetPnt, endIdx, level, maxSegmentLength, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Add a segment using new network point to known existing point in segment.
+     * @param maxSegments Maximum number of segments to create (for budget-limited subdivision).
+     *                    When limited, only the segments closest to endIdx are created.
+     * @return The index of the newly added point (srtNetPnt)
+     */
+    public int addSegmentWithDivisions(NetworkPoint srtNetPnt, int endIdx, int level, double maxSegmentLength, int maxSegments) {
         // Add the start point to get its index
         int srtIdx = addPoint(srtNetPnt);
 
@@ -238,17 +248,22 @@ public class SegmentList {
         ensureDownhillFlow(srtIdx, endIdx, level);
 
         // Call full implementation using global config
-        addSegmentWithDivisions(srtIdx, endIdx, level, maxSegmentLength);
+        addSegmentWithDivisions(srtIdx, endIdx, level, maxSegmentLength, maxSegments);
 
         // Return the index of the new point
         return srtIdx;
     }
     
+    public void addSegmentWithDivisions(int A, int B, int level, double maxSegmentLength) {
+        addSegmentWithDivisions(A, B, level, maxSegmentLength, Integer.MAX_VALUE);
+    }
+
     /**
      * Add a segment with full implementation using global configuration.
      * This is the main implementation that creates multiple connected segments from a single call.
+     * @param maxSegments Maximum segments to create. When limited, keeps segments closest to end.
      */
-    public void addSegmentWithDivisions(int A, int B, int level, double maxSegmentLength) {
+    public void addSegmentWithDivisions(int A, int B, int level, double maxSegmentLength, int maxSegments) {
         // Fetch points once and cache hash codes to avoid duplicate calculations
         NetworkPoint ptA = points.get(A);
         NetworkPoint ptB = points.get(B);
@@ -292,8 +307,8 @@ public class SegmentList {
 
         // Step 1b: Bound tangent magnitudes to maxSegmentLength to prevent excessive curves
         double distance = srt.position.distanceTo(end.position);
-        tangentSrt = boundTangentMagnitude(tangentSrt, distance);
-        tangentEnd = boundTangentMagnitude(tangentEnd, distance);
+        tangentSrt = scaleTangentMagnitude(tangentSrt, distance);
+        tangentEnd = scaleTangentMagnitude(tangentEnd, distance);
 
         // Step 1c: Clamp tangent components near cell boundaries to prevent spline overshoot
         tangentSrt = clampTangentToCellBoundary(tangentSrt, srt.position, distance);
@@ -310,10 +325,10 @@ public class SegmentList {
             addBasicSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
         } else {
             // Multiple segments - pass computed tangents and RNG to avoid recomputation
-            createSubdividedSegments(srtIdx, endIdx, level, maxSegmentLength, distance, tangentSrt, tangentEnd, rng);
+            createSubdividedSegments(srtIdx, endIdx, level, maxSegmentLength, distance, tangentSrt, tangentEnd, rng, maxSegments);
         }
     }
-    
+
     /**
      * Add a segment with two new network points, only used for trunk initialization.
      * @return The index of endNetPnt (the "far end" for trunk continuation)
@@ -337,23 +352,22 @@ public class SegmentList {
     }
 
     /**
-     * Bound the magnitude of a tangent vector to a maximum value.
-     * Preserves direction while capping length.
+     * Scale a tangent vector to match the target magnitude.
+     * Preserves direction while setting length to targetMagnitude.
      *
-     * @param tangent The tangent vector to bound
-     * @param maxMagnitude Maximum allowed magnitude
-     * @return Bounded tangent vector
+     * @param tangent The tangent vector to scale
+     * @param targetMagnitude Desired magnitude
+     * @return Scaled tangent vector
      */
-    private Vec2D boundTangentMagnitude(Vec2D tangent, double maxMagnitude) {
+    private Vec2D scaleTangentMagnitude(Vec2D tangent, double targetMagnitude) {
         if (tangent == null) return null;
 
         double magnitude = tangent.length();
-        if (magnitude <= maxMagnitude || magnitude < MathUtils.EPSILON) {
+        if (magnitude < MathUtils.EPSILON) {
             return tangent;
         }
 
-        // Scale down to max magnitude while preserving direction
-        double scale = maxMagnitude / magnitude;
+        double scale = targetMagnitude / magnitude;
         return new Vec2D(tangent.x * scale, tangent.y * scale);
     }
 
@@ -544,11 +558,6 @@ public class SegmentList {
                 }
                 // Multiple connections, take random angle between continuous tangent and direction to target
                 else {
-                    if(false){
-                        //Temp override to verify branch segments are not twisting, might be missing inversion.
-                        return segTangent;
-                    }
-                    else{
                         // Pick a random angle between continuousTangent and toTarget
                         double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
                         double angleTarget = Math.atan2(segTangent.y, segTangent.x);
@@ -567,9 +576,8 @@ public class SegmentList {
                         double magnitude = continuousTangent.length();
                         return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
                     }
-                        
+
                 }
-            }
             // Fallback - use direction to target with small offset
             // double offset = (NoiseGen.nextFloat() - 0.5) * config.SlopeWithoutTwist * 0.5;
             return segTangent;
@@ -652,46 +660,42 @@ public class SegmentList {
      * @param tangentEnd Pre-computed tangent at end point
      * @param rng Random number generator for deterministic jitter
      */
+    /**
+     * @param maxSegments Maximum number of segments to create. When limited, only the last
+     *                    maxSegments segments (closest to endIdx) are materialized.
+     *                    RNG is still advanced for all divisions to keep determinism.
+     */
     private void createSubdividedSegments(int srtIdx, int endIdx, int level, double maxSegmentLength,
-                                          double distance, Vec2D tangentSrt, Vec2D tangentEnd, Random rng) {
-                                            
+                                          double distance, Vec2D tangentSrt, Vec2D tangentEnd, Random rng,
+                                          int maxSegments) {
+
         int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
 
         // Determine intermediate point type based on endpoint types
-        // If both endpoints are TRUNK, intermediate points should also be TRUNK
         PointType intermediateType = (srt.pointType == PointType.TRUNK && end.pointType == PointType.TRUNK)
             ? PointType.TRUNK
             : PointType.KNOT;
 
-        // Create intermediate points
-        int prevIdx = srtIdx;
-        Vec2D prevTangent = tangentSrt;
-
         // Minimum distance threshold: % of intended segment length
-        double segLength = maxSegmentLength;
-        double minDistanceThreshold = segLength * 0.2;
-        double jitterX = 0;
-        double jitterY = 0;
-        double jitterMagnitude = 0;
-        
+        double minDistanceThreshold = maxSegmentLength * 0.2;
+
+        // Pre-compute ALL intermediate positions and tangents (to keep RNG deterministic)
+        List<Point3D> interPositions = new ArrayList<>();
+        List<Vec2D> interTangents = new ArrayList<>();
+
         for (int i = 1; i < numDivisions; i++) {
             double t = (double) i / numDivisions;
-            Point3D intermediatePoint;
-            jitterX = rng.nextDouble() - 0.5; // [-0.5, 0.5]
-            jitterY = rng.nextDouble() - 0.5; // [-0.5, 0.5]
+            double jitterX = rng.nextDouble() - 0.5;
+            double jitterY = rng.nextDouble() - 0.5;
 
-            // Normalize jitter to unit vector, then scale to max 50% of segment length
             double rawMagnitude = Math.sqrt(jitterX * jitterX + jitterY * jitterY);
-            jitterMagnitude = rawMagnitude / Math.sqrt(0.5); // Normalize to [0, 1]
+            double jitterMagnitude = rawMagnitude / Math.sqrt(0.5);
 
-            // Cap jitter magnitude at % of maxSegmentLength (reduced per level)
             double maxJitter = maxSegmentLength * 0.5 * Math.pow(config.jitterReductionBase, level);
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
-            // TODO: Remove level check to allow jitter on all levels.
-            // if (rawMagnitude > MathUtils.EPSILON && level==0) {
             if (rawMagnitude > MathUtils.EPSILON) {
                 jitterX = (jitterX / rawMagnitude) * scaledMagnitude;
                 jitterY = (jitterY / rawMagnitude) * scaledMagnitude;
@@ -699,65 +703,67 @@ public class SegmentList {
                 jitterX = 0;
                 jitterY = 0;
             }
+
+            Point3D intermediatePoint;
             if (config.useSplines && config.curvature > 0) {
-                // Use cubic Hermite spline interpolation with jitter
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
                                                            tangentSrt, tangentEnd, t, config.tangentStrength, jitterX, jitterY);
             } else {
-                // Use linear interpolation with jitter
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, jitterX, jitterY);
             }
 
-            // Check if this point is too close to the previous point or ends
+            // Distance check (currently always passes since distanceToSel = MAX_VALUE)
             double distanceToSel = Double.MAX_VALUE;
-            //if (i==1) {
-            //    // First intermediate point - check distance to start
-            //    distanceToSel = srt.position.projectZ().distanceTo(intermediatePoint.projectZ());
-            //} else if (i == numDivisions - 1) {
-            //    // Last intermediate point - check distance to end
-            //    distanceToSel = end.position.projectZ().distanceTo(intermediatePoint.projectZ());
-            //}
-            //else{
-            //    NetworkPoint prevPoint = points.get(prevIdx);
-            //    distanceToSel = prevPoint.position.projectZ().distanceTo(intermediatePoint.projectZ());
-            //}
-
             if (distanceToSel < minDistanceThreshold) {
-                // Skip this point - too close to previous point
-                // This can happen with Hermite splines when tangents create tight curves
                 continue;
             }
 
-            // Compute tangent at this intermediate point
             Vec2D intermediateTangent;
             if (config.useSplines && config.curvature > 0 && tangentSrt != null && tangentEnd != null) {
-                // Compute tangent from Hermite spline derivative
                 intermediateTangent = computeHermiteTangent(srt.position, end.position,
                                                            tangentSrt, tangentEnd, t, config.tangentStrength);
-                // Apply random twist, scaled by jitter magnitude
-                // TODO: Allow twist on level 1+
-                //if (level == 0) {
-                //    jitterMagnitude = 0; // Disable twist for higher levels to maintain smoother branches
-                //}
                 intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
                                                        config.maxIntermediateTwistAngle, rng);
             } else {
-                // For linear interpolation, use direction from start to end with twist
                 Vec2D baseDirection = new Vec2D(srt.position.projectZ(), end.position.projectZ()).normalize();
                 intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
                                                        config.maxIntermediateTwistAngle, rng);
             }
-            // Bound tangent magnitude with reduction per level
-            intermediateTangent = boundTangentMagnitude(intermediateTangent,
+            intermediateTangent = scaleTangentMagnitude(intermediateTangent,
                 ((maxSegmentLength * 8) / Math.pow(config.tangentReductionBase, level)));
-            // Add intermediate point with appropriate type
-            int intermediateIdx = addPoint(intermediatePoint, intermediateType, level);
 
-            // Create segment from previous to intermediate with computed tangents
-            addBasicSegment(prevIdx, intermediateIdx, level, prevTangent, intermediateTangent);
+            interPositions.add(intermediatePoint);
+            interTangents.add(intermediateTangent);
+        }
 
+        // Total segments = interPositions.size() + 1 (for the final segment to end)
+        int totalSegments = interPositions.size() + 1;
+
+        // Determine which segments to materialize (closest to end = highest indices)
+        int startFrom = Math.max(0, totalSegments - maxSegments);
+
+        // Build the chain, only materializing segments from startFrom onward
+        int prevIdx;
+        Vec2D prevTangent;
+
+        if (startFrom == 0) {
+            // Creating all segments from the original start
+            prevIdx = srtIdx;
+            prevTangent = tangentSrt;
+        } else {
+            // Skip early segments; start from an intermediate point
+            // The point at index (startFrom - 1) becomes the new chain start
+            int newStartInterIdx = startFrom - 1;
+            prevIdx = addPoint(interPositions.get(newStartInterIdx), intermediateType, level);
+            prevTangent = interTangents.get(newStartInterIdx);
+        }
+
+        // Create intermediate segments from startFrom onward
+        for (int i = startFrom; i < interPositions.size(); i++) {
+            int intermediateIdx = addPoint(interPositions.get(i), intermediateType, level);
+            addBasicSegment(prevIdx, intermediateIdx, level, prevTangent, interTangents.get(i));
             prevIdx = intermediateIdx;
-            prevTangent = intermediateTangent;
+            prevTangent = interTangents.get(i);
         }
 
         // Create final segment to end point
@@ -992,6 +998,59 @@ public class SegmentList {
             copy.pointToSegments.put(entry.getKey(), new ArrayList<>(entry.getValue()));
         }
         return copy;
+    }
+
+    /**
+     * Rollback the SegmentList to a previous state by removing all points and segments
+     * added after the saved counts. Used by crossing detection to undo a connection
+     * that produced crossing segments.
+     *
+     * @param savedPointCount Number of points before the addition
+     * @param savedSegmentCount Number of segments before the addition
+     */
+    public void rollback(int savedPointCount, int savedSegmentCount) {
+        // Remove segments added after savedSegmentCount and clean up their pointToSegments entries
+        for (int i = segments.size() - 1; i >= savedSegmentCount; i--) {
+            SegmentIdx seg = segments.get(i);
+
+            // Remove from pointToSegments map
+            removeSegmentConnection(seg.srtIdx, i);
+            removeSegmentConnection(seg.endIdx, i);
+
+            // Decrement connection counts on endpoints (only if point still exists)
+            if (seg.srtIdx < savedPointCount) {
+                NetworkPoint srtPt = points.get(seg.srtIdx);
+                points.set(seg.srtIdx, srtPt.withConnections(Math.max(0, srtPt.connections - 1)));
+            }
+            if (seg.endIdx < savedPointCount) {
+                NetworkPoint endPt = points.get(seg.endIdx);
+                points.set(seg.endIdx, endPt.withConnections(Math.max(0, endPt.connections - 1)));
+            }
+
+            segments.remove(i);
+        }
+
+        // Remove points added after savedPointCount and clean up their map entries
+        for (int i = points.size() - 1; i >= savedPointCount; i--) {
+            pointToSegments.remove(i);
+            points.remove(i);
+        }
+
+        // Reset nextIndex
+        nextIndex = savedPointCount;
+    }
+
+    /**
+     * Remove a specific segment connection entry from a point's connection list.
+     */
+    private void removeSegmentConnection(int pointIdx, int segmentIndex) {
+        List<SegmentConnection> connections = pointToSegments.get(pointIdx);
+        if (connections != null) {
+            connections.removeIf(conn -> conn.segmentIndex == segmentIndex);
+            if (connections.isEmpty()) {
+                pointToSegments.remove(pointIdx);
+            }
+        }
     }
 
     /**

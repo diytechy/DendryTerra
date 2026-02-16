@@ -1,8 +1,6 @@
 package dendryterra;
 
 import com.dfsek.seismic.type.sampler.Sampler;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.LoadingCache;
 import dendryterra.math.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,11 +38,11 @@ public class DendrySampler implements Sampler {
      *  40  - Return level 1+ points as 0-length segments to check distribution before connection
      */
     private final int debug;
+    private final int maxSegmentsPerLevel;
 
     // Configuration parameters
     private final int resolution;
     private final double epsilon;
-    private final double delta;
     private final double slope;
     private final double gridsize;
     private final DendryReturnType returnType;
@@ -57,7 +55,6 @@ public class DendrySampler implements Sampler {
     private final double curvature;
 
     // Performance flags
-    private final boolean useCache;
     private final boolean useParallel;
     private final boolean useSplines;
     private final boolean debugTiming;
@@ -91,10 +88,17 @@ public class DendrySampler implements Sampler {
 
     // Slope calculation parameters for neighbor selection
     // DistanceFalloffPower: Use dist^power in denominator to prefer tighter connections
-    private static final double DISTANCE_FALLOFF_POWER = 2.0;
+    private static final double DISTANCE_FALLOFF_POWER = 3.0;
     // BranchEncouragementFactor: Multiply slope by this when neighbor has 2+ connections
     // to encourage attaching to existing flows
     private static final double BRANCH_ENCOURAGEMENT_FACTOR = 2.0;
+    // Penalty multiplier on distSq for same-level candidates in distance-preferred scoring.
+    // Higher values make the algorithm strongly prefer connecting to lower-level segments.
+    // 4.0 means a same-level candidate must be 2x closer than a lower-level candidate.
+    private static final double SAME_LEVEL_DISTANCE_PENALTY = 1.5;
+    // Power exponent for slope influence in blended scoring (0 = pure distance, 1 = full slope influence).
+    // Lower values compress slope's dynamic range, making distance dominate connection preference.
+    private static final double SLOPE_INFLUENCE = 0.5;
     /**
      * Use B-spline (cubic Hermite) interpolation for pixel sampling in PIXEL_DEBUG mode.
      * When true, segments with tangent information will be sampled along the curved spline.
@@ -137,11 +141,7 @@ public class DendrySampler implements Sampler {
     private final double maxDistGrid; // Maximum distance in grid coordinates (maxDist / gridsize)
 
     // Cache configuration
-    private static final int MAX_CACHE_SIZE = 16384;
     private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
-
-    // Lazy LRU cache (optional based on useCache flag)
-    private final LoadingCache<Long, CellData> cellCache;
 
     // PIXEL_RIVER caches (10 MB each, only allocated for PIXEL_RIVER/PIXEL_RIVER_CTRL)
     private final SegmentListCache segmentListCache;
@@ -156,16 +156,6 @@ public class DendrySampler implements Sampler {
     // Pixel cache statistics (for debugging cache performance)
     private final AtomicLong pixelCacheHits = new AtomicLong(0);
     private final AtomicLong pixelCacheMisses = new AtomicLong(0);
-
-    private static class CellData {
-        final Point2D point;
-        final int branchCount;
-
-        CellData(Point2D point, int branchCount) {
-            this.point = point;
-            this.branchCount = branchCount;
-        }
-    }
 
     /**
      * Pixel data for a single cached point along a segment.
@@ -278,26 +268,25 @@ public class DendrySampler implements Sampler {
     private final Map<Long, CellPixelData> pixelCache;
     private final Object pixelCacheLock = new Object();
 
-    public DendrySampler(int resolution, double epsilon, double delta,
+    public DendrySampler(int resolution, double epsilon,
                          double slope, double gridsize,
                          DendryReturnType returnType,
                          Sampler controlSampler, long salt,
                          Sampler branchesSampler, int defaultBranches,
-                         double curvature, double curvatureFalloff,
-                         double connectDistance, double connectDistanceFactor,
-                         boolean useCache, boolean useParallel, boolean useSplines,
+                         double curvature,
+                         boolean useParallel,
                          boolean debugTiming, int parallelThreshold,
                          int ConstellationScale, ConstellationShape constellationShape,
                          double tangentAngle, double tangentStrength,
                          double cachepixels,
                          double slopeWhenStraight, double lowestSlopeCutoff,
-                         int debug, double minimum,
+                         int debug,
                          Sampler riverwidthSampler, double defaultRiverwidth,
                          Sampler borderwidthSampler, double defaultBorderwidth,
-                         double max, double maxDist) {
+                         double max, double maxDist,
+                         int maxSegmentsPerLevel) {
         this.resolution = resolution;
         this.epsilon = epsilon;
-        this.delta = delta;
         this.slope = slope;
         this.gridsize = gridsize;
         this.returnType = returnType;
@@ -306,9 +295,8 @@ public class DendrySampler implements Sampler {
         this.branchesSampler = branchesSampler;
         this.defaultBranches = defaultBranches;
         this.curvature = curvature;
-        this.useCache = useCache;
         this.useParallel = useParallel;
-        this.useSplines = useSplines;
+        this.useSplines = curvature != 0;
         this.debugTiming = debugTiming;
         this.parallelThreshold = parallelThreshold;
         this.ConstellationScale = ConstellationScale;
@@ -324,6 +312,7 @@ public class DendrySampler implements Sampler {
         this.borderwidthSampler = borderwidthSampler;
         this.defaultBorderwidth = defaultBorderwidth;
         this.max = max;
+        this.maxSegmentsPerLevel = maxSegmentsPerLevel;
         this.maxDistGrid = maxDist / gridsize;  // Convert from sampler to grid coordinates
 
         // Calculate pixel grid size
@@ -331,15 +320,6 @@ public class DendrySampler implements Sampler {
             this.pixelGridSize = (int) Math.ceil(gridsize / cachepixels);
         } else {
             this.pixelGridSize = 0;
-        }
-
-        // Initialize cell data cache only if enabled
-        if (useCache) {
-            this.cellCache = Caffeine.newBuilder()
-                .maximumSize(MAX_CACHE_SIZE)
-                .build(this::generateCellData);
-        } else {
-            this.cellCache = null;
         }
 
         // Initialize pixel cache only for return types that use cell-based pixel caching
@@ -360,30 +340,13 @@ public class DendrySampler implements Sampler {
         }
 
         if (debugTiming) {
-            LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useCache={}, useParallel={}, useSplines={}, parallelThreshold={}, cachepixels={}, pixelGridSize={}",
-                resolution, gridsize, useCache, useParallel, useSplines, parallelThreshold, cachepixels, pixelGridSize);
+            LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useParallel={}, useSplines={}, parallelThreshold={}, cachepixels={}, pixelGridSize={}",
+                resolution, gridsize, useParallel, useSplines, parallelThreshold, cachepixels, pixelGridSize);
         }
     }
 
-    private CellData generateCellData(Long key) {
-        int cellX = unpackX(key);
-        int cellY = unpackY(key);
-        Point2D point = generatePoint(cellX, cellY);
-        int branches = computeBranchCount(cellX, cellY);
-        return new CellData(point, branches);
-    }
-    
-
     private static long packKey(int x, int y) {
         return ((long) x << 32) | (y & 0xFFFFFFFFL);
-    }
-
-    private static int unpackX(long key) {
-        return (int) (key >> 32);
-    }
-
-    private static int unpackY(long key) {
-        return (int) key;
     }
 
     private int computeBranchCount(int cellX, int cellY) {
@@ -464,9 +427,6 @@ public class DendrySampler implements Sampler {
      * @return List of all generated segments
      */
     private SegmentList generateAllSegments(Cell cell1, double queryX, double queryY) {
-        // Displacement factor for level 1 (levels 2+ handled in CleanAndNetworkPoints)
-        double displacementLevel1 = delta;
-
         // Asterism (Level 0): Generate and process
         SegmentList asterismBase = generateAsterism(cell1);
         // Prune asterism to query cell - clips segments at cell boundary with EDGE points
@@ -879,19 +839,6 @@ public class DendrySampler implements Sampler {
         return new Point2D(cellX + px, cellY + py);
     }
 
-    /**
-     * Get cell data - uses cache if enabled, otherwise generates directly.
-     */
-    private CellData getCellData(int cellX, int cellY) {
-        if (useCache && cellCache != null) {
-            return cellCache.get(packKey(cellX, cellY));
-        }
-        // Direct generation without caching
-        Point2D point = generatePoint(cellX, cellY);
-        int branches = computeBranchCount(cellX, cellY);
-        return new CellData(point, branches);
-    }
-
     private Random initRandomGenerator(int x, int y, int level) {
         long seed = (541L * x + 79L * y + level * 863L + salt) & 0x7FFFFFFFL;
         return new Random(seed);
@@ -962,20 +909,37 @@ public class DendrySampler implements Sampler {
         // Generate pointsPerAxis^2 points spanning the entire world cell [worldCellX, worldCellX+1)
         for (int i = 0; i < pointsPerAxis; i++) {
             for (int j = 0; j < pointsPerAxis; j++) {
-                // Position point at center of each grid cell with deterministic jitter
-                double baseX = worldCellX + (j + 0.5) * gridSpacing;
-                double baseY = worldCellY + (i + 0.5) * gridSpacing;
+                double cellMinX = worldCellX + j * gridSpacing;
+                double cellMinY = worldCellY + i * gridSpacing;
 
-                // Add deterministic jitter based on position and level
-                Random rng = initRandomGenerator((int)(baseX * 10000), (int)(baseY * 10000), level);
-                double jitterX = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
-                double jitterY = (rng.nextDouble() - 0.5) * gridSpacing * 0.8;
+                // Deterministic jitter offset for the probe grid
+                Random rng = initRandomGenerator((int)(cellMinX * 10000), (int)(cellMinY * 10000), level);
+                double jitterX = rng.nextDouble() * 0.5;  // [0, 0.5) offset for probe grid
+                double jitterY = rng.nextDouble() * 0.5;
 
-                double px = baseX + jitterX;
-                double py = baseY + jitterY;
-                double elevation = evaluateControlFunction(px, py);
+                // Probe 4x4 grid within sub-cell, find lowest elevation
+                double boundary = 0.05;  // 5% inset from sub-cell edges
+                double lowestElev = Double.MAX_VALUE;
+                double bestX = cellMinX + 0.5 * gridSpacing;
+                double bestY = cellMinY + 0.5 * gridSpacing;
 
-                points.add(new Point3D(px, py, elevation));
+                int probeGrid = 4;
+                for (int pi = 0; pi < probeGrid; pi++) {
+                    for (int pj = 0; pj < probeGrid; pj++) {
+                        double tx = boundary + (pj + jitterX) / probeGrid * (1.0 - 2 * boundary);
+                        double ty = boundary + (pi + jitterY) / probeGrid * (1.0 - 2 * boundary);
+                        double px = cellMinX + tx * gridSpacing;
+                        double py = cellMinY + ty * gridSpacing;
+                        double elev = evaluateControlFunction(px, py);
+                        if (elev < lowestElev) {
+                            lowestElev = elev;
+                            bestX = px;
+                            bestY = py;
+                        }
+                    }
+                }
+
+                points.add(new Point3D(bestX, bestY, lowestElev));
             }
         }
 
@@ -2017,8 +1981,8 @@ public class DendrySampler implements Sampler {
     private void connectAndDefineSegmentsV2(UnconnectedPoints unconnected, SegmentList segList,
                                              double maxSegmentDistance, double mergeDistance,
                                              int level, int cellX, int cellY) {
-        double maxDistSq = maxSegmentDistance; // * maxSegmentDistance;
-        double mergeDistSq = mergeDistance; // * mergeDistance;
+        double maxDist = maxSegmentDistance;
+        double mergeDist = mergeDistance;
 
         // Phase A: For level 0, build trunk from lowest point
         if (level == 0) {
@@ -2076,25 +2040,65 @@ public class DendrySampler implements Sampler {
         sortedByDistance.sort((a, b) -> Integer.compare(a[1], b[1]));
 
         // Step 3: Process points in sorted order (closest to furthest from initial segment list)
+        // Track segment budget for highest level when maxSegmentsPerLevel is set
+        boolean budgetLimited = (level == resolution && maxSegmentsPerLevel < Integer.MAX_VALUE);
+        int initialSegCount = budgetLimited ? segList.getSegmentCount() : 0;
+
         for (int[] entry : sortedByDistance) {
             int unconnIdx = entry[0];
 
             // Skip if already removed (shouldn't happen but safety check)
             if (unconnected.isRemoved(unconnIdx)) continue;
 
+            // Check budget before attempting connection
+            if (budgetLimited) {
+                int segmentsCreated = segList.getSegmentCount() - initialSegCount;
+                if (segmentsCreated >= maxSegmentsPerLevel) break;
+            }
+
             NetworkPoint unconnPt = unconnected.getPoint(unconnIdx);
 
             // Find best neighbor in SegmentList for this point
-            int neighborIdx = findBestNeighborV2(unconnPt, segList, maxDistSq, mergeDistSq, level);
+            int neighborIdx = findBestNeighborV2(unconnPt, segList, maxDist, mergeDist, level);
 
             if (neighborIdx < 0) {
                 unconnected.markRemoved(unconnIdx);
                 continue;
             }
 
+            // Save state for potential rollback if crossing detected
+            int pointsBefore = segList.getPointCount();
+            int segsBefore = segList.getSegmentCount();
+
             // Create connection: move point to SegmentList and create segment
             unconnected.markRemoved(unconnIdx);
-            segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
+            if (budgetLimited) {
+                int segBudget = maxSegmentsPerLevel - (segList.getSegmentCount() - initialSegCount);
+                segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance, segBudget);
+            } else {
+                segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
+            }
+
+            // Check for crossings between newly added segments and pre-existing ones
+            boolean hasCrossing = false;
+            List<SegmentIdx> allSegs = segList.getSegments();
+            for (int i = segsBefore; i < segList.getSegmentCount() && !hasCrossing; i++) {
+                SegmentIdx newSeg = allSegs.get(i);
+                Point2D newA = newSeg.getSrt(segList).projectZ();
+                Point2D newB = newSeg.getEnd(segList).projectZ();
+                for (int j = 0; j < segsBefore; j++) {
+                    SegmentIdx existing = allSegs.get(j);
+                    Point2D exA = existing.getSrt(segList).projectZ();
+                    Point2D exB = existing.getEnd(segList).projectZ();
+                    if (segmentsIntersect(newA, newB, exA, exB)) {
+                        hasCrossing = true;
+                        break;
+                    }
+                }
+            }
+            if (hasCrossing) {
+                segList.rollback(pointsBefore, segsBefore);
+            }
         }
     }
 
@@ -2104,51 +2108,87 @@ public class DendrySampler implements Sampler {
      */
     private void buildTrunkV2(UnconnectedPoints unconnected, SegmentList segList,
                                double maxSegmentDistance, double mergeDistance, int level, int cellX, int cellY) {
-        double maxDistSq = maxSegmentDistance; // * maxSegmentDistance;
+        double maxDist = maxSegmentDistance;
 
         // Find lowest unconnected point to start trunk
         int startIdx = unconnected.findLowestUnconnected();
         if (startIdx < 0) return;
 
-        // Get first trunk point
+        // Get first trunk point and add it to the segment list
         NetworkPoint startPt = unconnected.removeAndGet(startIdx);
         NetworkPoint trunkStartPt = new NetworkPoint(startPt.position, -1, PointType.TRUNK, level);
 
         int maxIterations = unconnected.totalSize() + 1;
         int iterations = 0;
         boolean firstSegment = true;
-        int currentIdx = -1;
 
-        // Extend trunk uphill
+        // Track which point indices are eligible for branching (upper half of latest segment)
+        List<Integer> searchableIndices = new ArrayList<>();
+
+        // Extend trunk uphill — each iteration can branch from the upper half of the latest segment
         while (iterations < maxIterations) {
             iterations++;
 
-            // Find best uphill neighbor from the current position
-            Point3D searchPos = firstSegment ? trunkStartPt.position : segList.getPoint(currentIdx).position;
-            int nextUnconnIdx = findBestTrunkNeighbor(unconnected, searchPos, maxDistSq, level);
+            int bestUnconnIdx = -1;
+            int bestTrunkIdx = -1;
+            double bestSlope = 0;
 
-            if (nextUnconnIdx < 0) {
-                // No more uphill connections
+            if (firstSegment) {
+                // Only one candidate trunk point: the start point (not yet in segList)
+                bestUnconnIdx = findBestTrunkNeighbor(unconnected, trunkStartPt.position, maxDist, level);
+                bestTrunkIdx = -1; // sentinel: use trunkStartPt
+            } else {
+                // Search only from the upper-half points of the latest segment
+                for (int idx : searchableIndices) {
+                    NetworkPoint trunkPt = segList.getPoint(idx);
+
+                    int candidateIdx = findBestTrunkNeighbor(unconnected, trunkPt.position, maxDist, level);
+                    if (candidateIdx < 0) continue;
+
+                    NetworkPoint candidate = unconnected.getPoint(candidateIdx);
+                    double dist = trunkPt.position.projectZ().distanceTo(candidate.position.projectZ());
+                    if (dist < MathUtils.EPSILON) continue;
+                    double slope = -calculateNormalizedSlope(trunkPt.position.z, candidate.position.z, dist, level);
+                    if (slope > bestSlope) {
+                        bestSlope = slope;
+                        bestUnconnIdx = candidateIdx;
+                        bestTrunkIdx = idx;
+                    }
+                }
+            }
+
+            if (bestUnconnIdx < 0) {
                 if (firstSegment) {
-                    // No neighbor found for first point - just add it alone
                     segList.addPoint(trunkStartPt.position, PointType.TRUNK, level);
                 }
                 break;
             }
 
             // Get next trunk point
-            NetworkPoint nextPt = unconnected.removeAndGet(nextUnconnIdx);
+            NetworkPoint nextPt = unconnected.removeAndGet(bestUnconnIdx);
             NetworkPoint trunkNextPt = new NetworkPoint(nextPt.position, -1, PointType.TRUNK, level);
 
+            // Record point count before adding so we can identify new points
+            int pointsBefore = segList.getPointCount();
+
             if (firstSegment) {
-                // First segment: use addSegmentWithDivisions with two new NetworkPoints
-                // Returns the index of trunkNextPt (the uphill endpoint for continuation)
-                currentIdx = segList.addSegmentWithDivisions(trunkStartPt, trunkNextPt, level, mergeDistance);
+                segList.addSegmentWithDivisions(trunkStartPt, trunkNextPt, level, mergeDistance);
                 firstSegment = false;
             } else {
-                // Subsequent segments: use addSegmentWithDivisions with new NetworkPoint and existing index
-                // Returns the index of trunkNextPt (the new point for continuation)
-                currentIdx = segList.addSegmentWithDivisions(trunkNextPt, currentIdx, level, mergeDistance);
+                segList.addSegmentWithDivisions(trunkNextPt, bestTrunkIdx, level, mergeDistance);
+            }
+
+            // Determine searchable indices for next iteration: upper half of newly created points
+            // New points are in range [pointsBefore, segList.getPointCount())
+            // The endpoint (trunkNextPt, the uphill end) is always included.
+            // "Upper half" = the points closer to the end (higher indices in the subdivision chain)
+            int pointsAfter = segList.getPointCount();
+            int newPointCount = pointsAfter - pointsBefore;
+            int upperHalfStart = pointsBefore + (newPointCount / 2);  // skip lower half
+
+            searchableIndices.clear();
+            for (int i = upperHalfStart; i < pointsAfter; i++) {
+                searchableIndices.add(i);
             }
         }
 
@@ -2158,27 +2198,24 @@ public class DendrySampler implements Sampler {
 
     /**
      * Calculate normalized slope between two points with distance falloff.
-     * At level 0 with minimum set, uses minimum elevation for candidate.
      *
      * @param sourceZ Source point elevation
      * @param candidateZ Candidate point elevation
      * @param dist 2D distance between points
-     * @param level Current level (for minimum handling at level 0)
-     * @return Normalized slope (sourceZ - effectiveCandidateZ) / dist^DISTANCE_FALLOFF_POWER
+     * @param level Current level
+     * @return Normalized slope (sourceZ - candidateZ) / dist^DISTANCE_FALLOFF_POWER
      */
     private double calculateNormalizedSlope(double sourceZ, double candidateZ, double dist, int level) {
-        // At level 0 with minimum set, use minimum elevation for candidates
-        double effectiveCandidateZ = candidateZ;
-        double heightDiff = sourceZ - effectiveCandidateZ;
+        double heightDiff = sourceZ - candidateZ;
         return heightDiff / Math.pow(dist, DISTANCE_FALLOFF_POWER);
     }
 
     /**
      * Find best uphill trunk neighbor from unconnected points.
-     * Searches for the steepest uphill candidate within maxDistSq.
+     * Searches for the steepest uphill candidate within maxDist.
      */
     private int findBestTrunkNeighbor(UnconnectedPoints unconnected, Point3D currentPos,
-                                       double maxDistSq, int level) {
+                                       double maxDist, int level) {
         Point2D currentPos2D = currentPos.projectZ();
         double bestSlope = 0;  // Must be positive (uphill)
         int bestUnconnIdx = -1;
@@ -2189,10 +2226,8 @@ public class DendrySampler implements Sampler {
             if (candidate.pointType == PointType.EDGE) continue;
 
             Point2D candidatePos = candidate.position.projectZ();
-            double distSq = currentPos2D.distanceSquaredTo(candidatePos);
-            if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
-
-            double dist = Math.sqrt(distSq);
+            double dist = currentPos2D.distanceTo(candidatePos);
+            if (dist > maxDist || dist < MathUtils.EPSILON) continue;
             // For trunk, we want uphill: candidate - current (inverted from normal)
             double normalizedSlope = -calculateNormalizedSlope(currentPos.z, candidate.position.z, dist, level);
             if (normalizedSlope <= 0) continue;
@@ -2208,60 +2243,66 @@ public class DendrySampler implements Sampler {
 
     /**
      * V2: Find best neighbor in SegmentList for a point.
-     * Uses priority rules: merge distance first, then lowest slope.
+     * Uses two priority tiers:
+     *   A. Merge distance: closest candidate within merge range
+     *   B. Blended score: dist * levelPenalty / slopeFactor (lower = better)
+     *      - Prefers closer candidates (small dist)
+     *      - Prefers steeper downhill candidates (large slopeFactor)
+     *      - Prefers lower-level candidates (levelPenalty 1.0 vs SAME_LEVEL_DISTANCE_PENALTY)
+     *      - Branch encouragement boosts slope for already-connected candidates
      */
     private int findBestNeighborV2(NetworkPoint sourcePt, SegmentList segList,
-                                    double maxDistSq, double mergeDistSq, int level) {
+                                    double maxDist, double mergeDist, int level) {
         Point2D sourcePos = sourcePt.position.projectZ();
 
-        double bestdistSq = Double.MAX_VALUE;
+        // Priority A: closest within merge distance
+        double bestMergeDist = Double.MAX_VALUE;
         int bestNeighborWithinMerge = -1;
-        double bestSlopeOverall = Double.MIN_VALUE;
-        int bestNeighborOverall = -1;
+
+        // Priority B: blended distance + slope + level score (lower = better)
+        double bestBlendedScore = Double.MAX_VALUE;
+        int bestBlendedNeighbor = -1;
 
         for (int i = 0; i < segList.getPointCount(); i++) {
             NetworkPoint candidate = segList.getPoint(i);
             if (candidate.pointType == PointType.EDGE) continue;
-
-            // Skip if already has 5+ connections (full)
             if (candidate.connections >= 5) continue;
 
             Point2D candidatePos = candidate.position.projectZ();
-            double distSq = sourcePos.distanceSquaredTo(candidatePos);
+            double dist = sourcePos.distanceTo(candidatePos);
+            if (dist > maxDist || dist < MathUtils.EPSILON) continue;
 
-            if (distSq > maxDistSq || distSq < MathUtils.EPSILON) continue;
-
-            // Calculate normalized slope using common helper
-            double dist = Math.sqrt(distSq);
-            double normalizedSlope = calculateNormalizedSlope(sourcePt.position.z, candidate.position.z, dist, level);
+            double normalizedSlope = calculateNormalizedSlope(
+                sourcePt.position.z, candidate.position.z, dist, level);
 
             // Level 1+ has slope cutoff
-            if (level > 0 && (normalizedSlope < lowestSlopeCutoff)) {
-                continue;
-            }
+            if (level > 0 && normalizedSlope < lowestSlopeCutoff) continue;
 
-            // Apply branch encouragement if candidate has 2+ connections
-            double effectiveSlope = normalizedSlope;
-            if (candidate.connections >= 1) {
-                effectiveSlope *= BRANCH_ENCOURAGEMENT_FACTOR;
-            }
-
-            // Priority A: Prefer neighbors within merge distance
-            if (distSq <= mergeDistSq) {
-                if (distSq < bestdistSq) {
-                    bestdistSq = distSq;
+            // Priority A: merge distance
+            if (dist <= mergeDist) {
+                if (dist < bestMergeDist) {
+                    bestMergeDist = dist;
                     bestNeighborWithinMerge = i;
                 }
             }
 
-            // Priority B: Track overall best
-            if (effectiveSlope > bestSlopeOverall) {
-                bestSlopeOverall = effectiveSlope;
-                bestNeighborOverall = i;
+            // Priority B: blended score
+            // slopeFactor: how far above the cutoff this candidate is (always positive)
+            double slopeFactor = normalizedSlope - lowestSlopeCutoff + MathUtils.EPSILON;
+            if (candidate.connections >= 1) {
+                slopeFactor *= BRANCH_ENCOURAGEMENT_FACTOR;
+            }
+            double levelPenalty = (candidate.level < level) ? 1.0 : SAME_LEVEL_DISTANCE_PENALTY;
+            double blendedScore = dist * levelPenalty / Math.pow(slopeFactor, SLOPE_INFLUENCE);
+            if (blendedScore < bestBlendedScore) {
+                bestBlendedScore = blendedScore;
+                bestBlendedNeighbor = i;
             }
         }
 
-        return (bestNeighborWithinMerge >= 0) ? bestNeighborWithinMerge : bestNeighborOverall;
+        // Priority: merge > blended
+        if (bestNeighborWithinMerge >= 0) return bestNeighborWithinMerge;
+        return bestBlendedNeighbor;
     }
 
 
@@ -2298,6 +2339,21 @@ public class DendrySampler implements Sampler {
         }
 
         return result;
+    }
+
+    /**
+     * Test if two line segments intersect in 2D (excluding shared endpoints).
+     * Uses parametric intersection with epsilon margins to avoid false positives
+     * at endpoints where segments naturally meet.
+     */
+    private boolean segmentsIntersect(Point2D a1, Point2D a2, Point2D b1, Point2D b2) {
+        double d1x = a2.x - a1.x, d1y = a2.y - a1.y;
+        double d2x = b2.x - b1.x, d2y = b2.y - b1.y;
+        double cross = d1x * d2y - d1y * d2x;
+        if (Math.abs(cross) < MathUtils.EPSILON) return false; // parallel
+        double t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / cross;
+        double u = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / cross;
+        return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
     }
 
     /**
@@ -3248,6 +3304,17 @@ public class DendrySampler implements Sampler {
                     boolean srtNear = isPointNearChunk(srt, chunk, chunkSizeGrid);
                     boolean endNear = isPointNearChunk(end, chunk, chunkSizeGrid);
 
+                    // If neither endpoint is near, check midpoint for segments crossing at corners
+                    if (!srtNear && !endNear) {
+                        Point3D mid = new Point3D(
+                            (srt.x + end.x) * 0.5,
+                            (srt.y + end.y) * 0.5,
+                            (srt.z + end.z) * 0.5);
+                        if (isPointNearChunk(mid, chunk, chunkSizeGrid)) {
+                            srtNear = true; // treat as near so we enter the block below
+                        }
+                    }
+
                     if (srtNear || endNear) {
                         // Convert to Segment3D and add to list
                         Segment3D seg3d = segIdx.resolve(segmentList);
@@ -3277,20 +3344,27 @@ public class DendrySampler implements Sampler {
 
     /**
      * Check if a point is within maxDistGrid of a chunk boundary.
+     * Uses the minimum of the per-axis distances to the chunk border,
+     * so a point only needs to be close on ONE axis to be retained.
      * All coordinates are in grid coordinate space.
      * @param point Point in grid coordinates
      * @param chunk BigChunk with gridOriginX/Y in grid coordinates
      * @param chunkSizeGrid Size of chunk in grid coordinates
      */
     private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSizeGrid) {
-        // Expanded chunk bounds in grid coordinates
-        double minX = chunk.gridOriginX - maxDistGrid;
-        double maxX = chunk.gridOriginX + chunkSizeGrid + maxDistGrid;
-        double minY = chunk.gridOriginY - maxDistGrid;
-        double maxY = chunk.gridOriginY + chunkSizeGrid + maxDistGrid;
+        double chunkMaxX = chunk.gridOriginX + chunkSizeGrid;
+        double chunkMaxY = chunk.gridOriginY + chunkSizeGrid;
 
-        return point.x >= minX && point.x <= maxX &&
-               point.y >= minY && point.y <= maxY;
+        // Per-axis distance to chunk border (0 if inside chunk on that axis)
+        double distX = (point.x < chunk.gridOriginX) ? chunk.gridOriginX - point.x
+                     : (point.x > chunkMaxX) ? point.x - chunkMaxX
+                     : 0;
+        double distY = (point.y < chunk.gridOriginY) ? chunk.gridOriginY - point.y
+                     : (point.y > chunkMaxY) ? point.y - chunkMaxY
+                     : 0;
+
+        // Keep the point if the minimum axis distance is within maxDistGrid
+        return Math.min(distX, distY) <= maxDistGrid;
     }
 
     /**
@@ -3524,26 +3598,41 @@ public class DendrySampler implements Sampler {
      * Interpolate tangent at parameter t along the segment.
      */
     private dendryterra.math.Vec2D interpolateTangent(Segment3D seg, double t) {
-        if (seg.tangentSrt != null && seg.tangentEnd != null) {
-            // Lerp between tangents
-            return new dendryterra.math.Vec2D(
-                seg.tangentSrt.x + t * (seg.tangentEnd.x - seg.tangentSrt.x),
-                seg.tangentSrt.y + t * (seg.tangentEnd.y - seg.tangentSrt.y)
-            ).normalize();
-        } else if (seg.tangentSrt != null) {
-            return seg.tangentSrt;
-        } else if (seg.tangentEnd != null) {
-            return seg.tangentEnd;
-        } else {
-            // No tangents - use segment direction
-            double dx = seg.end.x - seg.srt.x;
-            double dy = seg.end.y - seg.srt.y;
+        if (seg.tangentSrt != null && seg.tangentEnd != null && useSplines) {
+            // True Hermite spline derivative: H'(t) = dh00*P0 + dh10*T0*s + dh01*P1 + dh11*T1*s
+            double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
+            double s = segLen * tangentStrength * curvature;
+            double t2 = t * t;
+
+            double dh00 = 6 * t2 - 6 * t;
+            double dh10 = 3 * t2 - 4 * t + 1;
+            double dh01 = -6 * t2 + 6 * t;
+            double dh11 = 3 * t2 - 2 * t;
+
+            double dx = dh00 * seg.srt.x + dh10 * seg.tangentSrt.x * s
+                       + dh01 * seg.end.x + dh11 * seg.tangentEnd.x * s;
+            double dy = dh00 * seg.srt.y + dh10 * seg.tangentSrt.y * s
+                       + dh01 * seg.end.y + dh11 * seg.tangentEnd.y * s;
+
             double len = Math.sqrt(dx * dx + dy * dy);
-            if (len > 0) {
+            if (len > MathUtils.EPSILON) {
                 return new dendryterra.math.Vec2D(dx / len, dy / len);
-            } else {
-                return new dendryterra.math.Vec2D(1, 0);  // Default
             }
+        }
+        // Fallback: use single tangent or segment direction
+        if (seg.tangentSrt != null && seg.tangentEnd == null) {
+            return seg.tangentSrt;
+        } else if (seg.tangentEnd != null && seg.tangentSrt == null) {
+            return seg.tangentEnd;
+        }
+        // No tangents or Hermite derivative was zero - use segment direction
+        double dx = seg.end.x - seg.srt.x;
+        double dy = seg.end.y - seg.srt.y;
+        double len = Math.sqrt(dx * dx + dy * dy);
+        if (len > 0) {
+            return new dendryterra.math.Vec2D(dx / len, dy / len);
+        } else {
+            return new dendryterra.math.Vec2D(1, 0);  // Default
         }
     }
 

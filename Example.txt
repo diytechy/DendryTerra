@@ -1,23 +1,23 @@
-##################COMMON################
-
-testnoise: &testnoise
-  dimensions: 2
-  type: "DOMAIN_WARP"
-  amplitude: 10
-  warp:
-    type: "OPEN_SIMPLEX_2"
-    frequency: 0.01
+type: DENDRY
+n: 0                    # Resolution levels (1-5)
+epsilon: 0              # Point distribution bias [0, 0.5)
+delta: 0.05             # Segment displacement
+cachepixels: 23.1
+slope: 0.001              # Valley/cliff factor
+gridsize: 2000      # Grid scaling (2000)
+curvature: 1.0
+constellation-scale: 1
+lowest-slope-cutoff: -1000
+debug: 0
+sampler:                # Optional control function
+  type: PROBABILITY
   sampler:
-    type: "FBM"
-    octaves: 2
-    sampler:
-      type: "CELLULAR"
-      return: "CellValue"
-      frequency: 0.01
-	  
-###################ELEVATION##############
+    type: OPEN_SIMPLEX_2
+    frequency: 0.0001
+	
+## Color definition for exposing the default PIXEL_RIVER
 
-type: EXPRESSION
-expression: testnoise(x,z)
-samplers:
-  testnoise: *testnoise
+0.0, 0.0, 0.0, 1.0
+1.0, 1.0, 1.0, 1.0
+1.0001, 0.0, 1.0, 0.0
+50.0, 0.0, 0.0, 0.0

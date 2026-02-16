@@ -1361,3 +1361,67 @@ The pixel cache (MAX_PIXEL_CACHE_BYTES) and big chunk cache (BigChunkCache) shou
 ##############################################################
 
 Now add a another array or similar (like the array tracking the number of connections for the big cache generation), with a boolean indicating if the segment ends on a point that is connected to a lower level segment (a higher level / narrower river flowing into a lower level / wider river).  While iterating through segments, if the segment is flowing into a lower level / wider river, and the end point only has a single connection, linearly increase the width over the length of the segment so that the width of the higher level segment matches the width of the lower level segment when it reaches the end point.  This will create a smooth transition when a single higher level river flows into a lower level river.
+
+##############################
+
+Looking at the DendryTemplate I'm trying to remember how the following variables are being used.
+
+Confirm slope usage
+Confirm "lowest-slope-cutoff" usage (Variable lowestSlopeCutoff)
+Confirm "slope-when-straight" usage (Variable slopeWhenStraight)
+
+Are they the slope against the cell size?  (So does a slope o 0.5 mean a y change o 0.5 over the gridsize - real world units with a default o 1000?  Do all slope parameters below get compared with similar coordinate definitions?)
+
+###################################################
+
+I am now seeing more segments overlap, likely because the slope parameters have been adjusted causing connection points to prefer downstream connections due to slope magnification.  Can you point me to the code where connection preferences are made?  I likely just need to increase the falloff power to make connections prefer closer paths to segments.
+
+##################################################
+
+2 new issues:
+
+I'm seeing rendering where a segment gets "cut out" from a bigcache, likely because the segment pruning around bigchunks is too aggressive.  Instead of using manhattan distance, make 2 changes to the way segments are selected / retained for bigChunk evaluation:
+
+1. Don't use manhatten distance, just use the minimum between the x and y coordinates of the sample end / start point and the bigchunk border.  This way more segments will be kept.  Also if a segment appears to be out of bounds, make another distance check on the midpoint between the segment start / end, in case the segment happens to be crossing at the corner.
+
+2. Create a plan so that the connection have a stronger preference toward closer connections and connections at a lower level (level-1), as it still seems multiple segments at level 1 overlap level 0.  I may try increasing the falloff power as well, but right now the connection preference is only determined by slope that is magnified by distance, it may make more sense to have a parallel computation that prefers connections on distance alone so long as the slope exceeds the lowest slope cutoff level.
+
+#########################################
+
+I set SLOPE_INFLUENCE to 0 and SAME_LEVEL_DISTANCE_PENALTY to 1, but I am still seeing segment overlaps (which I would not expect).  After each point is connected and segment created along with it subdivision points, can you confirm all now-connected points of that segment are available for the next unconnected point to connect to?  Can you see if there may be other defects in the way segments are connecting that is preventing connections from working as expected?  Are points for subdivision being allocated the correct elevation (interpolated between the start elevation and the elevation off the point it ends on)
+
+########################
+
+No something more fundamental is missing.
+
+Looking at the unconnected points from debug 40 (Canidates.png) the connections are certainly not preferring closest points on the level 0 segment (which should have multiple points along the segment due to subdivision)
+
+I am seeing crossing segments (Crossing.png) but due to point candidates I would expect something more like Expected.png.
+
+Can you verify each time a segment and points are added to the segment list with subdivision, all those points become available to connect when the unconnected point is searching for viable connection candidates.
+
+###############################################
+
+No, let's add a new parameter called max-segments-per-level to debug this.
+
+By default, max-segments-per-level will be 500.
+
+When at the highest defined level (Current level = n) and connecting segments ("for (int[] entry : sortedByDistance)") this new parameter will limit the number of segments that will get created to that new parameter.  This parameter will limit ALL new segments at the set level including segments that were the result of subdivision.  Thus, if max-segments-per-level is 1, but the best neighbor was intended to create 3 segments due to the max segment, only create the first segment (segment closest to the end).  This will allow me to increment max-segments-per-level and rerender to see how the tree is growing and what the tree looks like right before the segment overlap occurs.
+
+###############################################
+
+The issue was due to the lowest-slope-cutoff forcing unconnected points to search for connections with valid points that eventually resulted in segment crossing.
+
+Make a plan for the following updates:
+
+1. After connecting a point, check if the new segment crosses any existing segment and reject if so.  Like current conditions, if an unconnected point cannot make a connection, it should be removed.
+
+2. When creating unconnected points for level 1+, instead of creating a single point, create evaluate 16 points in a 4x4 grid within the generatePointsForWorldCell of generatePointsForWorldCell, then select the lowest of the 9 points.  This would be similar to point creation for level 0, and helps roughly ensure points are located at local minimum.
+
+3. Finally, investigate an issue on PIXEL_RIVER segment rendering:
+
+The perpendicular tangent used to determine the cone angle during PIXEL_RIVER appears to NOT span across the perpendicular to the segment, and because of this the river width is skewed and actually becomes smaller than the real river width.  The max-dist is also not achieved.  Is the perpendicular correctly computed given teh tangent angle and the hermite spline end conditions?  Is it possible an approximation is being used that is resulting in inaccuracies?
+
+####################################3
+
+The function "boundTangentMagnitude" should be renamed to "ScaleTangentMagnitude" or similar such that the magnitude of the tangent matches the input maxMagnitude, instead of just limiting it.
