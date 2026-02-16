@@ -50,7 +50,7 @@ The benchmark runner compares the following configurations:
 
 ### PIXEL_RIVER (New Implementation)
 - **Architecture**: Dual-cache system
-  - SegmentList cache (20 MB) - Caches full segment lists per cell
+  - SegmentList cache (10 MB) - Caches full segment lists per cell
   - BigChunk cache (20 MB) - 256x256 grids of normalized elevation/distance
 - **Memory per chunk**: ~132 KB (256×256×2 bytes + overhead)
 - **Storage**: UInt8 normalized elevation and distance values
