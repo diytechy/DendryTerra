@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.github.diytechy"
-version = "1.0.0"
+version = "1.0.0-beta"
 
 repositories {
     mavenCentral()
@@ -65,16 +65,16 @@ tasks.jar {
 publishing {
     repositories {
         maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/diytechy/DendryTerra")
+            name = "Repsy"
+            url = uri("https://repo.repsy.io/mvn/diytechy/dendryterra")
             credentials {
-                username = project.findProperty("gpr.user") as String? ?: System.getenv("GITHUB_ACTOR")
-                password = project.findProperty("gpr.key") as String? ?: System.getenv("GITHUB_TOKEN")
+                username = project.findProperty("repsy.user") as String? ?: System.getenv("REPSY_USERNAME")
+                password = project.findProperty("repsy.key") as String? ?: System.getenv("REPSY_PASSWORD")
             }
         }
     }
     publications {
-        create<MavenPublication>("gpr") {
+        create<MavenPublication>("repsy") {
             from(components["java"])
             artifactId = "dendryterra"
         }

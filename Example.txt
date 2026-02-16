@@ -1,76 +1,23 @@
-type: DENDRY
-n: 0                    # Resolution levels (1-5)
-epsilon: 0              # Point distribution bias [0, 0.5)
-delta: 0.05             # Segment displacement
-slope: 0.001              # Valley/cliff factor
-gridsize: 1000      # Grid scaling (1000)
-return: distance       # distance, weighted, or elevation
-curvature: 1.0
-ConstellationScale: 2
-sampler:                # Optional control function
-  type: OPEN_SIMPLEX_2
-  frequency: 0.0001
+##################COMMON################
 
-Seed: 2,403
-Voxel Res: 3
-
-
-type: DENDRY
-n: 0                    # Resolution levels (1-5)
-epsilon: 0              # Point distribution bias [0, 0.5)
-delta: 0.05             # Segment displacement
-cachepixels: 20.0
-slope: 0.001              # Valley/cliff factor
-gridsize: 1000      # Grid scaling (1000)
-return: PIXEL_LEVEL       # distance, weighted, or elevation
-curvature: 1.0
-ConstellationScale: 2
-sampler:                # Optional control function
-  type: OPEN_SIMPLEX_2
-  frequency: 0.0001
-  
-type: DENDRY
-n: 0                    # Resolution levels (1-5)
-epsilon: 0              # Point distribution bias [0, 0.5)
-delta: 0.05             # Segment displacement
-cachepixels: 23.1
-slope: 0.001              # Valley/cliff factor
-gridsize: 1000      # Grid scaling (1000)
-return: PIXEL_LEVEL       # distance, weighted, or elevation
-curvature: 1.0
-ConstellationScale: 2
-sampler:                # Optional control function
-  type: OPEN_SIMPLEX_2
-  frequency: 0.0001
-  
-type: DENDRY
-n: 0                    # Resolution levels (1-5)
-epsilon: 0              # Point distribution bias [0, 0.5)
-delta: 0.05             # Segment displacement
-cachepixels: 23.1
-slope: 0.001              # Valley/cliff factor
-gridsize: 2000      # Grid scaling (1000)
-return: PIXEL_DEBUG       # distance, weighted, or elevation
-curvature: 1.0
-constellation-scale: 1
-lowest-slope-cutoff: -1000
-debug: 0
-sampler:                # Optional control function
-  type: PROBABILITY
+testnoise: &testnoise
+  dimensions: 2
+  type: "DOMAIN_WARP"
+  amplitude: 10
+  warp:
+    type: "OPEN_SIMPLEX_2"
+    frequency: 0.01
   sampler:
-    type: OPEN_SIMPLEX_2
-    frequency: 0.0001
+    type: "FBM"
+    octaves: 2
+    sampler:
+      type: "CELLULAR"
+      return: "CellValue"
+      frequency: 0.01
+	  
+###################ELEVATION##############
 
-x: -3,571
-z: -645
-rez: 3
-
-Colordef:
-  
--1.0, 0.0, 0.0, 0.0
-0.0, 0.0, 0.0, 1.0
-1.0, 0.0, 0.0, 1.0
-2.0, 1.00, 1.0, 0.0
-3.0, 0.0, 1.0, 1.0
-4.0, 1.0, 1.0, 1.0
-5.0, 1.0, 0.0, 0.0
+type: EXPRESSION
+expression: testnoise(x,z)
+samplers:
+  testnoise: *testnoise
