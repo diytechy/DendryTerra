@@ -17,15 +17,9 @@ public class BigChunkCache {
     /** LRU counter for cache eviction (incremented on each access) */
     private int lruCounter;
 
-    /** Cache statistics */
-    private long hits;
-    private long misses;
-
     public BigChunkCache() {
         this.cache = new HashMap<>();
         this.lruCounter = 0;
-        this.hits = 0;
-        this.misses = 0;
     }
 
     /**
@@ -41,14 +35,10 @@ public class BigChunkCache {
         BigChunk chunk = cache.get(key);
 
         if (chunk != null) {
-            // Cache hit
-            hits++;
             chunk.lruCounter = ++lruCounter;
             return chunk;
         }
 
-        // Cache miss - create new chunk
-        misses++;
         chunk = new BigChunk(gridOriginX, gridOriginY);
         chunk.lruCounter = ++lruCounter;
 
@@ -82,31 +72,6 @@ public class BigChunkCache {
         if (oldestKey != null) {
             cache.remove(oldestKey);
         }
-    }
-
-    /**
-     * Clear all cached chunks.
-     */
-    public void clear() {
-        cache.clear();
-        lruCounter = 0;
-    }
-
-    /**
-     * Get cache statistics as a formatted string.
-     */
-    public String getStats() {
-        long estimatedMemoryKB = (cache.size() * CHUNK_SIZE) / 1024;
-        return String.format("bigchunks=%d, hits=%d, misses=%d, memory=%d KB",
-            cache.size(), hits, misses, estimatedMemoryKB);
-    }
-
-    /**
-     * Reset cache statistics.
-     */
-    public void resetStats() {
-        hits = 0;
-        misses = 0;
     }
 
     /**

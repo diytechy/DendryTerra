@@ -41,12 +41,6 @@ public class DendrySampler implements Sampler {
      */
     private final int debug;
 
-    /**
-     * Minimum elevation for level 0 points. When non-zero, level 0 star points
-     * use this elevation instead of the control function, flattening path preferences.
-     */
-    private final double minimum;
-
     // Configuration parameters
     private final int resolution;
     private final double epsilon;
@@ -61,9 +55,6 @@ public class DendrySampler implements Sampler {
     private final Sampler branchesSampler;
     private final int defaultBranches;
     private final double curvature;
-    private final double curvatureFalloff;
-    private final double connectDistance;
-    private final double connectDistanceFactor;
 
     // Performance flags
     private final boolean useCache;
@@ -104,10 +95,6 @@ public class DendrySampler implements Sampler {
     // BranchEncouragementFactor: Multiply slope by this when neighbor has 2+ connections
     // to encourage attaching to existing flows
     private static final double BRANCH_ENCOURAGEMENT_FACTOR = 2.0;
-    // TangentMagnitudeScale: Scale factor for tangent magnitude in Hermite spline interpolation
-    // Higher values create more pronounced curvature
-    private static final double TANGENT_MAGNITUDE_SCALE = 10.0;
-
     /**
      * Use B-spline (cubic Hermite) interpolation for pixel sampling in PIXEL_DEBUG mode.
      * When true, segments with tangent information will be sampled along the curved spline.
@@ -116,19 +103,12 @@ public class DendrySampler implements Sampler {
     private static final boolean USE_BSPLINE_PIXEL_SAMPLING = true;
 
     /**
-     * Error if any constellation segment is returned with undefined tangents.
-     * When true, throws an error if any segment in the constellation has null tangentSrt or tangentEnd.
-     * Useful for debugging tangent computation issues.
-     */
-    private static final boolean ERROR_ON_UNDEFINED_TANGENT = true;
-
-    /**
      * When true, segmentFill (semicircle fill) is enabled for ALL segment start/end points,
      * not just endpoints with exactly 1 connection.
      */
     private static final boolean ENABLE_SEGMENT_FILL_ALL = true;
 
-    // Star sampling grid size (9x9 grid per cell)
+    // Star sampling grid size (currently 3x3 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
     // Star sample boundary margin (fraction of cell size)
     private static final double STAR_SAMPLE_BOUNDARY = 0.03;
@@ -154,7 +134,6 @@ public class DendrySampler implements Sampler {
 
     // PIXEL_RIVER parameters
     private final double max;         // Maximum expected elevation for normalization
-    private final double maxDist;     // Maximum distance in sampler coordinates
     private final double maxDistGrid; // Maximum distance in grid coordinates (maxDist / gridsize)
 
     // Cache configuration
@@ -327,9 +306,6 @@ public class DendrySampler implements Sampler {
         this.branchesSampler = branchesSampler;
         this.defaultBranches = defaultBranches;
         this.curvature = curvature;
-        this.curvatureFalloff = curvatureFalloff;
-        this.connectDistance = connectDistance;
-        this.connectDistanceFactor = connectDistanceFactor;
         this.useCache = useCache;
         this.useParallel = useParallel;
         this.useSplines = useSplines;
@@ -343,13 +319,11 @@ public class DendrySampler implements Sampler {
         this.slopeWhenStraight = slopeWhenStraight;
         this.lowestSlopeCutoff = lowestSlopeCutoff;
         this.debug = debug;
-        this.minimum = minimum;
         this.riverwidthSampler = riverwidthSampler;
         this.defaultRiverwidth = defaultRiverwidth;
         this.borderwidthSampler = borderwidthSampler;
         this.defaultBorderwidth = defaultBorderwidth;
         this.max = max;
-        this.maxDist = maxDist;
         this.maxDistGrid = maxDist / gridsize;  // Convert from sampler to grid coordinates
 
         // Calculate pixel grid size
@@ -916,11 +890,6 @@ public class DendrySampler implements Sampler {
         Point2D point = generatePoint(cellX, cellY);
         int branches = computeBranchCount(cellX, cellY);
         return new CellData(point, branches);
-    }
-
-    private int getBranchCountForCell(Cell cell) {
-        CellData data = getCellData(cell.x, cell.y);
-        return data.branchCount;
     }
 
     private Random initRandomGenerator(int x, int y, int level) {

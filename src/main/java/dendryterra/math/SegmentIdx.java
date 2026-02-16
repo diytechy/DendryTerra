@@ -105,24 +105,6 @@ public final class SegmentIdx {
         );
     }
 
-    // ========== Builder Methods ==========
-
-    /**
-     * Create a new segment with the same endpoints and level but different tangents.
-     */
-    public SegmentIdx withTangents(Vec2D tangentSrt, Vec2D tangentEnd) {
-        return new SegmentIdx(this.srtIdx, this.endIdx, this.level, tangentSrt, tangentEnd,
-                             this.srtType, this.endType);
-    }
-
-    /**
-     * Create a new segment with specified endpoint types.
-     */
-    public SegmentIdx withEndpointTypes(PointType srtType, PointType endType) {
-        return new SegmentIdx(this.srtIdx, this.endIdx, this.level,
-                             this.tangentSrt, this.tangentEnd, srtType, endType);
-    }
-
     // ========== Geometry Methods ==========
 
     /**
@@ -130,15 +112,6 @@ public final class SegmentIdx {
      */
     public boolean hasTangents() {
         return tangentSrt != null || tangentEnd != null;
-    }
-
-    /**
-     * Get squared length of this segment.
-     */
-    public double lengthSquared(SegmentList list) {
-        Point3D s = getSrt(list);
-        Point3D e = getEnd(list);
-        return s.distanceSquaredTo(e);
     }
 
     /**
@@ -151,19 +124,6 @@ public final class SegmentIdx {
     }
 
     /**
-     * Get midpoint of this segment.
-     */
-    public Point3D midpoint(SegmentList list) {
-        Point3D s = getSrt(list);
-        Point3D e = getEnd(list);
-        return new Point3D(
-            (s.x + e.x) / 2.0,
-            (s.y + e.y) / 2.0,
-            (s.z + e.z) / 2.0
-        );
-    }
-
-    /**
      * Interpolate along the segment.
      * @param t parameter from 0 (at srt) to 1 (at end)
      */
@@ -171,15 +131,6 @@ public final class SegmentIdx {
         Point3D s = getSrt(list);
         Point3D e = getEnd(list);
         return Point3D.lerp(s, e, t);
-    }
-
-    /**
-     * Project to 2D by dropping z coordinates.
-     */
-    public Segment2D projectZ(SegmentList list) {
-        Point3D s = getSrt(list);
-        Point3D e = getEnd(list);
-        return new Segment2D(s.projectZ(), e.projectZ());
     }
 
     @Override

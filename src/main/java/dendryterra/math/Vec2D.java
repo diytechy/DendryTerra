@@ -20,14 +20,6 @@ public final class Vec2D {
         this.y = b.y - a.y;
     }
 
-    public Vec2D add(Vec2D other) {
-        return new Vec2D(x + other.x, y + other.y);
-    }
-
-    public Vec2D subtract(Vec2D other) {
-        return new Vec2D(x - other.x, y - other.y);
-    }
-
     public Vec2D scale(double s) {
         return new Vec2D(x * s, y * s);
     }
@@ -48,33 +40,12 @@ public final class Vec2D {
         return x * other.x + y * other.y;
     }
 
-    /**
-     * 2D cross product (returns scalar).
-     */
-    public double cross(Vec2D other) {
-        return x * other.y - y * other.x;
-    }
-
     public Vec2D normalize() {
         double len = length();
         if (len < MathUtils.EPSILON) {
             return new Vec2D(0, 0);
         }
         return new Vec2D(x / len, y / len);
-    }
-
-    /**
-     * Rotate 90 degrees counter-clockwise.
-     */
-    public Vec2D rotateCCW90() {
-        return new Vec2D(-y, x);
-    }
-
-    /**
-     * Rotate 90 degrees clockwise.
-     */
-    public Vec2D rotateCW90() {
-        return new Vec2D(y, -x);
     }
 
     /**

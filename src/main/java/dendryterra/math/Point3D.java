@@ -54,17 +54,6 @@ public final class Point3D {
     }
 
     /**
-     * Get the tangent angle (direction of steepest descent) in radians.
-     * Calculated as the angle of the negative gradient vector.
-     * Returns NaN if slopes are not computed.
-     */
-    public double getTangent() {
-        if (!hasSlope()) return Double.NaN;
-        // Gradient points uphill; tangent for flow is downhill (negative gradient)
-        return Math.atan2(-slopeY, -slopeX);
-    }
-
-    /**
      * Get the tangent as a 2D vector (direction of steepest descent).
      * Returns a normalized Vec2D pointing in the downhill direction.
      * Returns null if slopes are not computed.
@@ -95,16 +84,8 @@ public final class Point3D {
         return new Point3D(x + other.x, y + other.y, z + other.z);
     }
 
-    public Point3D subtract(Point3D other) {
-        return new Point3D(x - other.x, y - other.y, z - other.z);
-    }
-
     public Point3D scale(double s) {
         return new Point3D(x * s, y * s, z * s);
-    }
-
-    public Point3D negate() {
-        return new Point3D(-x, -y, -z);
     }
 
     public double distanceSquaredTo(Point3D other) {

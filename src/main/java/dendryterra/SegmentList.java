@@ -65,27 +65,6 @@ public class SegmentList {
     }
     
     /**
-     * Set the global configuration.
-     */
-    public void setConfig(SegmentListConfig config) {
-        this.config = config;
-    }
-    
-    /**
-     * Get global salt value used for deterministic randomness.
-     */
-    public long getSalt() {
-        return config.salt;
-    }
-    
-    /**
-     * Set global salt value used for deterministic randomness.
-     */
-    public void setSalt(long salt) {
-        config.salt = salt;
-    }
-
-    /**
      * Add a new point with the given position, type, and level.
      * @return The index assigned to this point
      */
@@ -217,18 +196,6 @@ public class SegmentList {
     }
 
     // ========== Segment Operations ==========
-
-    /**
-     * Add a segment and update connection counts on its endpoints.
-     * Note: Currently accepts Segment3D with Point3D srt/end.
-     * After Segment3D is modified to use indices, this will accept index-based segments.
-     */
-    public void addSegment(SegmentIdx segment) {
-        segments.add(segment);
-        // Connection count updates will be handled after Segment3D transition
-        // For now, we'll update counts based on finding points by position
-        updateConnectionCountsForSegment(segment, 1);
-    }
 
     /**
      * Add a segment directly using point indices.
@@ -494,13 +461,6 @@ public class SegmentList {
     }
     
     /**
-     * Helper method to create a vector from an angle.
-     */
-    private Vec2D createVectorFromAngle(double angle) {
-        return new Vec2D(Math.cos(angle), Math.sin(angle));
-    }
-    
-    /**
      * Compute tangents for a connection based on existing connectivity patterns.
      * Uses global configuration parameters.
      */
@@ -676,40 +636,6 @@ public class SegmentList {
         }
     }
 
-    /**
-     * Get the tangent direction of an existing segment connected to a point.
-     * Returns the actual stored tangent from the segment, using index-based lookup.
-     * Note: For C1 continuity, use getContinuousTangent instead.
-     */
-    private Vec2D getExistingConnectionDirection(int pointIdx) {
-        List<SegmentConnection> connections = pointToSegments.get(pointIdx);
-        if (connections == null || connections.isEmpty()) {
-            return null;
-        }
-
-        // Use the first connected segment
-        SegmentConnection conn = connections.get(0);
-        SegmentIdx seg = segments.get(conn.segmentIndex);
-
-        if (conn.isStart) {
-            // Point is at segment start - return the start tangent
-            if (seg.tangentSrt != null) {
-                return seg.tangentSrt;
-            }
-            // Create warning and return null.
-            System.err.println("Warning: No tangent available for segment start point index " + pointIdx);
-            return null;
-        } else {
-            // Point is at segment end - return the end tangent
-            if (seg.tangentEnd != null) {
-                return seg.tangentEnd;
-            }
-            // Create warning and return null.
-            System.err.println("Warning: No tangent available for segment end point index " + pointIdx);
-            return null;
-        }
-    }
-    
     /**
      * Create subdivided segments between two points using spline or linear interpolation.
      * Uses global configuration parameters.
@@ -941,22 +867,6 @@ public class SegmentList {
     }
 
     /**
-     * Remove a segment by index and decrement connection counts.
-     */
-    public void removeSegment(int segmentIndex) {
-        SegmentIdx seg = segments.get(segmentIndex);
-        updateConnectionCountsForSegment(seg, -1);
-        segments.remove(segmentIndex);
-    }
-
-    /**
-     * Get a segment by its index.
-     */
-    public SegmentIdx getSegment(int index) {
-        return segments.get(index);
-    }
-
-    /**
      * Get an unmodifiable view of all segments.
      */
     public List<SegmentIdx> getSegments() {
@@ -1002,20 +912,6 @@ public class SegmentList {
             }
         }
         return result;
-    }
-
-    /**
-     * Check if two points are already connected by a segment.
-     * Uses index-based lookup for O(1) performance.
-     */
-    public boolean areConnected(int idx1, int idx2) {
-        for (SegmentIdx seg : segments) {
-            if ((seg.srtIdx == idx1 && seg.endIdx == idx2) ||
-                (seg.srtIdx == idx2 && seg.endIdx == idx1)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -1105,27 +1001,6 @@ public class SegmentList {
         return points.isEmpty();
     }
 
-    // ========== Internal Helpers ==========
-
-    /**
-     * Update connection counts for points referenced by a segment.
-     * @param delta +1 for adding, -1 for removing
-     */
-    private void updateConnectionCountsForSegment(SegmentIdx segment, int delta) {
-        // Use segment indices directly
-        int srtIdx = segment.srtIdx;
-        int endIdx = segment.endIdx;
-
-        if (srtIdx >= 0 && srtIdx < points.size()) {
-            NetworkPoint p = points.get(srtIdx);
-            points.set(srtIdx, p.withConnections(Math.max(0, p.connections + delta)));
-        }
-        if (endIdx >= 0 && endIdx < points.size()) {
-            NetworkPoint p = points.get(endIdx);
-            points.set(endIdx, p.withConnections(Math.max(0, p.connections + delta)));
-        }
-    }
-
     // ========== Conversion Methods ==========
 
     /**
@@ -1149,82 +1024,6 @@ public class SegmentList {
         }
 
         return result;
-    }
-
-    /**
-     * Convert to List<Segment2D> by projecting all segments to 2D (dropping z coordinates).
-     * Useful for 2D geometric operations and visualization.
-     */
-    public List<Segment2D> toSegment2DList() {
-        List<Segment2D> result = new ArrayList<>();
-
-        for (SegmentIdx seg : segments) {
-            // Resolve indices and project to 2D
-            result.add(seg.projectZ(this));
-        }
-
-        return result;
-    }
-
-    /**
-     * Create a SegmentList from an existing List<Segment3D>.
-     * Used to import segments for evaluation.
-     */
-    public static SegmentList fromSegment3DList(List<Segment3D> segments, int level) {
-        return fromSegment3DList(segments, level, 12345); // Default salt
-    }
-
-    /**
-     * Create a SegmentList from an existing List<Segment3D> with specified salt.
-     * Used to import segments for evaluation.
-     */
-    public static SegmentList fromSegment3DList(List<Segment3D> segments, int level, long salt) {
-        SegmentList result = new SegmentList(salt);
-
-        // Build a map of positions to point indices to avoid duplicates
-        Map<Long, Integer> positionToIndex = new HashMap<>();
-
-        for (Segment3D seg : segments) {
-            // Get or create point for srt (default to KNOT type)
-            int srtIdx = getOrCreatePointIndex(result, positionToIndex, seg.srt, PointType.KNOT, level);
-
-            // Get or create point for end
-            int endIdx = getOrCreatePointIndex(result, positionToIndex, seg.end, PointType.KNOT, level);
-
-            // Add segment using indices (preserving original tangents)
-            result.addBasicSegment(srtIdx, endIdx, level, seg.tangentSrt, seg.tangentEnd);
-        }
-
-        return result;
-    }
-
-    /**
-     * Helper to get or create a point index for a position.
-     */
-    private static int getOrCreatePointIndex(SegmentList list, Map<Long, Integer> positionToIndex,
-                                              Point3D pos, PointType type, int level) {
-        // Quantize position for lookup
-        long key = quantizePosition(pos);
-
-        Integer existingIdx = positionToIndex.get(key);
-        if (existingIdx != null) {
-            return existingIdx;
-        }
-
-        // Create new point
-        int idx = list.addPoint(pos, type, level);
-        positionToIndex.put(key, idx);
-        return idx;
-    }
-
-    /**
-     * Quantize a position to a long key for deduplication.
-     */
-    private static long quantizePosition(Point3D pos) {
-        // Use high precision to avoid false matches
-        long qx = Math.round(pos.x * 100000);
-        long qy = Math.round(pos.y * 100000);
-        return (qx << 32) | (qy & 0xFFFFFFFFL);
     }
 
     @Override

@@ -80,20 +80,6 @@ public final class NetworkPoint {
         return new NetworkPoint(position, newIndex, pointType, level, connections);
     }
 
-    /**
-     * Check if this is a branch point (has 2+ connections, meaning flow passes through).
-     */
-    public boolean isBranchPoint() {
-        return connections >= 2;
-    }
-
-    /**
-     * Check if this is a leaf point (has exactly 1 connection, end of a branch).
-     */
-    public boolean isLeaf() {
-        return connections == 1;
-    }
-
     @Override
     public String toString() {
         return String.format("NetworkPoint(idx=%d, pos=%s, type=%s, level=%d, conn=%d)",

@@ -6,30 +6,20 @@ package dendryterra.math;
  */
 public enum PointType {
 
-    /**
-     * Point was created as a part of segment subdivision (knot point).
-     * Value 1 is above segment lines (0) but below other point types.
-     */
+    /** Point was created as a part of segment subdivision (knot point). */
     KNOT(1),
 
-    /**
-     * Point was part of the original trunk creation (main flow path).
-     */
+    /** Point was part of the original trunk creation (main flow path). */
     TRUNK(2),
 
-    /**
-     * Point exists at the end of a branch on its level.
-     */
+    /** Point exists at the end of a branch on its level. */
     LEAF(3),
-    /**
-     * Point was originally created as a star or initial network point.
-     */
+
+    /** Point was originally created as a star or initial network point. */
     ORIGINAL(4),
 
-    /**
-     * Point was created by clipping a segment at a cell boundary.
-     * Edge points should not be connected to by subsequent levels.
-     */
+    /** Point was created by clipping a segment at a cell boundary.
+     *  Edge points should not be connected to by subsequent levels. */
     EDGE(5);
 
     private final int value;
@@ -44,17 +34,5 @@ public enum PointType {
      */
     public int getValue() {
         return value;
-    }
-
-    /**
-     * Get PointType from numeric value.
-     */
-    public static PointType fromValue(int value) {
-        for (PointType type : values()) {
-            if (type.value == value) {
-                return type;
-            }
-        }
-        return ORIGINAL; // Default fallback
     }
 }

@@ -24,16 +24,10 @@ public class SegmentListCache {
     /** LRU counter for cache eviction */
     private int lruCounter;
 
-    /** Cache statistics */
-    private long hits;
-    private long misses;
-
     public SegmentListCache() {
         this.cache = new HashMap<>();
         this.currentMemory = 0;
         this.lruCounter = 0;
-        this.hits = 0;
-        this.misses = 0;
     }
 
     /**
@@ -47,12 +41,10 @@ public class SegmentListCache {
         CachedSegmentList cached = cache.get(key);
 
         if (cached != null) {
-            hits++;
             cached.lruCounter = ++lruCounter;
             return cached.segmentList;
         }
 
-        misses++;
         return null;
     }
 
@@ -121,32 +113,6 @@ public class SegmentListCache {
                 currentMemory -= removed.memorySize;
             }
         }
-    }
-
-    /**
-     * Clear all cached segment lists.
-     */
-    public void clear() {
-        cache.clear();
-        currentMemory = 0;
-        lruCounter = 0;
-    }
-
-    /**
-     * Get cache statistics as a formatted string.
-     */
-    public String getStats() {
-        long memoryKB = currentMemory / 1024;
-        return String.format("segmentlists=%d, hits=%d, misses=%d, memory=%d KB",
-            cache.size(), hits, misses, memoryKB);
-    }
-
-    /**
-     * Reset cache statistics.
-     */
-    public void resetStats() {
-        hits = 0;
-        misses = 0;
     }
 
     /**

@@ -29,24 +29,10 @@ public final class Segment3D {
     }
 
     /**
-     * Create a new segment with different tangents.
-     */
-    public Segment3D withTangents(Vec2D tangentSrt, Vec2D tangentEnd) {
-        return new Segment3D(this.srt, this.end, tangentSrt, tangentEnd);
-    }
-
-    /**
      * Check if this segment has tangent information.
      */
     public boolean hasTangents() {
         return tangentSrt != null || tangentEnd != null;
-    }
-
-    /**
-     * Get squared length of this segment.
-     */
-    public double lengthSquared() {
-        return srt.distanceSquaredTo(end);
     }
 
     /**
@@ -57,29 +43,11 @@ public final class Segment3D {
     }
 
     /**
-     * Get midpoint of this segment.
-     */
-    public Point3D midpoint() {
-        return new Point3D(
-            (srt.x + end.x) / 2.0,
-            (srt.y + end.y) / 2.0,
-            (srt.z + end.z) / 2.0
-        );
-    }
-
-    /**
      * Interpolate along the segment.
      * @param t parameter from 0 (at srt) to 1 (at end)
      */
     public Point3D lerp(double t) {
         return Point3D.lerp(srt, end, t);
-    }
-
-    /**
-     * Project to 2D by dropping z coordinates.
-     */
-    public Segment2D projectZ() {
-        return new Segment2D(srt.projectZ(), end.projectZ());
     }
 
     @Override

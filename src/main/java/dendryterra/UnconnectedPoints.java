@@ -47,17 +47,6 @@ public class UnconnectedPoints {
         return localIdx;
     }
 
-    /**
-     * Add an existing NetworkPoint to the unconnected pool.
-     * The point is re-indexed with a local index.
-     * @return The new local index assigned to this point
-     */
-    public int addPoint(NetworkPoint point) {
-        int localIdx = nextLocalIndex++;
-        points.add(point.withIndex(localIdx));
-        return localIdx;
-    }
-
     // ========== Access Operations ==========
 
     /**
@@ -93,31 +82,9 @@ public class UnconnectedPoints {
     // ========== Query Operations ==========
 
     /**
-     * Find the highest unconnected point (for trunk building at level 0).
+     * Find the lowest unconnected point (for trunk building at level 0).
      * Skips EDGE points.
-     * @return Local index of highest point, or -1 if none remain
-     */
-    public int findHighestUnconnected() {
-        int bestIdx = -1;
-        double bestZ = Double.NEGATIVE_INFINITY;
-
-        for (int i = 0; i < points.size(); i++) {
-            if (removedIndices.contains(i)) continue;
-            NetworkPoint p = points.get(i);
-            if (p.pointType == PointType.EDGE) continue;
-
-            if (p.position.z > bestZ) {
-                bestZ = p.position.z;
-                bestIdx = i;
-            }
-        }
-        return bestIdx;
-    }
-
-    /**
-     * Find the highest unconnected point (for trunk building at level 0).
-     * Skips EDGE points.
-     * @return Local index of highest point, or -1 if none remain
+     * @return Local index of lowest point, or -1 if none remain
      */
     public int findLowestUnconnected() {
         int bestIdx = -1;
@@ -135,37 +102,6 @@ public class UnconnectedPoints {
         }
         return bestIdx;
     }
-    /**
-     * Find all points within the given horizontal distance of any point in the SegmentList.
-     * Returns local indices of matching unconnected points.
-     */
-    public List<Integer> findPointsNearSegmentList(SegmentList segList, double maxDist) {
-        if (segList.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        List<Integer> result = new ArrayList<>();
-        double maxDistSq = maxDist * maxDist;
-
-        for (int i = 0; i < points.size(); i++) {
-            if (removedIndices.contains(i)) continue;
-            NetworkPoint unconnPt = points.get(i);
-            if (unconnPt.pointType == PointType.EDGE) continue;
-
-            // Check distance to any SegmentList point
-            for (NetworkPoint segPt : segList.getPoints()) {
-                if (segPt.pointType == PointType.EDGE) continue;
-                double distSq = unconnPt.position.projectZ()
-                    .distanceSquaredTo(segPt.position.projectZ());
-                if (distSq <= maxDistSq) {
-                    result.add(i);
-                    break;  // Found a match, no need to check more SegmentList points
-                }
-            }
-        }
-        return result;
-    }
-
     /**
      * Find the unconnected point closest to any point in the SegmentList.
      * Returns a pair of (unconnected local index, segmentList point index).
@@ -253,25 +189,6 @@ public class UnconnectedPoints {
                 action.accept(points.get(i));
             }
         }
-    }
-
-    /**
-     * Iterate over remaining points with their indices.
-     */
-    public void forEachIndexed(IndexedPointConsumer action) {
-        for (int i = 0; i < points.size(); i++) {
-            if (!removedIndices.contains(i)) {
-                action.accept(i, points.get(i));
-            }
-        }
-    }
-
-    /**
-     * Functional interface for indexed iteration.
-     */
-    @FunctionalInterface
-    public interface IndexedPointConsumer {
-        void accept(int index, NetworkPoint point);
     }
 
     @Override
