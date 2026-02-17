@@ -1422,6 +1422,10 @@ Make a plan for the following updates:
 
 The perpendicular tangent used to determine the cone angle during PIXEL_RIVER appears to NOT span across the perpendicular to the segment, and because of this the river width is skewed and actually becomes smaller than the real river width.  The max-dist is also not achieved.  Is the perpendicular correctly computed given teh tangent angle and the hermite spline end conditions?  Is it possible an approximation is being used that is resulting in inaccuracies?
 
-####################################3
+####################################
 
 The function "boundTangentMagnitude" should be renamed to "ScaleTangentMagnitude" or similar such that the magnitude of the tangent matches the input maxMagnitude, instead of just limiting it.
+
+########################################
+
+Consider method to generate points near the cell wall to prevent vertical / horizontal segments from forming naturally against cell boundaries.  Similar to epsilon method used in base Dendry noise sampler.

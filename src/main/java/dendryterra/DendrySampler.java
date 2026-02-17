@@ -903,33 +903,38 @@ public class DendrySampler implements Sampler {
         List<Point3D> points = new ArrayList<>();
         int pointsPerAxis = getPointsPerCellForLevel(level);
 
-        // Grid spacing: world cell is 1x1, divide by points per axis
-        double gridSpacing = 1.0 / pointsPerAxis;
+        // Grid border: assuming equidistantly spaced points, what border ensures maintains spacing between world cells.
+        double gridSpacingBorder = (1.0 / pointsPerAxis)/2;
+
+        // Grid spacing: world cell is 1x1, divide by points per axis and subtract out border.
+        double gridSpacing = ((1.0-gridSpacingBorder*2) / pointsPerAxis);
+
+        double probeRatio = 0.2;
+
+        // Deterministic jitter offset for the probe grid
+        Random rng = initRandomGenerator((int)(worldCellX * 10000), (int)(worldCellY * 10000), level);
 
         // Generate pointsPerAxis^2 points spanning the entire world cell [worldCellX, worldCellX+1)
         for (int i = 0; i < pointsPerAxis; i++) {
             for (int j = 0; j < pointsPerAxis; j++) {
-                double cellMinX = worldCellX + j * gridSpacing;
-                double cellMinY = worldCellY + i * gridSpacing;
 
-                // Deterministic jitter offset for the probe grid
-                Random rng = initRandomGenerator((int)(cellMinX * 10000), (int)(cellMinY * 10000), level);
-                double jitterX = rng.nextDouble() * 0.5;  // [0, 0.5) offset for probe grid
-                double jitterY = rng.nextDouble() * 0.5;
+                double jitterX = rng.nextDouble() * (1-probeRatio);  // [0, 0.5) offset for probe grid
+                double jitterY = rng.nextDouble() * (1-probeRatio);
 
-                // Probe 4x4 grid within sub-cell, find lowest elevation
-                double boundary = 0.05;  // 5% inset from sub-cell edges
+                double probeMinX = worldCellX + (j+jitterX) * gridSpacing + gridSpacingBorder;
+                double probeMinY = worldCellY + (i+jitterY) * gridSpacing + gridSpacingBorder;
+
+                // Initialize tracking variables for finding lowest elevation
                 double lowestElev = Double.MAX_VALUE;
-                double bestX = cellMinX + 0.5 * gridSpacing;
-                double bestY = cellMinY + 0.5 * gridSpacing;
+                double bestX = probeMinX + probeRatio * gridSpacing * 0.5;
+                double bestY = probeMinY + probeRatio * gridSpacing * 0.5;
 
+                // Probe 4x4 grid within the probe ratio
                 int probeGrid = 4;
                 for (int pi = 0; pi < probeGrid; pi++) {
                     for (int pj = 0; pj < probeGrid; pj++) {
-                        double tx = boundary + (pj + jitterX) / probeGrid * (1.0 - 2 * boundary);
-                        double ty = boundary + (pi + jitterY) / probeGrid * (1.0 - 2 * boundary);
-                        double px = cellMinX + tx * gridSpacing;
-                        double py = cellMinY + ty * gridSpacing;
+                        double px = probeMinX+(pi/(probeGrid-1))*probeRatio*gridSpacing;
+                        double py = probeMinY+(pj/(probeGrid-1))*probeRatio*gridSpacing;
                         double elev = evaluateControlFunction(px, py);
                         if (elev < lowestElev) {
                             lowestElev = elev;
