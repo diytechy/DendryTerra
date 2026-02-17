@@ -3,38 +3,89 @@ package dendryterra.math;
 /**
  * Immutable 3D point with basic operations.
  * In Dendry context: x,y are horizontal position, z is elevation.
+ * Optional slope properties (slopeX, slopeY) represent elevation gradient.
  */
 public final class Point3D {
     public final double x;
     public final double y;
     public final double z;
 
+    /** Slope component in x direction (dz/dx). NaN if not computed. */
+    public final double slopeX;
+    /** Slope component in y direction (dz/dy). NaN if not computed. */
+    public final double slopeY;
+
     public Point3D(double x, double y, double z) {
         this.x = x;
         this.y = y;
         this.z = z;
+        this.slopeX = Double.NaN;
+        this.slopeY = Double.NaN;
+    }
+
+    public Point3D(double x, double y, double z, double slopeX, double slopeY) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.slopeX = slopeX;
+        this.slopeY = slopeY;
     }
 
     public Point3D(Point2D point, double z) {
         this.x = point.x;
         this.y = point.y;
         this.z = z;
+        this.slopeX = Double.NaN;
+        this.slopeY = Double.NaN;
+    }
+
+    /**
+     * Create a new Point3D with slope values.
+     */
+    public Point3D withSlopes(double slopeX, double slopeY) {
+        return new Point3D(this.x, this.y, this.z, slopeX, slopeY);
+    }
+
+    /**
+     * Check if this point has computed slope values.
+     */
+    public boolean hasSlope() {
+        return !Double.isNaN(slopeX) && !Double.isNaN(slopeY);
+    }
+
+    /**
+     * Get the tangent as a 2D vector (direction of steepest descent).
+     * Returns a normalized Vec2D pointing in the downhill direction.
+     * Returns null if slopes are not computed.
+     */
+    public Vec2D getTangentVector() {
+        if (!hasSlope()) return null;
+        // Gradient points uphill; tangent for flow is downhill (negative gradient)
+        double tangentX = -slopeX;
+        double tangentY = -slopeY;
+        double length = Math.sqrt(tangentX * tangentX + tangentY * tangentY);
+        if (length < MathUtils.EPSILON) {
+            return new Vec2D(0, 0);
+        }
+        return new Vec2D(tangentX / length, tangentY / length);
+    }
+
+    /**
+     * Get the slope magnitude along the tangent direction.
+     * This is the steepness in the direction of steepest descent.
+     * Returns NaN if slopes are not computed.
+     */
+    public double getSlope() {
+        if (!hasSlope()) return Double.NaN;
+        return Math.sqrt(slopeX * slopeX + slopeY * slopeY);
     }
 
     public Point3D add(Point3D other) {
         return new Point3D(x + other.x, y + other.y, z + other.z);
     }
 
-    public Point3D subtract(Point3D other) {
-        return new Point3D(x - other.x, y - other.y, z - other.z);
-    }
-
     public Point3D scale(double s) {
         return new Point3D(x * s, y * s, z * s);
-    }
-
-    public Point3D negate() {
-        return new Point3D(-x, -y, -z);
     }
 
     public double distanceSquaredTo(Point3D other) {

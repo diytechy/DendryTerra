@@ -1,0 +1,50 @@
+package dendryterra;
+
+/**
+ * Configuration class for SegmentList parameters that don't change frequently.
+ * This avoids passing the same parameters through multiple function calls.
+ */
+public class SegmentListConfig {
+    public long salt = 12345;
+    public boolean useSplines = false;
+    public double curvature = 0.0;
+    public double tangentStrength = 1.0;
+    public double maxTwistAngle = 1.0; //  +/- degrees in radians when slope is 0, affects random rotation of origin points.
+    public double maxIntermediateTwistAngle = 0.25; // +/- degrees in radians, for intermediate points, reduced by jitter magnitude
+    public double SlopeWithoutTwist = 0.5;
+    // Decrease for greater rolloff of jitter as levels increase.
+    public double jitterReductionBase = 0.6; // Base for jitter reduction per level: Math.pow(jitterReductionBase, level)
+    // Increase for greater rolloff of tangent strength as levels increase.
+    public double tangentReductionBase = 1.75; // Base for tangent magnitude reduction per level: Math.pow(tangentReductionBase, level)
+
+    public SegmentListConfig() {}
+
+    public SegmentListConfig(long salt) {
+        this.salt = salt;
+    }
+
+    public SegmentListConfig withSplines(boolean useSplines) {
+        this.useSplines = useSplines;
+        return this;
+    }
+
+    public SegmentListConfig withCurvature(double curvature) {
+        this.curvature = curvature;
+        return this;
+    }
+
+    public SegmentListConfig withTangentStrength(double tangentStrength) {
+        this.tangentStrength = tangentStrength;
+        return this;
+    }
+
+    public SegmentListConfig withMaxTwistAngle(double maxTwistAngle) {
+        this.maxTwistAngle = maxTwistAngle;
+        return this;
+    }
+
+    public SegmentListConfig withSlopeWithoutTwist(double SlopeWithoutTwist) {
+        this.SlopeWithoutTwist = SlopeWithoutTwist;
+        return this;
+    }
+}

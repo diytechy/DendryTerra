@@ -20,20 +20,8 @@ public final class Point2D {
         return new Point2D(x + v.x, y + v.y);
     }
 
-    public Point2D subtract(Point2D other) {
-        return new Point2D(x - other.x, y - other.y);
-    }
-
-    public Point2D subtract(Vec2D v) {
-        return new Point2D(x - v.x, y - v.y);
-    }
-
     public Point2D scale(double s) {
         return new Point2D(x * s, y * s);
-    }
-
-    public Point2D negate() {
-        return new Point2D(-x, -y);
     }
 
     public double distanceSquaredTo(Point2D other) {

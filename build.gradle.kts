@@ -1,10 +1,11 @@
 plugins {
     java
     application
+    `maven-publish`
 }
 
-group = "dendryterra"
-version = "1.0.0"
+group = "com.github.diytechy"
+version = "1.0.0-BETA-1"
 
 repositories {
     mavenCentral()
@@ -59,6 +60,25 @@ tasks.register<JavaExec>("benchmark") {
 
 tasks.jar {
     archiveBaseName.set("DendryTerra")
+}
+
+publishing {
+    repositories {
+        maven {
+            name = "Repsy"
+            url = uri("https://repo.repsy.io/mvn/diytechy/dendryterra")
+            credentials {
+                username = project.findProperty("repsy.user") as String? ?: System.getenv("REPSY_USERNAME")
+                password = project.findProperty("repsy.key") as String? ?: System.getenv("REPSY_PASSWORD")
+            }
+        }
+    }
+    publications {
+        create<MavenPublication>("repsy") {
+            from(components["java"])
+            artifactId = "dendryterra"
+        }
+    }
 }
 
 // Make 'run' task use benchmark dependencies too

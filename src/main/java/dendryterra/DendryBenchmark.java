@@ -82,20 +82,6 @@ public final class DendryBenchmark {
     }
 
     /**
-     * Quick benchmark with default settings.
-     */
-    public static BenchmarkResult quickBenchmark(Sampler sampler) {
-        return benchmark(sampler, 64, 10.0, 1);
-    }
-
-    /**
-     * Detailed benchmark with more samples.
-     */
-    public static BenchmarkResult detailedBenchmark(Sampler sampler) {
-        return benchmark(sampler, 256, 10.0, 3);
-    }
-
-    /**
      * Benchmark result data.
      */
     public static class BenchmarkResult {

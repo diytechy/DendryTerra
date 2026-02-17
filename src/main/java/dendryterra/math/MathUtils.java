@@ -36,47 +36,6 @@ public final class MathUtils {
     }
 
     /**
-     * Remap a value from one range to another.
-     */
-    public static double remap(double x, double inStart, double inEnd, double outStart, double outEnd) {
-        if (Math.abs(inEnd - inStart) < EPSILON) return outStart;
-        return outStart + (outEnd - outStart) * (x - inStart) / (inEnd - inStart);
-    }
-
-    /**
-     * Remap with clamping to output range.
-     */
-    public static double remapClamp(double x, double inStart, double inEnd, double outStart, double outEnd) {
-        if (x <= inStart) return outStart;
-        if (x >= inEnd) return outEnd;
-        return remap(x, inStart, inEnd, outStart, outEnd);
-    }
-
-    /**
-     * Improved smoothstep polynomial: 6t^5 - 15t^4 + 10t^3
-     */
-    public static double smoother(double t) {
-        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-    }
-
-    /**
-     * Smootherstep function with edge parameters.
-     */
-    public static double smootherstep(double edge0, double edge1, double x) {
-        double t = remapClamp(x, edge0, edge1, 0.0, 1.0);
-        return smoother(t);
-    }
-
-    /**
-     * Wyvill-Galin smooth falloff function.
-     */
-    public static double wyvillGalin(double distance, double radius, double exponent) {
-        if (distance >= radius) return 0.0;
-        double ratio = distance / radius;
-        return Math.pow(1.0 - ratio * ratio, exponent);
-    }
-
-    /**
      * Project point p onto line defined by points a and b.
      * Returns parameter u where the projection point is a + u*(b-a).
      * u < 0 means projection is before a, u > 1 means after b.
@@ -91,35 +50,6 @@ public final class MathUtils {
         }
 
         return ap.dot(ab) / abLenSq;
-    }
-
-    /**
-     * Project point p onto line segment [a, b].
-     * Returns clamped parameter in [0, 1].
-     */
-    public static double pointLineSegmentProjection(Point2D p, Point2D a, Point2D b) {
-        return clamp(pointLineProjection(p, a, b), 0.0, 1.0);
-    }
-
-    /**
-     * Project point p onto line segment.
-     */
-    public static double pointLineSegmentProjection(Point2D p, Segment2D s) {
-        return pointLineSegmentProjection(p, s.a, s.b);
-    }
-
-    /**
-     * Calculate distance from point p to line defined by a and b.
-     * Returns the closest point on the line.
-     */
-    public static DistanceResult distanceToLine(Point2D p, Point2D a, Point2D b) {
-        Vec2D ab = new Vec2D(a, b);
-        double u = pointLineProjection(p, a, b);
-
-        Point2D closest = a.add(ab.scale(u));
-        double distance = p.distanceTo(closest);
-
-        return new DistanceResult(distance, closest, u);
     }
 
     /**
@@ -145,16 +75,7 @@ public final class MathUtils {
      * Calculate distance from point p to a 3D segment (projected to 2D).
      */
     public static DistanceResult distanceToLineSegment(Point2D p, Segment3D seg) {
-        return distanceToLineSegment(p, seg.a.projectZ(), seg.b.projectZ());
-    }
-
-    /**
-     * Calculate angle at point o formed by points a-o-b.
-     */
-    public static double angle(Point2D a, Point2D o, Point2D b) {
-        Vec2D oa = new Vec2D(o, a);
-        Vec2D ob = new Vec2D(o, b);
-        return oa.angleTo(ob);
+        return distanceToLineSegment(p, seg.srt.projectZ(), seg.end.projectZ());
     }
 
     /**
