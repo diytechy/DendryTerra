@@ -904,7 +904,7 @@ public class DendrySampler implements Sampler {
         int pointsPerAxis = getPointsPerCellForLevel(level);
 
         // Grid border: assuming equidistantly spaced points, what border ensures maintains spacing between world cells.
-        double gridSpacingBorder = (1.0 / pointsPerAxis)/2;
+        double gridSpacingBorder = ((1.0 / pointsPerAxis)/2)/(Math.max(1,level));
 
         // Grid spacing: world cell is 1x1, divide by points per axis and subtract out border.
         double gridSpacing = ((1.0-gridSpacingBorder*2) / pointsPerAxis);
