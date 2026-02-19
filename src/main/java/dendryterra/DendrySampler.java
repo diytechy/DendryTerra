@@ -403,8 +403,8 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double y, double z) {
-        // When returnType is PIXEL_RIVER and y == 1.0, return elevation instead of distance
-        if (returnType == DendryReturnType.PIXEL_RIVER && y == 1.0) {
+        // When returnType is PIXEL_RIVER and y is non-zero, return elevation instead of distance
+        if (returnType == DendryReturnType.PIXEL_RIVER && y != 0.0) {
             return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
         }
         return getSample(seed, x, z);
