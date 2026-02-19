@@ -1432,7 +1432,7 @@ Consider method to generate points near the cell wall to prevent vertical / hori
 
 ###################################
 
-Suppress opposite tangent cone computation, instead just compute along the single active tangent (again, don't sweep across the full cone).  Since the opposite tangent cone is on the inside curve, it's not necessary to perform a sweep along the cone. (Adjacent )
+Add an option like "ENABLE_SEGMENT_FILL_ALL" that will allow opposite tangent cone computation to be skipped (in projectConeToBoxes, "// Arc samples at this radius - both sides (positive and opposite)"), instead just compute along the single active tangent (again, don't sweep across the full cone for the opposite side).  Since the opposite tangent cone is on the inside curve, it's not necessary to perform a sweep along the cone.
 
 When blot mode is enabled, take the river width and subtract it by the pixelcache size, since blotting will naturally result in wider artifacts.
 

@@ -112,6 +112,12 @@ public class DendrySampler implements Sampler {
      */
     private static final boolean ENABLE_SEGMENT_FILL_ALL = false;
 
+    /**
+     * When true, the opposite-side cone sweep is computed in projectConeToBoxes (inside curve).
+     * When false, only the active tangent side is projected — sufficient when blot filling is enabled.
+     */
+    private static final boolean ENABLE_OPPOSITE_CONE = false;
+
     // Star sampling grid size (currently 3x3 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
     // Star sample boundary margin (fraction of cell size)
@@ -3744,14 +3750,26 @@ public class DendrySampler implements Sampler {
                              false, bx, by, chunk, step);
                 }
             } else {
-                // Arc samples at this radius - both sides (positive and opposite)
+                // Arc samples at this radius - active side, and optionally the opposite side
                 double arcLength = coneAngle * distanceGrid;
                 int numArcSamples = Math.max(2, (int) Math.ceil(arcLength / (cachepixelsGrid * 0.5)));
 
                 for (int side = 0; side < 2; side++) {
                     double sideOffset = side * Math.PI;
-                    for (int a = 0; a < numArcSamples; a++) {
-                        double angleOffset = coneAngle * ((double) a / (numArcSamples - 1) - 0.5);
+                    double SelArcSamples = numArcSamples;
+                    if (side == 1 && !ENABLE_OPPOSITE_CONE) {
+                        //If opposite cone is disabled, don't sweep the cone, just sample along tangent.
+                        SelArcSamples = 1;
+                    }
+                    for (int a = 0; a < SelArcSamples; a++) {
+                        double angleOffset = 0;
+                        if (SelArcSamples == 1) {
+                            // If only one sample, place it directly in the bow direction
+                            angleOffset = coneAngle;
+                        }
+                        else{
+                            angleOffset = coneAngle * ((double) a / (SelArcSamples - 1) - 0.5);
+                        }
                         double angle = bowDirectionRad + sideOffset + angleOffset;
 
                         double px = samplePoint.x + Math.cos(angle) * distanceGrid;
