@@ -110,7 +110,7 @@ public class DendrySampler implements Sampler {
      * When true, segmentFill (semicircle fill) is enabled for ALL segment start/end points,
      * not just endpoints with exactly 1 connection.
      */
-    private static final boolean ENABLE_SEGMENT_FILL_ALL = false;
+    private static final boolean ENABLE_SEGMENT_FILL_ALL = true;
 
     /**
      * When true, the opposite-side cone sweep is computed in projectConeToBoxes (inside curve).
@@ -3757,7 +3757,7 @@ public class DendrySampler implements Sampler {
                 for (int side = 0; side < 2; side++) {
                     double sideOffset = side * Math.PI;
                     double SelArcSamples = numArcSamples;
-                    if (side == 1 && !ENABLE_OPPOSITE_CONE) {
+                    if (side == 1 && !ENABLE_OPPOSITE_CONE && !segmentFill) {
                         //If opposite cone is disabled, don't sweep the cone, just sample along tangent.
                         SelArcSamples = 1;
                     }
