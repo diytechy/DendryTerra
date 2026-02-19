@@ -1429,3 +1429,24 @@ The function "boundTangentMagnitude" should be renamed to "ScaleTangentMagnitude
 ########################################
 
 Consider method to generate points near the cell wall to prevent vertical / horizontal segments from forming naturally against cell boundaries.  Similar to epsilon method used in base Dendry noise sampler.
+
+###################################
+
+Suppress opposite tangent cone computation, instead just compute along the single active tangent (again, don't sweep across the full cone).  Since the opposite tangent cone is on the inside curve, it's not necessary to perform a sweep along the cone. (Adjacent )
+
+When blot mode is enabled, take the river width and subtract it by the pixelcache size, since blotting will naturally result in wider artifacts.
+
+If the probability of branching is 0 (near 0?) at the center of the query cell, just disable and 1+ level segments, since the points shouldn't get generated anyways.
+
+Consider allowing segments to flow into lower levels?
+
+For the 3d sampler query, allow any non-zero y value input to return elevation / control data instead of only specifically 1.0.
+
+Don't perform segment point filling on end points that are connected to lower level segments.
+
+Riverwidth should never be evaluated to less than the pixelcache size, so that a full river width is rendered within a pixel.
+
+Anything else that can be done to improve river "squiglyness"?  Maybe just need to query with noise applied to coordinates, perlin would likely be sufficient, but frequency is questionable.  Period of 10 blocks?
+
+##################################
+

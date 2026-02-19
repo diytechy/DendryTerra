@@ -110,7 +110,7 @@ public class DendrySampler implements Sampler {
      * When true, segmentFill (semicircle fill) is enabled for ALL segment start/end points,
      * not just endpoints with exactly 1 connection.
      */
-    private static final boolean ENABLE_SEGMENT_FILL_ALL = true;
+    private static final boolean ENABLE_SEGMENT_FILL_ALL = false;
 
     // Star sampling grid size (currently 3x3 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
