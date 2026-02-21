@@ -3164,8 +3164,12 @@ public class DendrySampler implements Sampler {
 
     private double evaluateWithBigChunkDistance(double gridX, double gridY) {
         BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
-        double distQuantizeRes = 255.0 / maxDistGrid;
-        return (block.getDistanceUnsigned() / distQuantizeRes) * gridsize;
+        int distU8 = block.getDistanceUnsigned();
+        if (distU8 <= 127) {
+            return (distU8 / 127.0) - 1.0;   // inside river: [0→-1, 127→≈0]
+        } else {
+            return (distU8 - 128) / 127.0;   // outside: [128→0, 255→1]
+        }
     }
 
     private double evaluateWithBigChunkElevation(double gridX, double gridY) {
@@ -3509,6 +3513,7 @@ public class DendrySampler implements Sampler {
 
             // === Step E: Update elevation radii ===
             double riverWidthGrid = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
+            double borderWidthGrid = Math.min(maxDistGrid, getBorderWidth(samplePoint.x, samplePoint.y));
 
             // Width transition: linearly widen to match lower-level river at endpoint
             if (endFlowLevel >= 0 && endFlowLevel < level && endConnections == 1) {
@@ -3551,7 +3556,7 @@ public class DendrySampler implements Sampler {
             projectConeToBoxes(samplePoint, currentTangent, prevEvalTangent,
                 centralElev, innerElev, outerElev,
                 centralRadius, innerRadius, outerRadius,
-                riverWidthGrid, segmentFill, isStartPoint,
+                riverWidthGrid, borderWidthGrid, segmentFill, isStartPoint,
                 segmentSlope, chunk, chunkSizeGrid);
 
             // Update state for next iteration
@@ -3678,7 +3683,7 @@ public class DendrySampler implements Sampler {
                                    dendryterra.math.Vec2D prevTangent,
                                    int centralElev, int innerElev, int outerElev,
                                    double centralRadius, double innerRadius, double outerRadius,
-                                   double riverWidthGrid, boolean segmentFill, boolean isStartPoint,
+                                   double riverWidthGrid, double borderWidthGrid, boolean segmentFill, boolean isStartPoint,
                                    double segmentSlope, BigChunk chunk, double chunkSizeGrid) {
         double cachepixelsGrid = cachepixels / gridsize;
 
@@ -3747,7 +3752,7 @@ public class DendrySampler implements Sampler {
                 int bx = gridToBlockIndex(samplePoint.x, chunk.gridOriginX, cachepixelsGrid);
                 int by = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
                 if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
-                    updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid,
+                    updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid, borderWidthGrid,
                              false, bx, by, chunk, step);
                 }
             } else {
@@ -3781,7 +3786,7 @@ public class DendrySampler implements Sampler {
 
                         if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
                             updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
-                                     riverWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
+                                     riverWidthGrid, borderWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
                         }
                     }
                 }
@@ -3854,23 +3859,22 @@ public class DendrySampler implements Sampler {
      * @param outwardStep The outward step index (0 = center, 1 = first ring, etc.)
      */
     private void updateBox(BigChunk.BigChunkBlock box, double distanceGrid,
-                          int elevationU8, double riverWidthGrid,
+                          int elevationU8, double riverWidthGrid, double borderWidthGrid,
                           boolean blotAdjacentBoxes, int blockX, int blockY,
                           BigChunk chunk, int outwardStep) {
-        // Compute normalized distance
-        double normalizedDist;
-        if (distanceGrid < riverWidthGrid) {
-            // River is ratiometric, inside river is less than 1.
-            // Divided by gridsize since this is the ratio in grid units.
-            normalizedDist = (distanceGrid / riverWidthGrid) / gridsize;
+        // Quantize normalized distance to uint8 in range [0, 255]:
+        //   [0, 127]   = inside river:  0 (center, output -1) → 127 (edge, output ≈ 0)
+        //   [128, 255] = outside river: 128 (edge, output 0) → 255 (at borderwidth, output 1)
+        // "Lower wins" in applyBoxUpdate is correct for both regions.
+        int distU8;
+        if (distanceGrid <= riverWidthGrid) {
+            double ratio = (riverWidthGrid > 0) ? distanceGrid / riverWidthGrid : 0.0;
+            distU8 = (int) Math.min(127, Math.max(0, ratio * 127));
         } else {
-            // Outside river is absolute distance to river's edge.
-            normalizedDist = distanceGrid - riverWidthGrid;
+            double outDist = distanceGrid - riverWidthGrid;
+            double ratio = (borderWidthGrid > 0) ? Math.min(1.0, outDist / borderWidthGrid) : 1.0;
+            distU8 = (int)(128 + Math.min(127, ratio * 127));
         }
-
-        // Quantize distance to uint8
-        double distQuantizeRes = 255.0 / maxDistGrid;
-        int distU8 = (int) Math.min(255, Math.max(0, normalizedDist * distQuantizeRes));
 
         // Apply elevation smoothing noise at river edge transitions
         int finalElevU8 = elevationU8;
