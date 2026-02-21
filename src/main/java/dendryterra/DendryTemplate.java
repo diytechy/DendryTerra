@@ -148,7 +148,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("cachepixels")
     @Default
-    private @Meta double cachepixels = 0;
+    private @Meta double cachepixels = 1.0;
 
     /**
      * Slope threshold for fully aligning tangents with the gradient.
