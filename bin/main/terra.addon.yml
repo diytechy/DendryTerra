@@ -1,0 +1,12 @@
+schema-version: 1
+contributors:
+  - DendryTerra Contributors
+id: dendry-noise
+version: 1.0.0
+entrypoints:
+  - "dendryterra.DendryAddon"
+website:
+  issues: https://github.com/diytechy/DendryTerra/issues
+  source: https://github.com/diytechy/DendryTerra
+  docs:   https://github.com/diytechy/DendryTerra
+license: GNU General Public License v3.0
