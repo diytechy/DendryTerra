@@ -1450,3 +1450,13 @@ Anything else that can be done to improve river "squiglyness"?  Maybe just need 
 
 ##################################
 
+Make sure the PIXEL_RIVER river distance sampler output act as a normalized value from -1 to 1 instead of the current implimentation from 0 to max-dist.  This will require some changes to the calculations to satisfy:
+
+IMPORTANT: Quantization must be taken care of here very carefully, as real world units are converted to cell units according to the gridsize, and those are further converted to bigcache location units using the pixelcache resolution.
+
+1. Instead of stepping from 0 to 1 from the river center to the edge, the output should step from -1 to 0 as it comes from the center of the river to the outside edge.
+2. The distance from the outside edge than should be 0 from the edge to 1, such that at 1 the true world distance is equal to borderwidth (or borderwidth-default if borderwidth is null)
+3. The borderwidth value for a river shall be saturated to max-dist. (if borderwidth exceeds this, it shall be saturated)
+
+1. 
+

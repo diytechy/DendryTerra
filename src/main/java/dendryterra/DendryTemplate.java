@@ -80,7 +80,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("use-parallel")
     @Default
-    private @Meta boolean useParallel = true;
+    private @Meta boolean useParallel = false;
 
     /**
      * Enable debug timing output to console.
