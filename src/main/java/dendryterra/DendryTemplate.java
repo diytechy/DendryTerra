@@ -62,7 +62,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("default-branches")
     @Default
-    private @Meta int defaultBranches = 1;
+    private @Meta double defaultBranches = 1;
 
     /**
      * Curvature factor for Hermite spline subdivision.

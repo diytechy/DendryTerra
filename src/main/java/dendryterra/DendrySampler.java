@@ -51,7 +51,7 @@ public class DendrySampler implements Sampler {
 
     // Branch and curvature parameters
     private final Sampler branchesSampler;
-    private final int defaultBranches;
+    private final double defaultBranches;
     private final double curvature;
 
     // Performance flags
@@ -278,7 +278,7 @@ public class DendrySampler implements Sampler {
                          double slope, double gridsize,
                          DendryReturnType returnType,
                          Sampler controlSampler, long salt,
-                         Sampler branchesSampler, int defaultBranches,
+                         Sampler branchesSampler, double defaultBranches,
                          double curvature,
                          boolean useParallel,
                          boolean debugTiming, int parallelThreshold,
@@ -353,16 +353,6 @@ public class DendrySampler implements Sampler {
 
     private static long packKey(int x, int y) {
         return ((long) x << 32) | (y & 0xFFFFFFFFL);
-    }
-
-    private int computeBranchCount(int cellX, int cellY) {
-        if (branchesSampler == null) {
-            return defaultBranches;
-        }
-        double centerX = (cellX + 0.5) * gridsize;
-        double centerY = (cellY + 0.5) * gridsize;
-        int branches = (int) Math.round(branchesSampler.getSample(salt, centerX, centerY));
-        return Math.max(1, Math.min(8, branches));
     }
 
     @Override
@@ -2424,6 +2414,9 @@ public class DendrySampler implements Sampler {
                 branchProbability = Math.max(0, Math.min(1, branchProbability / 8.0));  // Normalize to [0,1]
                 baseRemovalProbability = 1.0 - branchProbability;
             }
+            else{
+                baseRemovalProbability = 1.0 - defaultBranches;
+            }
 
             // Distance-based removal probability
             // Points farther from previous level segments have higher removal probability
@@ -3226,10 +3219,14 @@ public class DendrySampler implements Sampler {
         // Get or create chunk from cache
         BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY, gridOriginX, gridOriginY);
 
-        // Compute if not already done
+        // Compute if not already done (synchronized to prevent duplicate computation)
         if (!chunk.computed) {
-            computeBigChunk(chunk);
-            chunk.computed = true;
+            synchronized (chunk) {
+                if (!chunk.computed) {
+                    computeBigChunk(chunk);
+                    chunk.computed = true;
+                }
+            }
         }
 
         return chunk;

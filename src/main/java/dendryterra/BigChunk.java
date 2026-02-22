@@ -17,8 +17,8 @@ public class BigChunk {
     /** 256x256 grid of blocks */
     public final BigChunkBlock[][] blocks;
 
-    /** Whether this chunk has been fully computed */
-    public boolean computed;
+    /** Whether this chunk has been fully computed (volatile for thread-safe double-check) */
+    public volatile boolean computed;
 
     /** LRU counter for cache eviction */
     public int lruCounter;

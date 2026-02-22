@@ -1450,7 +1450,7 @@ Anything else that can be done to improve river "squiglyness"?  Maybe just need 
 
 ##################################
 
-Make sure the PIXEL_RIVER river distance sampler output act as a normalized value from -1 to 1 instead of the current implimentation from 0 to max-dist.  This will require some changes to the calculations to satisfy:
+Build a plan to make sure the PIXEL_RIVER river distance sampler output act as a normalized value from -1 to 1 instead of the current implimentation from 0 to max-dist.  This will require some changes to the calculations to satisfy:
 
 IMPORTANT: Quantization must be taken care of here very carefully, as real world units are converted to cell units according to the gridsize, and those are further converted to bigcache location units using the pixelcache resolution.
 

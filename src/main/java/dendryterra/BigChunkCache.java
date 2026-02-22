@@ -1,9 +1,11 @@
 package dendryterra;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * LRU cache for BigChunk instances.
+ * Thread-safe LRU cache for BigChunk instances.
  * Stores up to 20 MB of bigchunks (~150 chunks at 132 KB each).
  */
 public class BigChunkCache {
@@ -12,18 +14,19 @@ public class BigChunkCache {
     private static final int MAX_CHUNKS = (int)(MAX_MEMORY / CHUNK_SIZE); // ~150 chunks
 
     /** Map from chunk coordinates to BigChunk instances */
-    private final Map<ChunkKey, BigChunk> cache;
+    private final ConcurrentHashMap<ChunkKey, BigChunk> cache;
 
     /** LRU counter for cache eviction (incremented on each access) */
-    private int lruCounter;
+    private final AtomicInteger lruCounter;
 
     public BigChunkCache() {
-        this.cache = new HashMap<>();
-        this.lruCounter = 0;
+        this.cache = new ConcurrentHashMap<>();
+        this.lruCounter = new AtomicInteger(0);
     }
 
     /**
      * Get or create a BigChunk at the specified chunk coordinates.
+     * Thread-safe: uses computeIfAbsent for atomic insertion and synchronized eviction.
      * @param chunkX Integer chunk X coordinate
      * @param chunkY Integer chunk Y coordinate
      * @param gridOriginX Grid X coordinate of chunk origin (normalized space)
@@ -32,27 +35,38 @@ public class BigChunkCache {
      */
     public BigChunk getOrCreate(int chunkX, int chunkY, double gridOriginX, double gridOriginY) {
         ChunkKey key = new ChunkKey(chunkX, chunkY);
-        BigChunk chunk = cache.get(key);
+        BigChunk existing = cache.get(key);
 
-        if (chunk != null) {
-            chunk.lruCounter = ++lruCounter;
+        if (existing != null) {
+            existing.lruCounter = lruCounter.incrementAndGet();
+            return existing;
+        }
+
+        // Synchronize creation + eviction to prevent race conditions
+        synchronized (this) {
+            // Double-check after acquiring lock
+            existing = cache.get(key);
+            if (existing != null) {
+                existing.lruCounter = lruCounter.incrementAndGet();
+                return existing;
+            }
+
+            BigChunk chunk = new BigChunk(gridOriginX, gridOriginY);
+            chunk.lruCounter = lruCounter.incrementAndGet();
+
+            // Evict oldest if cache is full
+            if (cache.size() >= MAX_CHUNKS) {
+                evictOldest();
+            }
+
+            cache.put(key, chunk);
             return chunk;
         }
-
-        chunk = new BigChunk(gridOriginX, gridOriginY);
-        chunk.lruCounter = ++lruCounter;
-
-        // Evict oldest if cache is full
-        if (cache.size() >= MAX_CHUNKS) {
-            evictOldest();
-        }
-
-        cache.put(key, chunk);
-        return chunk;
     }
 
     /**
      * Evict the least recently used chunk from the cache.
+     * Must be called while holding the synchronized lock.
      */
     private void evictOldest() {
         if (cache.isEmpty()) {
