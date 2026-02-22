@@ -1937,7 +1937,13 @@ public class DendrySampler implements Sampler {
         }
         afterProbabilisticCount = cleanedPoints.size();
 
-        if (cleanedPoints.isEmpty()) return result;
+        if (cleanedPoints.isEmpty()) {
+            // No points at this level — preserve previous level segments
+            if (level > 0 && previousLevelSegments != null) {
+                return previousLevelSegments.copy();
+            }
+            return result;
+        }
 
         // Step 4: Create UnconnectedPoints from cleaned points
         UnconnectedPoints unconnected = UnconnectedPoints.fromPoints(cleanedPoints, PointType.ORIGINAL, level);
@@ -2411,7 +2417,6 @@ public class DendrySampler implements Sampler {
             double baseRemovalProbability = 0.0;
             if (branchesSampler != null) {
                 double branchProbability = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
-                branchProbability = Math.max(0, Math.min(1, branchProbability / 8.0));  // Normalize to [0,1]
                 baseRemovalProbability = 1.0 - branchProbability;
             }
             else{
