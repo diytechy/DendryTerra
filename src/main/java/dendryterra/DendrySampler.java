@@ -931,7 +931,8 @@ public class DendrySampler implements Sampler {
                     for (int pj = 0; pj < probeGrid; pj++) {
                         double px = probeMinX+(pi/(probeGrid-1))*probeRatio*gridSpacing;
                         double py = probeMinY+(pj/(probeGrid-1))*probeRatio*gridSpacing;
-                        double elev = Math.max(evaluateControlFunction(px, py), (1/254.0 * max));
+                        //double elev = Math.max(evaluateControlFunction(px, py), (1/254.0 * max));
+                        double elev = evaluateControlFunction(px, py);
                         if (elev < lowestElev) {
                             lowestElev = elev;
                             bestX = px;
@@ -3559,7 +3560,7 @@ public class DendrySampler implements Sampler {
                 centralElev, innerElev, outerElev,
                 centralRadius, innerRadius, outerRadius,
                 riverWidthGrid, borderWidthGrid, segmentFill, isStartPoint,
-                segmentSlope, chunk, chunkSizeGrid);
+                segmentSlope, chunk, chunkSizeGrid, level);
 
             // Update state for next iteration
             prevEvalPos = samplePoint;
@@ -3686,7 +3687,7 @@ public class DendrySampler implements Sampler {
                                    int centralElev, int innerElev, int outerElev,
                                    double centralRadius, double innerRadius, double outerRadius,
                                    double riverWidthGrid, double borderWidthGrid, boolean segmentFill, boolean isStartPoint,
-                                   double segmentSlope, BigChunk chunk, double chunkSizeGrid) {
+                                   double segmentSlope, BigChunk chunk, double chunkSizeGrid, int level) {
         double cachepixelsGrid = cachepixels / gridsize;
 
         // Determine cone angle and bow direction
@@ -3747,7 +3748,7 @@ public class DendrySampler implements Sampler {
                 // Otherwise centralElev (already set)
             }
 
-            boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING && (step > 0);
+            boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING;
 
             if (step == 0) {
                 // Center point - set the box at samplePoint
@@ -3755,7 +3756,7 @@ public class DendrySampler implements Sampler {
                 int by = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
                 if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
                     updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid, borderWidthGrid,
-                             false, bx, by, chunk, step);
+                             false, bx, by, chunk, step, level);
                 }
             } else {
                 // Arc samples at this radius - active side, and optionally the opposite side
@@ -3788,7 +3789,7 @@ public class DendrySampler implements Sampler {
 
                         if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
                             updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
-                                     riverWidthGrid, borderWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
+                                     riverWidthGrid, borderWidthGrid, blotAdjacentBoxes, bx, by, chunk, step, level);
                         }
                     }
                 }
@@ -3863,7 +3864,7 @@ public class DendrySampler implements Sampler {
     private void updateBox(BigChunk.BigChunkBlock box, double distanceGrid,
                           int elevationU8, double riverWidthGrid, double borderWidthGrid,
                           boolean blotAdjacentBoxes, int blockX, int blockY,
-                          BigChunk chunk, int outwardStep) {
+                          BigChunk chunk, int outwardStep, int level) {
         // Quantize normalized distance to uint8 in range [0, 255]:
         //   [0, 127]   = inside river:  0 (center, output -1) → 127 (edge, output ≈ 0)
         //   [128, 255] = outside river: 128 (edge, output 0) → 255 (at borderwidth, output 1)
@@ -3879,7 +3880,8 @@ public class DendrySampler implements Sampler {
         }
 
         // Apply elevation smoothing noise at river edge transitions
-        int finalElevU8 = elevationU8;
+        // Make sure l1 rivers get a height boost?  May need further exploration, but allows E=0 to filter distance for L0 segments to filter certain terrain artifacts.
+        int finalElevU8 = Math.max(elevationU8, Math.min(1, level));
         int currentElev = box.getElevationUnsigned();
         int currentDist = box.getDistanceUnsigned();
 
