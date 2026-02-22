@@ -427,7 +427,8 @@ public class DendrySampler implements Sampler {
         SegmentList asterismBase = generateAsterism(cell1);
         // Prune asterism to query cell - clips segments at cell boundary with EDGE points
         SegmentList asterismPruned = pruneSegmentsToCell(asterismBase, cell1);
-
+        // Force all point elevations down to 0 value
+        asterismPruned.forceAllPointElevations(0);
         if (resolution == 0) {
             return asterismPruned;
         }
@@ -3444,6 +3445,11 @@ public class DendrySampler implements Sampler {
                 prevEvalPos = samplePoint;
                 prevEvalTangent = currentTangent;
                 isNewStream = true;
+                //If the first point has quantized elevation evaluated at 0, consider this a level 0 segment from
+                // a blotting and distance override standpoint.
+                if (i==0 && quantizedElev==0){
+                    level = 0;
+                }
             }
             // === Step B: Continued stream ===
             // prevLoopTangent already holds previous loop iteration's currentTangent
