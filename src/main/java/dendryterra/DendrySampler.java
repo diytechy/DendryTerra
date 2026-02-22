@@ -931,7 +931,7 @@ public class DendrySampler implements Sampler {
                     for (int pj = 0; pj < probeGrid; pj++) {
                         double px = probeMinX+(pi/(probeGrid-1))*probeRatio*gridSpacing;
                         double py = probeMinY+(pj/(probeGrid-1))*probeRatio*gridSpacing;
-                        double elev = evaluateControlFunction(px, py);
+                        double elev = Math.max(evaluateControlFunction(px, py), (1/254.0 * max));
                         if (elev < lowestElev) {
                             lowestElev = elev;
                             bestX = px;
