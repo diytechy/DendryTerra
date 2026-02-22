@@ -257,8 +257,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (gridsize <= 0) {
             throw new ValidationException("gridsize must be positive, got: " + gridsize);
         }
-        if (defaultBranches < 1 || defaultBranches > 8) {
-            throw new ValidationException("default-branches must be between 1 and 8, got: " + defaultBranches);
+        if (defaultBranches < 0 || defaultBranches > 1) {
+            throw new ValidationException("default-branches must be between 0 and 1, got: " + defaultBranches);
         }
         if (curvature < 0 || curvature > 1) {
             throw new ValidationException("curvature must be in range [0, 1], got: " + curvature);

@@ -1458,5 +1458,6 @@ IMPORTANT: Quantization must be taken care of here very carefully, as real world
 2. The distance from the outside edge than should be 0 from the edge to 1, such that at 1 the true world distance is equal to borderwidth (or borderwidth-default if borderwidth is null)
 3. The borderwidth value for a river shall be saturated to max-dist. (if borderwidth exceeds this, it shall be saturated)
 
-1. 
+#################################
 
+Implimennt a change to ensure the elevation for all level 1+ points evaluate to the minimum quantized distance (1/255 * max).  This likely would be 
