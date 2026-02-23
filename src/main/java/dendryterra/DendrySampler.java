@@ -341,7 +341,8 @@ public class DendrySampler implements Sampler {
         }
 
         // Initialize PIXEL_RIVER caches only when using BigChunk-based return types
-        if (returnType == DendryReturnType.PIXEL_RIVER || returnType == DendryReturnType.PIXEL_RIVER_CTRL) {
+        if (returnType == DendryReturnType.PIXEL_RIVER || returnType == DendryReturnType.PIXEL_RIVER_CTRL
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR) {
             this.segmentListCache = new SegmentListCache();
             this.bigChunkCache = new BigChunkCache();
         } else {
@@ -372,6 +373,8 @@ public class DendrySampler implements Sampler {
             result = evaluateWithBigChunkDistance(normalizedX, normalizedZ);
         } else if (returnType == DendryReturnType.PIXEL_RIVER_CTRL) {
             result = evaluateWithBigChunkElevation(normalizedX, normalizedZ);
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR) {
+            result = evaluateWithBigChunkFarDistance(normalizedX, normalizedZ);
         }
         // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
         else if (usesPixelCache()) {
@@ -403,9 +406,12 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double y, double z) {
-        // When returnType is PIXEL_RIVER and y is non-zero, return elevation instead of distance
-        if (returnType == DendryReturnType.PIXEL_RIVER && y != 0.0) {
-            return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
+        if (returnType == DendryReturnType.PIXEL_RIVER) {
+            if (y > 0.0) {
+                return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
+            } else if (y < 0.0) {
+                return evaluateWithBigChunkFarDistance(x / gridsize, z / gridsize);
+            }
         }
         return getSample(seed, x, z);
     }
@@ -3275,21 +3281,36 @@ public class DendrySampler implements Sampler {
     private void computeBigChunk(BigChunk chunk) {
         double chunkSizeGrid = getBigChunkSizeGrid();
 
-        // A. Collect all segments from nearby cells that could influence this chunk
+        // Phase 1: Wide collection — all segments within maxDistGrid (for far cache)
+        List<Segment3D> farSegments = new ArrayList<>();
+        List<Integer> farLevels = new ArrayList<>();
+        List<Integer> farStartConns = new ArrayList<>();
+        List<Integer> farEndConns = new ArrayList<>();
+        List<Integer> farEndFlowLevels = new ArrayList<>();
+
+        collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
+                farStartConns, farEndConns, farEndFlowLevels);
+
+        // Phase 2: Fill 8x8 far-distance cache from wide segments
+        computeFarCache(chunk, chunkSizeGrid, farSegments);
+
+        // Phase 3: Narrow prune — filter far segments down to maxDistPrune for detailed rendering
         List<Segment3D> segments = new ArrayList<>();
         List<Integer> levels = new ArrayList<>();
         List<Integer> startConns = new ArrayList<>();
         List<Integer> endConns = new ArrayList<>();
         List<Integer> endFlowLevels = new ArrayList<>();
 
-        collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels, startConns, endConns, endFlowLevels);
+        pruneSegmentsForBigChunk(chunk, chunkSizeGrid,
+                farSegments, farLevels, farStartConns, farEndConns, farEndFlowLevels,
+                segments, levels, startConns, endConns, endFlowLevels);
 
-        // B. Sort by level descending (highest level segments processed first)
+        // Phase 4: Sort by level descending (highest level segments processed first)
         Integer[] sortedIndices = new Integer[segments.size()];
         for (int i = 0; i < sortedIndices.length; i++) sortedIndices[i] = i;
         java.util.Arrays.sort(sortedIndices, (a, b) -> Integer.compare(levels.get(b), levels.get(a)));
 
-        // C. Process each segment in sorted order
+        // Phase 5: Process each segment in sorted order
         for (int idx : sortedIndices) {
             sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
                 startConns.get(idx), endConns.get(idx), endFlowLevels.get(idx),
@@ -3298,21 +3319,14 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Collect all segments from nearby cells that could influence the bigchunk.
-     * Segments are filtered to only include those within maxDistGrid of the chunk boundary.
+     * Collect all segments from nearby cells within maxDistGrid of the bigchunk (wide collection).
+     * Used for both far-distance cache computation and as input for the narrower prune step.
      * All coordinates are in grid coordinate space.
-     * @param chunk The BigChunk to collect segments for (chunk.gridOriginX/Y are in grid coordinates)
-     * @param chunkSizeGrid Size of chunk in grid coordinates
-     * @param outSegments Output list for segments
-     * @param outLevels Output list for segment levels (parallel to outSegments)
-     * @param outStartConns Output list for start endpoint connection counts
-     * @param outEndConns Output list for end endpoint connection counts
-     * @param outEndFlowLevel Output list: minimum level of a lower-level segment connected at end point, or -1 if none
      */
-    private void collectSegmentsForBigChunk(BigChunk chunk, double chunkSizeGrid,
-                                           List<Segment3D> outSegments, List<Integer> outLevels,
-                                           List<Integer> outStartConns, List<Integer> outEndConns,
-                                           List<Integer> outEndFlowLevel) {
+    private void collectSegmentsForBigChunkFar(BigChunk chunk, double chunkSizeGrid,
+                                               List<Segment3D> outSegments, List<Integer> outLevels,
+                                               List<Integer> outStartConns, List<Integer> outEndConns,
+                                               List<Integer> outEndFlowLevel) {
         // Determine the range of cells that could contain relevant segments
         // Grid coordinates are already normalized (sampler / gridsize), so cell boundaries are at integer values
         double minGridX = chunk.gridOriginX - maxDistGrid;
@@ -3390,6 +3404,154 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Prune the wide-collected far segments down to those within maxDistPrune of the chunk.
+     * Avoids redundant cell scanning by filtering from the already-collected far segment list.
+     */
+    private void pruneSegmentsForBigChunk(BigChunk chunk, double chunkSizeGrid,
+                                          List<Segment3D> farSegments, List<Integer> farLevels,
+                                          List<Integer> farStartConns, List<Integer> farEndConns,
+                                          List<Integer> farEndFlowLevels,
+                                          List<Segment3D> outSegments, List<Integer> outLevels,
+                                          List<Integer> outStartConns, List<Integer> outEndConns,
+                                          List<Integer> outEndFlowLevels) {
+        for (int i = 0; i < farSegments.size(); i++) {
+            Segment3D seg = farSegments.get(i);
+            boolean srtNear = isPointNearChunk(seg.srt, chunk, chunkSizeGrid, maxDistPrune);
+            boolean endNear = isPointNearChunk(seg.end, chunk, chunkSizeGrid, maxDistPrune);
+
+            if (!srtNear && !endNear) {
+                Point3D mid = new Point3D(
+                    (seg.srt.x + seg.end.x) * 0.5,
+                    (seg.srt.y + seg.end.y) * 0.5,
+                    (seg.srt.z + seg.end.z) * 0.5);
+                if (isPointNearChunk(mid, chunk, chunkSizeGrid, maxDistPrune)) {
+                    srtNear = true;
+                }
+            }
+
+            if (srtNear || endNear) {
+                outSegments.add(seg);
+                outLevels.add(farLevels.get(i));
+                outStartConns.add(farStartConns.get(i));
+                outEndConns.add(farEndConns.get(i));
+                outEndFlowLevels.add(farEndFlowLevels.get(i));
+            }
+        }
+    }
+
+    /**
+     * Compute the 8x8 far-distance cache for the given BigChunk.
+     * Walks along each segment at coarse steps (one per far-cache cell size),
+     * determining directional distances from each far-cache cell border to the nearest segment point.
+     */
+    private void computeFarCache(BigChunk chunk, double chunkSizeGrid, List<Segment3D> farSegments) {
+        double farCellSize = chunkSizeGrid / 8.0;
+
+        for (Segment3D seg : farSegments) {
+            double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
+            if (segLen < MathUtils.EPSILON) continue;
+
+            // Walk along segment with step size approximately one far-cache cell
+            int numSteps = Math.max(1, (int) Math.ceil(segLen / farCellSize));
+            for (int step = 0; step <= numSteps; step++) {
+                double t = (double) step / numSteps;
+                Point3D pt = evaluateHermiteSpline(seg, t);
+
+                // Check each far-cache cell
+                for (int ci = 0; ci < 8; ci++) {
+                    double cellCenterY = chunk.gridOriginY + (ci + 0.5) * farCellSize;
+                    double dy = pt.y - cellCenterY;
+
+                    for (int cj = 0; cj < 8; cj++) {
+                        BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
+                        double cellCenterX = chunk.gridOriginX + (cj + 0.5) * farCellSize;
+                        double dx = pt.x - cellCenterX;
+
+                        // If segment point is inside this far-cache cell, all distances = 0
+                        if (Math.abs(dx) < farCellSize / 2.0 && Math.abs(dy) < farCellSize / 2.0) {
+                            cell.setAllZero();
+                            continue;
+                        }
+
+                        // Determine quadrant and update 2 directional distances
+                        // X direction
+                        if (dx > 0) {
+                            double distFromBorder = dx - farCellSize / 2.0;
+                            if (distFromBorder < 0) distFromBorder = 0;
+                            int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                            if (quantized < cell.getDistXPlusUnsigned()) {
+                                cell.setDistXPlusUnsigned(quantized);
+                            }
+                        } else {
+                            double distFromBorder = -dx - farCellSize / 2.0;
+                            if (distFromBorder < 0) distFromBorder = 0;
+                            int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                            if (quantized < cell.getDistXMinusUnsigned()) {
+                                cell.setDistXMinusUnsigned(quantized);
+                            }
+                        }
+
+                        // Z direction
+                        if (dy > 0) {
+                            double distFromBorder = dy - farCellSize / 2.0;
+                            if (distFromBorder < 0) distFromBorder = 0;
+                            int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                            if (quantized < cell.getDistZPlusUnsigned()) {
+                                cell.setDistZPlusUnsigned(quantized);
+                            }
+                        } else {
+                            double distFromBorder = -dy - farCellSize / 2.0;
+                            if (distFromBorder < 0) distFromBorder = 0;
+                            int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                            if (quantized < cell.getDistZMinusUnsigned()) {
+                                cell.setDistZMinusUnsigned(quantized);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Evaluate far distance at a query point using the 8x8 far-distance cache.
+     * Returns the minimum directional distance to any river edge in world units.
+     */
+    private double evaluateWithBigChunkFarDistance(double gridX, double gridY) {
+        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        double farCellSize = chunkSizeGrid / 8.0;
+
+        // Which far-cache cell does the query fall in?
+        int cellJ = Math.max(0, Math.min(7, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(7, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
+
+        // Query offset from cell center
+        double cellCenterX = chunk.gridOriginX + (cellJ + 0.5) * farCellSize;
+        double cellCenterY = chunk.gridOriginY + (cellI + 0.5) * farCellSize;
+        double offsetX = gridX - cellCenterX;
+        double offsetY = gridY - cellCenterY;
+
+        // Dequantize stored border distances to grid units
+        double dxPlus  = cell.getDistXPlusUnsigned()  / 255.0 * maxDistGrid;
+        double dxMinus = cell.getDistXMinusUnsigned() / 255.0 * maxDistGrid;
+        double dzPlus  = cell.getDistZPlusUnsigned()  / 255.0 * maxDistGrid;
+        double dzMinus = cell.getDistZMinusUnsigned() / 255.0 * maxDistGrid;
+
+        // Actual distance from query point to segment in each direction
+        double halfCell = farCellSize / 2.0;
+        double actualXPlus  = dxPlus  + (halfCell - offsetX);
+        double actualXMinus = dxMinus + (halfCell + offsetX);
+        double actualZPlus  = dzPlus  + (halfCell - offsetY);
+        double actualZMinus = dzMinus + (halfCell + offsetY);
+
+        // Return the minimum (closest river in any direction), converted to world units
+        double minDist = Math.min(Math.min(actualXPlus, actualXMinus), Math.min(actualZPlus, actualZMinus));
+        return minDist * gridsize;
+    }
+
+    /**
      * Check if a point is within maxDistGrid of a chunk boundary.
      * Uses the minimum of the per-axis distances to the chunk border,
      * so a point only needs to be close on ONE axis to be retained.
@@ -3399,6 +3561,10 @@ public class DendrySampler implements Sampler {
      * @param chunkSizeGrid Size of chunk in grid coordinates
      */
     private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSizeGrid) {
+        return isPointNearChunk(point, chunk, chunkSizeGrid, maxDistGrid);
+    }
+
+    private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSizeGrid, double maxDist) {
         double chunkMaxX = chunk.gridOriginX + chunkSizeGrid;
         double chunkMaxY = chunk.gridOriginY + chunkSizeGrid;
 
@@ -3410,8 +3576,8 @@ public class DendrySampler implements Sampler {
                      : (point.y > chunkMaxY) ? point.y - chunkMaxY
                      : 0;
 
-        // Keep the point if the minimum axis distance is within maxDistGrid
-        return Math.min(distX, distY) <= maxDistGrid;
+        // Keep the point if the minimum axis distance is within maxDist
+        return Math.min(distX, distY) <= maxDist;
     }
 
     /**

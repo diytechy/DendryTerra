@@ -72,5 +72,12 @@ public enum DendryReturnType {
      * Elevation is quantized to UInt8 based on the 'max' parameter (0 = 0.0, 255 = max).
      * Returns de-quantized elevation as a double value.
      */
-    PIXEL_RIVER_CTRL
+    PIXEL_RIVER_CTRL,
+
+    /**
+     * Reports approximate far distance to any river edge in world units.
+     * Uses an 8x8 directional distance cache per BigChunk.
+     * Also accessible via PIXEL_RIVER with y < 0.
+     */
+    PIXEL_RIVER_FAR
 }
