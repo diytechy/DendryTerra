@@ -50,7 +50,7 @@ public class DendryAddon implements AddonInitializer {
 
                 LOGGER.info("DendryTerra: Registered DENDRY sampler type");
             })
-            .priority(50)
+            .priority(0)
             .failThrough();
 
         LOGGER.info("DendryTerra addon initialized successfully");
