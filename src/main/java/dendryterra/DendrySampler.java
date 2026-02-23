@@ -141,6 +141,8 @@ public class DendrySampler implements Sampler {
     private final Sampler borderwidthSampler;   // Sampler for border width around rivers
     private final double defaultBorderwidth;    // Default border width when no sampler
     private static final double RIVER_WIDTH_FALLOFF = 0.6;  // River width reduction per level
+    private volatile boolean warnedRiverwidth = false;
+    private volatile boolean warnedBorderwidth = false;
 
     // PIXEL_RIVER parameters
     private final double max;         // Maximum expected elevation for normalization
@@ -2488,6 +2490,14 @@ public class DendrySampler implements Sampler {
         double baseWidthSampler = (riverwidthSampler != null)
             ? riverwidthSampler.getSample(salt, samplerX, 0, samplerY)
             : defaultRiverwidth;
+        if (riverwidthSampler != null && baseWidthSampler > defaultRiverwidth) {
+            if (!warnedRiverwidth) {
+                warnedRiverwidth = true;
+                LOGGER.warn("riverwidthSampler returned {} which exceeds default-riverwidth {}; clamping",
+                            baseWidthSampler, defaultRiverwidth);
+            }
+            baseWidthSampler = defaultRiverwidth;
+        }
 
         // Convert to grid coordinates and apply level falloff
         double baseWidthGrid = baseWidthSampler / gridsize;
@@ -2926,6 +2936,14 @@ public class DendrySampler implements Sampler {
         double baseWidth;
         if (riverwidthSampler != null) {
             baseWidth = riverwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+            if (baseWidth > defaultRiverwidth) {
+                if (!warnedRiverwidth) {
+                    warnedRiverwidth = true;
+                    LOGGER.warn("riverwidthSampler returned {} which exceeds default-riverwidth {}; clamping",
+                                baseWidth, defaultRiverwidth);
+                }
+                baseWidth = defaultRiverwidth;
+            }
         } else {
             baseWidth = defaultRiverwidth;
         }
@@ -2946,6 +2964,14 @@ public class DendrySampler implements Sampler {
         double width;
         if (borderwidthSampler != null) {
             width = borderwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+            if (width > defaultBorderwidth) {
+                if (!warnedBorderwidth) {
+                    warnedBorderwidth = true;
+                    LOGGER.warn("borderwidthSampler returned {} which exceeds default-borderwidth {}; clamping",
+                                width, defaultBorderwidth);
+                }
+                width = defaultBorderwidth;
+            }
         } else {
             width = defaultBorderwidth;
         }
