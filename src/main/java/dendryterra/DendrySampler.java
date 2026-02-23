@@ -145,6 +145,7 @@ public class DendrySampler implements Sampler {
     // PIXEL_RIVER parameters
     private final double max;         // Maximum expected elevation for normalization
     private final double maxDistGrid; // Maximum distance in grid coordinates (maxDist / gridsize)
+    private final double maxDistPrune; // Maximum distance in grid coordinates (maxDist / gridsize)
 
     // Cache configuration
     private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
@@ -320,6 +321,7 @@ public class DendrySampler implements Sampler {
         this.max = max;
         this.maxSegmentsPerLevel = maxSegmentsPerLevel;
         this.maxDistGrid = maxDist / gridsize;  // Convert from sampler to grid coordinates
+        this.maxDistPrune = (defaultBorderwidth+defaultRiverwidth) / gridsize;  // Convert from sampler to grid coordinates
 
         // Calculate pixel grid size
         if (cachepixels > 0) {

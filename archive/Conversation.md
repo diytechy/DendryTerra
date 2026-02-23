@@ -1460,4 +1460,82 @@ IMPORTANT: Quantization must be taken care of here very carefully, as real world
 
 #################################
 
-Implimennt a change to ensure the elevation for all level 1+ points evaluate to the minimum quantized distance (1/255 * max).  This likely would be 
+Implimennt a change to ensure the elevation for all level 1+ points evaluate to the minimum quantized distance (1/255 * max).
+
+##################################
+
+Plan an update for DendryTerra to have runtime validation of the river width sampler and river distance sampler.
+
+If riverwidthSampler is evaluated, produce a warning if it's value is more than defaultRiverwidth, and saturate the returned sampler distance to defaultRiverwidth.
+
+If borderwidthSampler is evaluated, produce a warning if it's value is more than defaultBorderwidth, and saturate the returned sampler distance to defaultRiverwidth.
+
+Plan an update for DendryTerra to support a new return type PIXEL_RIVER_FAR which reports the far distance from the river edge in actual world units.  Also report this if the y input for PIXEL_RIVER is less than 0.  (So the elevation should only be reported when the y input is more than 0, and current default distance is reported with ==0).
+
+This will report the approximate far distances to any river edge.
+
+This will require additional refactoring in the pixel cache, recommended direction:
+
+Each big cache will also contain a smaller 8x8 far-distance cache that will contain for each center "point" in the grid:
+ Distance from far cache border to the z+ segment (Uint8)
+ Distance from far cache border to z- segment (Uint8)
+ Distance from far cache border to x+ segment (Uint8)
+ Distance from far cache border to x- segment (Uint8)
+
+Update collectSegmentsForBigChunk to use maxDistPrune instead of maxDistGrid since it only needs to keep segments very close.
+
+Then introduce a new function before collectSegmentsForBigChunk that acts very similarly but collects all segments within the maxDistGrid, which will be used to normalize the distance values for far values and fill those far distance properties.
+
+Within this new function:
+
+	Walk along each segment similar to what is done for sampleSegmentAlongSpline, but steps can be in the size of of a far distance cache since this does not need to be very precise.  For each point along the segment (including the end-points), determine it's quadrent against the far cache point, and select the distance with the highest value, and update the distance for the far cache point if it is smaller than it's current value.  Note since this is based on quadrent, only 2 distances of any point in the 8x8 far cache grid could be updated, and only if that distance is less than the current stored distance for that segment direction.
+ 
+    If an evaluated point is located inside of the far grid cache square, all distances for that grid should be set to 0.
+
+    Distance should be stored in quantized values, where the max value (255 UInt8) corresponds to the maxDist value.
+
+Then when returning this far distance, the query coordinate can find the far-grid cache it belongs to, use it's offset to find the actual distance to any point in the x- / x+ / z- / z+ direction (by adding it's offset in the far-cache grid by the distances stored for the grid properties), and report back the lowest distance.
+	
+	
+ 
+
+The quantized distance that's stored can now be stored in real world distance with a max value of 
+
+Update DendryTerra to report addition distance information:
+
+For blotting - use square instead of diamond.
+
+From -1 to 0 <- In river.
+From 0 to 1 <- River boundary.
+From 1+ to right below max value <- Further boundary distance?
+
+How to rectify raw distance  vs normalized distance?
+
+Normalized distance is good for transitioning / herping, true distance is good for spot bannning.
+
+Could hold another uint8 value with just real distance outside river border?  Might be simplest.  But must still be normalized using some other value.
+
+Can use heavy blotting, or could simply store as uint4 encoded value for memory savings.
+
+Options:
+A. Have additional UInt8 with full distance from pixel grid, high computational intensity.
+B. More complex: 8x8 grid overlayed on pixel cache (256x256).  This would carry for the center of each grid, it's minimum distance to any segment line, computed while we're pruning  segments for  the 
+C. Reduce pixel cache to 128 x 128, house flag / value that indicates if any segments were in range of the cache value, or could have one output indicating segments were in range, and another indicating distances were set.
+	This could just be segment distance
+
+
+
+
+Related: Allow pixel cache x/z region have size configurable?
+
+
+
+
+
+
+Can we preserve distance
+
+1/22 - 
+
+BIN
+IM
