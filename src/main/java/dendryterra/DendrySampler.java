@@ -3472,16 +3472,16 @@ public class DendrySampler implements Sampler {
                         if (Math.abs(dx)>=Math.abs(dy))
                         {
                             if (dx > 0) {
-                                double distFromBorder = dx - farCellSize / 2.0;
-                                if (distFromBorder < 0) distFromBorder = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                                double distFromCenterr = dx - farCellSize / 2.0;
+                                if (distFromCenterr < 0) distFromCenterr = 0;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
                                 if (quantized < cell.getDistXPlusUnsigned()) {
                                     cell.setDistXPlusUnsigned(quantized);
                                 }
                             } else {
-                                double distFromBorder = -dx - farCellSize / 2.0;
-                                if (distFromBorder < 0) distFromBorder = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                                double distFromCenterr = -dx - farCellSize / 2.0;
+                                if (distFromCenterr < 0) distFromCenterr = 0;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
                                 if (quantized < cell.getDistXMinusUnsigned()) {
                                     cell.setDistXMinusUnsigned(quantized);
                                 }
@@ -3492,16 +3492,16 @@ public class DendrySampler implements Sampler {
                         if (Math.abs(dy)>=Math.abs(dx))
                         {
                             if (dy > 0) {
-                                double distFromBorder = dy - farCellSize / 2.0;
-                                if (distFromBorder < 0) distFromBorder = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                                double distFromCenterr = dy - farCellSize / 2.0;
+                                if (distFromCenterr < 0) distFromCenterr = 0;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
                                 if (quantized < cell.getDistZPlusUnsigned()) {
                                     cell.setDistZPlusUnsigned(quantized);
                                 }
                             } else {
-                                double distFromBorder = -dy - farCellSize / 2.0;
-                                if (distFromBorder < 0) distFromBorder = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromBorder / maxDistGrid * 255));
+                                double distFromCenterr = -dy - farCellSize / 2.0;
+                                if (distFromCenterr < 0) distFromCenterr = 0;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
                                 if (quantized < cell.getDistZMinusUnsigned()) {
                                     cell.setDistZMinusUnsigned(quantized);
                                 }
