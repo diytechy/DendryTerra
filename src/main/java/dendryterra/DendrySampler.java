@@ -3541,10 +3541,27 @@ public class DendrySampler implements Sampler {
             double dzMinus = cell.getDistZMinusUnsigned() * cachepixels;
 
             // Actual distance from query point to segment in each direction
-            double actualXPlus  = dxPlus  + (-offsetX)*gridsize;
-            double actualXMinus = dxMinus + (offsetX)*gridsize;
-            double actualZPlus  = dzPlus  + (-offsetY)*gridsize;
-            double actualZMinus = dzMinus + (offsetY)*gridsize;
+            double actualXMinus= Double.MAX_VALUE;
+            double actualXPlus=Double.MAX_VALUE;
+            double actualZMinus= Double.MAX_VALUE;
+            double actualZPlus= Double.MAX_VALUE;
+            
+            if(offsetX>0){
+                actualXPlus  = dxPlus  + (offsetX)*gridsize;
+                actualXMinus  = dxPlus  - (offsetX)*gridsize;
+            }
+            else{
+                actualXPlus  = dxPlus  - (offsetX)*gridsize;
+                actualXMinus  = dxPlus  + (offsetX)*gridsize;
+            }
+            if(offsetY>0){
+                actualZPlus  = dzPlus  + (offsetY)*gridsize;
+                actualZMinus = dzPlus  - (offsetY)*gridsize;
+            }
+            else{
+                actualZPlus  = dzPlus  - (offsetY)*gridsize;
+                actualZMinus = dzPlus  + (offsetY)*gridsize;
+            }
 
             // Return the minimum (closest river in any direction), converted to world units
             double minDist = Math.min(Math.min(actualXPlus, actualXMinus), Math.min(actualZPlus, actualZMinus));
