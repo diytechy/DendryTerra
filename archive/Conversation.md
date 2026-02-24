@@ -1529,3 +1529,4 @@ Add an additional mode to ENABLE_BLOT_FILLING, such that when it is "2" all 8 sq
 
 The normal angle used in evaluateWithBigChunkFarDistance2 should just be the perpendicular arrow from the river's evaluated tangent moving away from the river, instead of the angle computed between the segment sample and the far cell center.
 
+If an parameter is defined for the sampler which is NOT used (ex: default-riverwidth is a parameter which the sampler does use), produce a warning so the user knows the sampler may not be configured correctly.

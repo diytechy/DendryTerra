@@ -355,6 +355,46 @@ public class DendrySampler implements Sampler {
             LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useParallel={}, useSplines={}, parallelThreshold={}, cachepixels={}, pixelGridSize={}",
                 resolution, gridsize, useParallel, useSplines, parallelThreshold, cachepixels, pixelGridSize);
         }
+
+        warnUnusedParams(returnType);
+    }
+
+    private void warnUnusedParams(DendryReturnType returnType) {
+        boolean usesBigChunk = (returnType == DendryReturnType.PIXEL_RIVER
+                || returnType == DendryReturnType.PIXEL_RIVER_CTRL
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR2);
+        boolean usesPixelCache = (returnType == DendryReturnType.PIXEL_ELEVATION
+                || returnType == DendryReturnType.PIXEL_LEVEL
+                || returnType == DendryReturnType.PIXEL_DEBUG
+                || returnType == DendryReturnType.PIXEL_RIVER_LEGACY);
+        boolean usesRiverWidth = usesBigChunk || returnType == DendryReturnType.PIXEL_RIVER_LEGACY;
+
+        if (!usesBigChunk && !usesPixelCache && cachepixels > 0) {
+            LOGGER.warn("Parameter 'cachepixels' is set ({}) but not used by return type {}", cachepixels, returnType);
+        }
+        if (!usesRiverWidth) {
+            if (riverwidthSampler != null) {
+                LOGGER.warn("Parameter 'riverwidth' sampler is set but not used by return type {}", returnType);
+            }
+            if (defaultRiverwidth != 16.0) {
+                LOGGER.warn("Parameter 'default-riverwidth' is set ({}) but not used by return type {}", defaultRiverwidth, returnType);
+            }
+            if (borderwidthSampler != null) {
+                LOGGER.warn("Parameter 'borderwidth' sampler is set but not used by return type {}", returnType);
+            }
+            if (defaultBorderwidth != 20.0) {
+                LOGGER.warn("Parameter 'default-borderwidth' is set ({}) but not used by return type {}", defaultBorderwidth, returnType);
+            }
+        }
+        if (!usesBigChunk) {
+            if (max != 2.0) {
+                LOGGER.warn("Parameter 'max' is set ({}) but not used by return type {}", max, returnType);
+            }
+            if (Math.abs(maxDistGrid * gridsize - 150.0) > 0.01) {
+                LOGGER.warn("Parameter 'max-dist' is set ({}) but not used by return type {}", maxDistGrid * gridsize, returnType);
+            }
+        }
     }
 
     private static long packKey(int x, int y) {
@@ -3452,9 +3492,11 @@ public class DendrySampler implements Sampler {
     private void computeFarCache(BigChunk chunk, double chunkSizeGrid, List<Segment3D> farSegments) {
         double farCellSize = chunkSizeGrid / 8.0;
 
-        // Track closest segment point position per cell for normal computation
+        // Track closest segment point position, segment, and t per cell for normal computation
         double[][] closestPointX = new double[8][8];
         double[][] closestPointY = new double[8][8];
+        Segment3D[][] closestSeg = new Segment3D[8][8];
+        double[][] closestT = new double[8][8];
 
         // Phase A: Find closest Euclidean distance per cell
         for (Segment3D seg : farSegments) {
@@ -3484,26 +3526,39 @@ public class DendrySampler implements Sampler {
                             cell.setDistanceUnsigned(quantized);
                             closestPointX[ci][cj] = pt.x;
                             closestPointY[ci][cj] = pt.y;
+                            closestSeg[ci][cj] = seg;
+                            closestT[ci][cj] = t;
                         }
                     }
                 }
             }
         }
 
-        // Phase B: Compute normals from closest points
+        // Phase B: Compute normals from segment tangent perpendicular
         for (int ci = 0; ci < 8; ci++) {
             for (int cj = 0; cj < 8; cj++) {
                 BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
-                if (cell.getDistanceUnsigned() >= 255) continue;
+                if (cell.getDistanceUnsigned() >= 255 || closestSeg[ci][cj] == null) continue;
 
+                // Get tangent at the closest point on the segment
+                dendryterra.math.Vec2D tangent = interpolateTangent(closestSeg[ci][cj], closestT[ci][cj]);
+
+                // Perpendicular: rotate tangent 90° CCW → (-ty, tx)
+                double perpX = -tangent.y;
+                double perpY = tangent.x;
+
+                // Pick the direction pointing away from river (toward cell center)
                 double cellCenterX = chunk.gridOriginX + (cj + 0.5) * farCellSize;
                 double cellCenterY = chunk.gridOriginY + (ci + 0.5) * farCellSize;
+                double toCellX = cellCenterX - closestPointX[ci][cj];
+                double toCellY = cellCenterY - closestPointY[ci][cj];
 
-                // Vector FROM river TO cell center (direction away from river)
-                double dx = cellCenterX - closestPointX[ci][cj];
-                double dy = cellCenterY - closestPointY[ci][cj];
+                if (perpX * toCellX + perpY * toCellY < 0) {
+                    perpX = -perpX;
+                    perpY = -perpY;
+                }
 
-                double angle = Math.atan2(dy, dx);
+                double angle = Math.atan2(perpY, perpX);
                 if (angle < 0) angle += 2.0 * Math.PI;
 
                 int normalQuantized = (int) Math.min(255, Math.max(0, angle / (2.0 * Math.PI) * 255));
@@ -3931,7 +3986,7 @@ public class DendrySampler implements Sampler {
 
         // Project outward from sample point
         // If blot filling, we don't need to  extend all the way out since blotting will naturally fill it.
-        //int maxSteps = (int) Math.max(0, Math.ceil(maxDistGrid / cachepixelsGrid)-((int) (ENABLE_BLOT_FILLING ? 1 : 0)));
+        //int maxSteps = (int) Math.max(0, Math.ceil(maxDistGrid / cachepixelsGrid)-((ENABLE_BLOT_FILLING > 0) ? 1 : 0));
         int maxSteps = (int) Math.max(0, Math.ceil(maxDistPrune / cachepixelsGrid));
         for (int step = 0; step <= maxSteps; step++) {
             double distanceGrid = step * cachepixelsGrid;
@@ -3965,7 +4020,7 @@ public class DendrySampler implements Sampler {
                 // Otherwise centralElev (already set)
             }
 
-            boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING;
+            boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING > 0;
 
             if (step == 0) {
                 // Center point - set the box at samplePoint
@@ -4063,7 +4118,7 @@ public class DendrySampler implements Sampler {
     }
 
     /** Compile-time toggle for adjacent box blot filling */
-    private static final boolean ENABLE_BLOT_FILLING = true;
+    private static final int ENABLE_BLOT_FILLING = 2;  // 0=off, 1=4 cardinal neighbors, 2=all 8 neighbors
 
     /**
      * Update a bigchunk block with new distance and elevation values.
@@ -4113,9 +4168,14 @@ public class DendrySampler implements Sampler {
         // Update this box
         applyBoxUpdate(box, distU8, finalElevU8);
 
-        // Blot: fill 4 adjacent boxes with same values (pin-hole filling)
-        if (ENABLE_BLOT_FILLING && blotAdjacentBoxes) {
-            int[][] neighbors = {{-1,0},{1,0},{0,-1},{0,1}};
+        // Blot: fill adjacent boxes with same values (pin-hole filling)
+        if (ENABLE_BLOT_FILLING > 0 && blotAdjacentBoxes) {
+            int[][] neighbors;
+            if (ENABLE_BLOT_FILLING >= 2) {
+                neighbors = new int[][]{{-1,0},{1,0},{0,-1},{0,1},{-1,-1},{-1,1},{1,-1},{1,1}};
+            } else {
+                neighbors = new int[][]{{-1,0},{1,0},{0,-1},{0,1}};
+            }
             for (int[] d : neighbors) {
                 int nx = blockX + d[0], ny = blockY + d[1];
                 if (nx >= 0 && nx < 256 && ny >= 0 && ny < 256) {
