@@ -3472,16 +3472,14 @@ public class DendrySampler implements Sampler {
                         if (Math.abs(dx)>=Math.abs(dy))
                         {
                             if (dx > 0) {
-                                double distFromCenterr = dx - farCellSize / 2.0;
-                                if (distFromCenterr < 0) distFromCenterr = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
+                                double distFromCenter = dx;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
                                 if (quantized < cell.getDistXPlusUnsigned()) {
                                     cell.setDistXPlusUnsigned(quantized);
                                 }
                             } else {
-                                double distFromCenterr = -dx - farCellSize / 2.0;
-                                if (distFromCenterr < 0) distFromCenterr = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
+                                double distFromCenter = -dx;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
                                 if (quantized < cell.getDistXMinusUnsigned()) {
                                     cell.setDistXMinusUnsigned(quantized);
                                 }
@@ -3492,16 +3490,14 @@ public class DendrySampler implements Sampler {
                         if (Math.abs(dy)>=Math.abs(dx))
                         {
                             if (dy > 0) {
-                                double distFromCenterr = dy - farCellSize / 2.0;
-                                if (distFromCenterr < 0) distFromCenterr = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
+                                double distFromCenter = dy;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
                                 if (quantized < cell.getDistZPlusUnsigned()) {
                                     cell.setDistZPlusUnsigned(quantized);
                                 }
                             } else {
-                                double distFromCenterr = -dy - farCellSize / 2.0;
-                                if (distFromCenterr < 0) distFromCenterr = 0;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenterr / maxDistGrid * 255));
+                                double distFromCenter = -dy;
+                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
                                 if (quantized < cell.getDistZMinusUnsigned()) {
                                     cell.setDistZMinusUnsigned(quantized);
                                 }
@@ -3533,22 +3529,33 @@ public class DendrySampler implements Sampler {
         double offsetX = gridX - cellCenterX;
         double offsetY = gridY - cellCenterY;
 
-        // Dequantize stored border distances to grid units
-        double dxPlus  = cell.getDistXPlusUnsigned()  / 255.0 * maxDistGrid;
-        double dxMinus = cell.getDistXMinusUnsigned() / 255.0 * maxDistGrid;
-        double dzPlus  = cell.getDistZPlusUnsigned()  / 255.0 * maxDistGrid;
-        double dzMinus = cell.getDistZMinusUnsigned() / 255.0 * maxDistGrid;
+        // Dequantize stored border distances to world units
+        if(cell.getDistXPlusUnsigned()<255 ||
+            cell.getDistXPlusUnsigned()<255 ||
+            cell.getDistXPlusUnsigned()<255 ||
+            cell.getDistXPlusUnsigned()<255)
+        {
+            double dxPlus  = cell.getDistXPlusUnsigned()  * cachepixels;
+            double dxMinus = cell.getDistXMinusUnsigned() * cachepixels;
+            double dzPlus  = cell.getDistZPlusUnsigned()  * cachepixels;
+            double dzMinus = cell.getDistZMinusUnsigned() * cachepixels;
 
-        // Actual distance from query point to segment in each direction
-        double halfCell = farCellSize / 2.0;
-        double actualXPlus  = dxPlus  + (halfCell - offsetX);
-        double actualXMinus = dxMinus + (halfCell + offsetX);
-        double actualZPlus  = dzPlus  + (halfCell - offsetY);
-        double actualZMinus = dzMinus + (halfCell + offsetY);
+            // Actual distance from query point to segment in each direction
+            double actualXPlus  = dxPlus  + (offsetX)*gridsize;
+            double actualXMinus = dxMinus + (offsetX)*gridsize;
+            double actualZPlus  = dzPlus  + (offsetY)*gridsize;
+            double actualZMinus = dzMinus + (offsetY)*gridsize;
 
-        // Return the minimum (closest river in any direction), converted to world units
-        double minDist = Math.min(Math.min(actualXPlus, actualXMinus), Math.min(actualZPlus, actualZMinus));
-        return minDist * gridsize;
+            // Return the minimum (closest river in any direction), converted to world units
+            double minDist = Math.min(Math.min(actualXPlus, actualXMinus), Math.min(actualZPlus, actualZMinus));
+            return minDist * gridsize;
+                    
+        }
+        else{
+            return (255.0 * cachepixels);
+            //return Double.MAX_VALUE;
+        }
+
     }
 
     /**
