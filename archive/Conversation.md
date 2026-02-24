@@ -1495,47 +1495,7 @@ Within this new function:
     Distance should be stored in quantized values, where the max value (255 UInt8) corresponds to the maxDist value.
 
 Then when returning this far distance, the query coordinate can find the far-grid cache it belongs to, use it's offset to find the actual distance to any point in the x- / x+ / z- / z+ direction (by adding it's offset in the far-cache grid by the distances stored for the grid properties), and report back the lowest distance.
-	
-	
- 
 
-The quantized distance that's stored can now be stored in real world distance with a max value of 
+##################
 
-Update DendryTerra to report addition distance information:
-
-For blotting - use square instead of diamond.
-
-From -1 to 0 <- In river.
-From 0 to 1 <- River boundary.
-From 1+ to right below max value <- Further boundary distance?
-
-How to rectify raw distance  vs normalized distance?
-
-Normalized distance is good for transitioning / herping, true distance is good for spot bannning.
-
-Could hold another uint8 value with just real distance outside river border?  Might be simplest.  But must still be normalized using some other value.
-
-Can use heavy blotting, or could simply store as uint4 encoded value for memory savings.
-
-Options:
-A. Have additional UInt8 with full distance from pixel grid, high computational intensity.
-B. More complex: 8x8 grid overlayed on pixel cache (256x256).  This would carry for the center of each grid, it's minimum distance to any segment line, computed while we're pruning  segments for  the 
-C. Reduce pixel cache to 128 x 128, house flag / value that indicates if any segments were in range of the cache value, or could have one output indicating segments were in range, and another indicating distances were set.
-	This could just be segment distance
-
-
-
-
-Related: Allow pixel cache x/z region have size configurable?
-
-
-
-
-
-
-Can we preserve distance
-
-1/22 - 
-
-BIN
-IM
+The distance returned from PIXEL_RIVER_FAR should span from 0 (River contained in cell) to maxDist (the parameter "max")
