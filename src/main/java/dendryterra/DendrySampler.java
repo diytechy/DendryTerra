@@ -3542,17 +3542,17 @@ public class DendrySampler implements Sampler {
 
             // Actual distance from query point to segment in each direction
             double actualXPlus  = dxPlus  + (offsetX)*gridsize;
-            double actualXMinus = dxMinus + (offsetX)*gridsize;
+            double actualXMinus = dxMinus + (-offsetX)*gridsize;
             double actualZPlus  = dzPlus  + (offsetY)*gridsize;
-            double actualZMinus = dzMinus + (offsetY)*gridsize;
+            double actualZMinus = dzMinus + (-offsetY)*gridsize;
 
             // Return the minimum (closest river in any direction), converted to world units
             double minDist = Math.min(Math.min(actualXPlus, actualXMinus), Math.min(actualZPlus, actualZMinus));
-            return minDist * gridsize;
+            return Math.min(minDist,maxDistGrid*gridsize);
                     
         }
         else{
-            return (255.0 * cachepixels);
+            return (maxDistGrid*gridsize);
             //return Double.MAX_VALUE;
         }
 

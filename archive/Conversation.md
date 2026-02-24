@@ -1498,4 +1498,32 @@ Then when returning this far distance, the query coordinate can find the far-gri
 
 ##################
 
-The distance returned from PIXEL_RIVER_FAR should span from 0 (River contained in cell) to maxDist (the parameter "max")
+The distance returned from PIXEL_RIVER_FAR should span from 0 (River contained in cell) to maxDist (the parameter "maxDist")
+
+The distance should be restricted to updating the furthest distance?
+
+Distance from center is in cell units, need to convert to cache units.  What about when both distances are negative?  Then we know 
+
+If we have two negative values, the river is inside the cache size, distance should still be larger value of the two?
+
+CellDistance = 1.0 (GridDistance)
+CachePixels = 20.0
+
+RealDistance = GridSpacing * CellDistance.
+
+Then quantize by dividing the distance per cachePixel:
+
+RealDistancePerPixel = GridSpacing / CachePixels.
+
+QuantDistance = GridSpacing * CEllDistance / (Gridspacing / CachePixels) = 
+
+GridSpacing * CEllDistance * (CachePixels / Gridpsacing)
+
+QuantDistance = CellDistance*CachePixels*255
+
+RealDistance = QauntDistance * GridSpacing / CachePixels
+
+(CellDistance * GridSpacing / CachePixels) <= Yields pixel distance.
+
+Then take output and multiply by cachepixels to get real world units, then add into offset.
+
