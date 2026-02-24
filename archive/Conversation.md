@@ -1498,32 +1498,27 @@ Then when returning this far distance, the query coordinate can find the far-gri
 
 ##################
 
-The distance returned from PIXEL_RIVER_FAR should span from 0 (River contained in cell) to maxDist (the parameter "maxDist")
+I have made some modifications to the last implimented plan in order to get distance from the query point, ignoring any concept of boundary.  This is PIXEL_RIVER_FAR.
 
-The distance should be restricted to updating the furthest distance?
+Output magnitudes are correct, and sometimes results appear correct, but two issues:
 
-Distance from center is in cell units, need to convert to cache units.  What about when both distances are negative?  Then we know 
+Sometimes the gradient created from the query is not smooth or flipped. For instance, if the distance from a river is 100 at coordinates (150,150), the river distance reported at (151, 150) should be 101, but instead it appears to sometimes be 99, as if there is something causing an inverted calculation.
 
-If we have two negative values, the river is inside the cache size, distance should still be larger value of the two?
+Additionally, sometimes distances abruptly increase (like from 100 to 200), indicating the distance calculation is getting missed / overwritten from another segment, or segment points are getting skipped entirely.
 
-CellDistance = 1.0 (GridDistance)
-CachePixels = 20.0
+##################################
 
-RealDistance = GridSpacing * CellDistance.
+********Complex option:
 
-Then quantize by dividing the distance per cachePixel:
+Let's try this a little differently.  Instead of storing the 4 distances from center which is sensative to corner artifacts (ex: distXPlus), change the cache to store:
 
-RealDistancePerPixel = GridSpacing / CachePixels.
+LowestQuantizedDistance (Same units as today, but just stores the lowest distance based on the evaluated distances between segment points and the pixel cache.)
+Store closest quantized river distance, store y slope, store x slope.
 
-QuantDistance = GridSpacing * CEllDistance / (Gridspacing / CachePixels) = 
+Normal (Quantized angle, 255 bits to cover the entire angle around the point) the describes the direction that gets further away from the selected river.
 
-GridSpacing * CEllDistance * (CachePixels / Gridpsacing)
+When evaluating, just return the distance for the farcache if the query point is on the cache.
 
-QuantDistance = CellDistance*CachePixels*255
+Add another return type (PIXEL_RIVER_FAR2, or y<=2 for PIXEL_RIVER) that will also include calculation of the normal angle to further compensate the reported far distance based on where the query point is on far cache.  So if the normal angle is 45 degrees NE (X+ / Z+) and the query point is on the upper right corner off the farcache, the distance would increase by (pixelcache*16*sqrt(2)).
 
-RealDistance = QauntDistance * GridSpacing / CachePixels
-
-(CellDistance * GridSpacing / CachePixels) <= Yields pixel distance.
-
-Then take output and multiply by cachepixels to get real world units, then add into offset.
-
+*********Super simple option:

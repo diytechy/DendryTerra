@@ -117,33 +117,27 @@ public class BigChunk {
     }
 
     /**
-     * A cell in the 8x8 far-distance cache. Stores directional distances (UInt8)
-     * from the cell border to the nearest segment in each cardinal direction.
-     * 255 = maxDist (no segment found), 0 = segment is inside this cell.
+     * A cell in the 8x8 far-distance cache.
+     * Stores the closest Euclidean distance to any segment (UInt8, quantized)
+     * and a normal angle (UInt8, 0-255 maps to 0-2π) pointing away from the nearest river.
+     * 255 distance = maxDist (no segment found), 0 = segment at cell center.
      */
     public static class FarCacheCell {
-        public byte distXPlus;   // distance from +X border to nearest segment in +X direction
-        public byte distXMinus;  // distance from -X border to nearest segment in -X direction
-        public byte distZPlus;   // distance from +Z border to nearest segment in +Z direction
-        public byte distZMinus;  // distance from -Z border to nearest segment in -Z direction
+        public byte distance;  // Quantized closest distance to any segment
+        public byte normal;    // Quantized angle (0-255 → 0-2π) pointing AWAY from nearest river
 
         public FarCacheCell() {
-            distXPlus = distXMinus = distZPlus = distZMinus = (byte) 255;
+            distance = (byte) 255;  // max distance (unset)
+            normal = 0;
         }
 
-        public int getDistXPlusUnsigned()  { return Byte.toUnsignedInt(distXPlus); }
-        public int getDistXMinusUnsigned() { return Byte.toUnsignedInt(distXMinus); }
-        public int getDistZPlusUnsigned()  { return Byte.toUnsignedInt(distZPlus); }
-        public int getDistZMinusUnsigned() { return Byte.toUnsignedInt(distZMinus); }
+        public int getDistanceUnsigned() { return Byte.toUnsignedInt(distance); }
+        public void setDistanceUnsigned(int v) { distance = (byte) Math.min(255, Math.max(0, v)); }
 
-        public void setDistXPlusUnsigned(int v)  { distXPlus  = (byte) Math.min(255, Math.max(0, v)); }
-        public void setDistXMinusUnsigned(int v) { distXMinus = (byte) Math.min(255, Math.max(0, v)); }
-        public void setDistZPlusUnsigned(int v)  { distZPlus  = (byte) Math.min(255, Math.max(0, v)); }
-        public void setDistZMinusUnsigned(int v) { distZMinus = (byte) Math.min(255, Math.max(0, v)); }
+        public int getNormalUnsigned() { return Byte.toUnsignedInt(normal); }
+        public void setNormalUnsigned(int v) { normal = (byte) Math.min(255, Math.max(0, v)); }
 
-        /** Set all directional distances to 0 (segment is inside this cell). */
-        public void setAllZero() {
-            distXPlus = distXMinus = distZPlus = distZMinus = 0;
-        }
+        /** Decode normal to radians (0-2π). */
+        public double getNormalRadians() { return Byte.toUnsignedInt(normal) / 255.0 * 2.0 * Math.PI; }
     }
 }

@@ -409,6 +409,8 @@ public class DendrySampler implements Sampler {
         if (returnType == DendryReturnType.PIXEL_RIVER) {
             if (y > 0.0) {
                 return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
+            } else if (y <= -2.0) {
+                return evaluateWithBigChunkFarDistance2(x / gridsize, z / gridsize);
             } else if (y < 0.0) {
                 return evaluateWithBigChunkFarDistance(x / gridsize, z / gridsize);
             }
@@ -3447,6 +3449,11 @@ public class DendrySampler implements Sampler {
     private void computeFarCache(BigChunk chunk, double chunkSizeGrid, List<Segment3D> farSegments) {
         double farCellSize = chunkSizeGrid / 8.0;
 
+        // Track closest segment point position per cell for normal computation
+        double[][] closestPointX = new double[8][8];
+        double[][] closestPointY = new double[8][8];
+
+        // Phase A: Find closest Euclidean distance per cell
         for (Segment3D seg : farSegments) {
             double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
             if (segLen < MathUtils.EPSILON) continue;
@@ -3463,112 +3470,98 @@ public class DendrySampler implements Sampler {
                     double dy = pt.y - cellCenterY;
 
                     for (int cj = 0; cj < 8; cj++) {
-                        BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
                         double cellCenterX = chunk.gridOriginX + (cj + 0.5) * farCellSize;
                         double dx = pt.x - cellCenterX;
-                        
-                        // Determine quadrant and update the longest directional distances
-                        // X direction
-                        if (Math.abs(dx)>=Math.abs(dy))
-                        {
-                            if (dx > 0) {
-                                double distFromCenter = dx;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
-                                if (quantized < cell.getDistXPlusUnsigned()) {
-                                    cell.setDistXPlusUnsigned(quantized);
-                                }
-                            } else {
-                                double distFromCenter = -dx;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
-                                if (quantized < cell.getDistXMinusUnsigned()) {
-                                    cell.setDistXMinusUnsigned(quantized);
-                                }
-                            }
-                        }
 
-                        // Z direction
-                        if (Math.abs(dy)>=Math.abs(dx))
-                        {
-                            if (dy > 0) {
-                                double distFromCenter = dy;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
-                                if (quantized < cell.getDistZPlusUnsigned()) {
-                                    cell.setDistZPlusUnsigned(quantized);
-                                }
-                            } else {
-                                double distFromCenter = -dy;
-                                int quantized = (int) Math.min(255, Math.max(0, distFromCenter * gridsize / cachepixels));
-                                if (quantized < cell.getDistZMinusUnsigned()) {
-                                    cell.setDistZMinusUnsigned(quantized);
-                                }
-                            }
+                        double euclideanDist = Math.sqrt(dx * dx + dy * dy);
+                        int quantized = (int) Math.min(255, Math.max(0, euclideanDist * gridsize / cachepixels));
+
+                        BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
+                        if (quantized < cell.getDistanceUnsigned()) {
+                            cell.setDistanceUnsigned(quantized);
+                            closestPointX[ci][cj] = pt.x;
+                            closestPointY[ci][cj] = pt.y;
                         }
                     }
                 }
+            }
+        }
+
+        // Phase B: Compute normals from closest points
+        for (int ci = 0; ci < 8; ci++) {
+            for (int cj = 0; cj < 8; cj++) {
+                BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
+                if (cell.getDistanceUnsigned() >= 255) continue;
+
+                double cellCenterX = chunk.gridOriginX + (cj + 0.5) * farCellSize;
+                double cellCenterY = chunk.gridOriginY + (ci + 0.5) * farCellSize;
+
+                // Vector FROM river TO cell center (direction away from river)
+                double dx = cellCenterX - closestPointX[ci][cj];
+                double dy = cellCenterY - closestPointY[ci][cj];
+
+                double angle = Math.atan2(dy, dx);
+                if (angle < 0) angle += 2.0 * Math.PI;
+
+                int normalQuantized = (int) Math.min(255, Math.max(0, angle / (2.0 * Math.PI) * 255));
+                cell.setNormalUnsigned(normalQuantized);
             }
         }
     }
 
     /**
      * Evaluate far distance at a query point using the 8x8 far-distance cache.
-     * Returns the minimum directional distance to any river edge in world units.
+     * Returns raw cell center distance in world units (no offset compensation).
      */
     private double evaluateWithBigChunkFarDistance(double gridX, double gridY) {
         BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
         double chunkSizeGrid = getBigChunkSizeGrid();
         double farCellSize = chunkSizeGrid / 8.0;
 
-        // Which far-cache cell does the query fall in?
         int cellJ = Math.max(0, Math.min(7, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
         int cellI = Math.max(0, Math.min(7, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
         BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
-        // Query offset from cell center
+        int distU8 = cell.getDistanceUnsigned();
+        if (distU8 >= 255) return maxDistGrid * gridsize;
+
+        return distU8 * cachepixels;
+    }
+
+    /**
+     * Evaluate far distance with normal-based offset compensation.
+     * Projects the query's offset from cell center onto the normal direction
+     * to adjust the base distance for sub-cell accuracy.
+     */
+    private double evaluateWithBigChunkFarDistance2(double gridX, double gridY) {
+        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        double farCellSize = chunkSizeGrid / 8.0;
+
+        int cellJ = Math.max(0, Math.min(7, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(7, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
+
+        int distU8 = cell.getDistanceUnsigned();
+        if (distU8 >= 255) return maxDistGrid * gridsize;
+
+        double baseDist = distU8 * cachepixels;
+
+        // Normal: unit vector pointing away from nearest river
+        double normalRad = cell.getNormalRadians();
+        double normalX = Math.cos(normalRad);
+        double normalY = Math.sin(normalRad);
+
+        // Query offset from cell center in world units
         double cellCenterX = chunk.gridOriginX + (cellJ + 0.5) * farCellSize;
         double cellCenterY = chunk.gridOriginY + (cellI + 0.5) * farCellSize;
-        double offsetX = gridX - cellCenterX;
-        double offsetY = gridY - cellCenterY;
+        double offsetX = (gridX - cellCenterX) * gridsize;
+        double offsetY = (gridY - cellCenterY) * gridsize;
 
-        // Dequantize stored border distances to world units
-        int farCellSizePrescaled = (256/8);
-        if(cell.getDistXPlusUnsigned()<(farCellSizePrescaled) ||
-            cell.getDistXMinusUnsigned()<(farCellSizePrescaled) ||
-            cell.getDistZPlusUnsigned()<(farCellSizePrescaled) ||
-            cell.getDistZMinusUnsigned()<(farCellSizePrescaled))
-        {
-            return(0);
-        }
-        else if(cell.getDistXPlusUnsigned()<255 ||
-            cell.getDistXMinusUnsigned()<255 ||
-            cell.getDistZPlusUnsigned()<255 ||
-            cell.getDistZMinusUnsigned()<255)
-        {
-            double dxPlus  = cell.getDistXPlusUnsigned()  * cachepixels;
-            double dxMinus = cell.getDistXMinusUnsigned() * cachepixels;
-            double dzPlus  = cell.getDistZPlusUnsigned()  * cachepixels;
-            double dzMinus = cell.getDistZMinusUnsigned() * cachepixels;
+        // Project offset onto normal: positive = further from river, negative = closer
+        double dotProduct = offsetX * normalX + offsetY * normalY;
 
-            // Actual distance from query point to segment in each direction
-            double actualXMinus= Double.MAX_VALUE;
-            double actualXPlus=Double.MAX_VALUE;
-            double actualZMinus= Double.MAX_VALUE;
-            double actualZPlus= Double.MAX_VALUE;
-        
-            actualXPlus  = dxPlus  - (offsetX+Math.abs(offsetY))*gridsize;
-            actualXMinus  = dxMinus  + (offsetX+Math.abs(offsetY))*gridsize;
-            actualZPlus  = dzPlus  - (offsetY+Math.abs(offsetX))*gridsize;
-            actualZMinus = dzMinus  + (offsetY+Math.abs(offsetX))*gridsize;
-
-            // Return the minimum (closest river in any direction), converted to world units
-            double minDist = Math.min(Math.min(actualXPlus, actualXMinus), Math.min(actualZPlus, actualZMinus));
-            return Math.min(minDist,maxDistGrid*gridsize);
-                    
-        }
-        else{
-            return (maxDistGrid*gridsize);
-            //return Double.MAX_VALUE;
-        }
-
+        return Math.max(0, Math.min(baseDist + dotProduct, maxDistGrid * gridsize));
     }
 
     /**
