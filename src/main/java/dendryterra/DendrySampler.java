@@ -3732,7 +3732,7 @@ public class DendrySampler implements Sampler {
 
             // === Step E: Update elevation radii ===
             double riverWidthGrid = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
-            double borderWidthGrid = Math.min(maxDistGrid, getBorderWidth(samplePoint.x, samplePoint.y));
+            double borderWidthGrid = Math.min(maxDistPrune, getBorderWidth(samplePoint.x, samplePoint.y));
 
             // Width transition: linearly widen to match lower-level river at endpoint
             if (endFlowLevel >= 0 && endFlowLevel < level && endConnections == 1) {
@@ -3931,10 +3931,11 @@ public class DendrySampler implements Sampler {
 
         // Project outward from sample point
         // If blot filling, we don't need to  extend all the way out since blotting will naturally fill it.
-        int maxSteps = (int) Math.max(0, Math.ceil(maxDistGrid / cachepixelsGrid)-((int) (ENABLE_BLOT_FILLING ? 1 : 0)));
+        //int maxSteps = (int) Math.max(0, Math.ceil(maxDistGrid / cachepixelsGrid)-((int) (ENABLE_BLOT_FILLING ? 1 : 0)));
+        int maxSteps = (int) Math.max(0, Math.ceil(maxDistPrune / cachepixelsGrid));
         for (int step = 0; step <= maxSteps; step++) {
             double distanceGrid = step * cachepixelsGrid;
-            if (step > 0 && distanceGrid > maxDistGrid) break;
+            if (step > 0 && distanceGrid > maxDistPrune) break;
 
             // Normalized distance from river center (in river-width units)
             double normDistFromCenter = (riverWidthGrid > 0) ? distanceGrid / riverWidthGrid : 1.0;

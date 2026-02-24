@@ -1510,15 +1510,22 @@ Additionally, sometimes distances abruptly increase (like from 100 to 200), indi
 
 ********Complex option:
 
-Let's try this a little differently.  Instead of storing the 4 distances from center which is sensative to corner artifacts (ex: distXPlus), change the cache to store:
+Create a plan to try this a little differently.  Instead of storing the 4 distances from center which is sensative to corner artifacts (ex: distXPlus), change the cache to store:
 
 LowestQuantizedDistance (Same units as today, but just stores the lowest distance based on the evaluated distances between segment points and the pixel cache.)
 Store closest quantized river distance, store y slope, store x slope.
 
-Normal (Quantized angle, 255 bits to cover the entire angle around the point) the describes the direction that gets further away from the selected river.
+Normal (Quantized angle, 255 bits to cover the entire angle around the point) the describes the direction that gets further away from the selected river.  It may make sense to wait to calculate the normal until after the closest pair is found.
 
 When evaluating, just return the distance for the farcache if the query point is on the cache.
 
-Add another return type (PIXEL_RIVER_FAR2, or y<=2 for PIXEL_RIVER) that will also include calculation of the normal angle to further compensate the reported far distance based on where the query point is on far cache.  So if the normal angle is 45 degrees NE (X+ / Z+) and the query point is on the upper right corner off the farcache, the distance would increase by (pixelcache*16*sqrt(2)).
+Add another return type (PIXEL_RIVER_FAR2, or y<=-2 for PIXEL_RIVER) that will also include calculation of the normal angle to further compensate the reported far distance based on where the query point is on far cache.  So if the normal angle is 45 degrees NE (X+ / Z+) and the query point is on the upper right corner off the farcache, the reported distance would increase by the corresponding world units knowing the normal defines the distance change.
 
 *********Super simple option:
+
+##############################################
+
+Add an additional mode to ENABLE_BLOT_FILLING, such that when it is "2" all 8 squares around a sample point are filled, instead of just the 4 around the adjacent sides.
+
+The normal angle used in evaluateWithBigChunkFarDistance2 should just be the perpendicular arrow from the river's evaluated tangent moving away from the river, instead of the angle computed between the segment sample and the far cell center.
+
