@@ -3530,7 +3530,15 @@ public class DendrySampler implements Sampler {
         double offsetY = gridY - cellCenterY;
 
         // Dequantize stored border distances to world units
-        if(cell.getDistXPlusUnsigned()<255 ||
+        int farCellSizePrescaled = (256/8);
+        if(cell.getDistXPlusUnsigned()<(farCellSizePrescaled) ||
+            cell.getDistXMinusUnsigned()<(farCellSizePrescaled) ||
+            cell.getDistZPlusUnsigned()<(farCellSizePrescaled) ||
+            cell.getDistZMinusUnsigned()<(farCellSizePrescaled))
+        {
+            return(0);
+        }
+        else if(cell.getDistXPlusUnsigned()<255 ||
             cell.getDistXMinusUnsigned()<255 ||
             cell.getDistZPlusUnsigned()<255 ||
             cell.getDistZMinusUnsigned()<255)
@@ -3545,23 +3553,11 @@ public class DendrySampler implements Sampler {
             double actualXPlus=Double.MAX_VALUE;
             double actualZMinus= Double.MAX_VALUE;
             double actualZPlus= Double.MAX_VALUE;
-            
-            if(offsetX>0){
-                actualXPlus  = dxPlus  + (offsetX)*gridsize;
-                actualXMinus  = dxMinus  - (offsetX)*gridsize;
-            }
-            else{
-                actualXPlus  = dxPlus  - (offsetX)*gridsize;
-                actualXMinus  = dxMinus  + (offsetX)*gridsize;
-            }
-            if(offsetY>0){
-                actualZPlus  = dzPlus  + (offsetY)*gridsize;
-                actualZMinus = dzMinus  - (offsetY)*gridsize;
-            }
-            else{
-                actualZPlus  = dzPlus  - (offsetY)*gridsize;
-                actualZMinus = dzMinus  + (offsetY)*gridsize;
-            }
+        
+            actualXPlus  = dxPlus  - (offsetX)*gridsize;
+            actualXMinus  = dxMinus  + (offsetX)*gridsize;
+            actualZPlus  = dzPlus  - (offsetY)*gridsize;
+            actualZMinus = dzMinus  + (offsetY)*gridsize;
 
             // Return the minimum (closest river in any direction), converted to world units
             double minDist = Math.min(Math.min(actualXPlus, actualXMinus), Math.min(actualZPlus, actualZMinus));
