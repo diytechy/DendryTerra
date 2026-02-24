@@ -3531,9 +3531,9 @@ public class DendrySampler implements Sampler {
 
         // Dequantize stored border distances to world units
         if(cell.getDistXPlusUnsigned()<255 ||
-            cell.getDistXPlusUnsigned()<255 ||
-            cell.getDistXPlusUnsigned()<255 ||
-            cell.getDistXPlusUnsigned()<255)
+            cell.getDistXMinusUnsigned()<255 ||
+            cell.getDistZPlusUnsigned()<255 ||
+            cell.getDistZMinusUnsigned()<255)
         {
             double dxPlus  = cell.getDistXPlusUnsigned()  * cachepixels;
             double dxMinus = cell.getDistXMinusUnsigned() * cachepixels;
