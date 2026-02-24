@@ -3548,19 +3548,19 @@ public class DendrySampler implements Sampler {
             
             if(offsetX>0){
                 actualXPlus  = dxPlus  + (offsetX)*gridsize;
-                actualXMinus  = dxPlus  - (offsetX)*gridsize;
+                actualXMinus  = dxMinus  - (offsetX)*gridsize;
             }
             else{
                 actualXPlus  = dxPlus  - (offsetX)*gridsize;
-                actualXMinus  = dxPlus  + (offsetX)*gridsize;
+                actualXMinus  = dxMinus  + (offsetX)*gridsize;
             }
             if(offsetY>0){
                 actualZPlus  = dzPlus  + (offsetY)*gridsize;
-                actualZMinus = dzPlus  - (offsetY)*gridsize;
+                actualZMinus = dzMinus  - (offsetY)*gridsize;
             }
             else{
                 actualZPlus  = dzPlus  - (offsetY)*gridsize;
-                actualZMinus = dzPlus  + (offsetY)*gridsize;
+                actualZMinus = dzMinus  + (offsetY)*gridsize;
             }
 
             // Return the minimum (closest river in any direction), converted to world units
