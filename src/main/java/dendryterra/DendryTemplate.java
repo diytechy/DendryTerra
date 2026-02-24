@@ -244,7 +244,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("max-dist")
     @Default
-    private @Meta double maxDist = 255.0;
+    private @Meta double maxDist = 150.0;
 
     @Override
     public boolean validate() throws ValidationException {
