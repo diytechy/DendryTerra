@@ -79,5 +79,12 @@ public enum DendryReturnType {
      * Uses an 8x8 directional distance cache per BigChunk.
      * Also accessible via PIXEL_RIVER with y < 0.
      */
-    PIXEL_RIVER_FAR
+    PIXEL_RIVER_FAR,
+
+    /**
+     * Reports far distance to any river edge in world units with normal-based offset compensation.
+     * Uses an 8x8 distance+normal cache per BigChunk for sub-cell accuracy.
+     * Also accessible via PIXEL_RIVER with y <= -2.
+     */
+    PIXEL_RIVER_FAR2
 }

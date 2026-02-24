@@ -342,7 +342,8 @@ public class DendrySampler implements Sampler {
 
         // Initialize PIXEL_RIVER caches only when using BigChunk-based return types
         if (returnType == DendryReturnType.PIXEL_RIVER || returnType == DendryReturnType.PIXEL_RIVER_CTRL
-                || returnType == DendryReturnType.PIXEL_RIVER_FAR) {
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR2) {
             this.segmentListCache = new SegmentListCache();
             this.bigChunkCache = new BigChunkCache();
         } else {
@@ -375,6 +376,8 @@ public class DendrySampler implements Sampler {
             result = evaluateWithBigChunkElevation(normalizedX, normalizedZ);
         } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR) {
             result = evaluateWithBigChunkFarDistance(normalizedX, normalizedZ);
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR2) {
+            result = evaluateWithBigChunkFarDistance2(normalizedX, normalizedZ);
         }
         // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
         else if (usesPixelCache()) {
