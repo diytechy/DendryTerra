@@ -3581,9 +3581,10 @@ public class DendrySampler implements Sampler {
         BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
         int distU8 = cell.getDistanceUnsigned();
-        if (distU8 >= 255) return maxDistGrid * gridsize;
+        double MaxRepDist = maxDistGrid * gridsize;
+        if (distU8 >= 255) return MaxRepDist;
 
-        return distU8 * cachepixels;
+        return Math.min(distU8 * cachepixels,MaxRepDist);
     }
 
     /**
