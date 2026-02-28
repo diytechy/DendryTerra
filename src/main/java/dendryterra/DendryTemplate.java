@@ -129,15 +129,6 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     private @Meta double tangentAngle = 45.0;
 
     /**
-     * @deprecated Use 'curvature' instead. tangent-strength has been consolidated into curvature.
-     * If set, its value is multiplied into curvature for backwards compatibility.
-     */
-    @Deprecated
-    @Value("tangent-strength")
-    @Default
-    private @Meta double tangentStrength = 1.0;
-
-    /**
      * Pixel cache resolution for faster repeated queries.
      * When > 0, caches segment data as a pixel grid for each cell.
      * Range: 0 (disabled) to gridsize.
@@ -291,13 +282,11 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
 
     @Override
     public Sampler get() {
-        // Multiply deprecated tangentStrength into curvature for backwards compatibility
-        double effectiveCurvature = curvature * tangentStrength;
         return new DendrySampler(
             n, epsilon, slope, gridsize,
             returnType, controlSampler, salt,
             branchesSampler, defaultBranches,
-            effectiveCurvature,
+            curvature,
             useParallel,
             debugTiming, parallelThreshold,
             ConstellationScale, constellationShape,
