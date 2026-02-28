@@ -305,10 +305,12 @@ public class SegmentList {
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
 
-        // Step 1b: Bound tangent magnitudes to maxSegmentLength to prevent excessive curves
+        // Step 1b: Normalize tangents to unit length — the Hermite evaluation in
+        // evaluateHermiteSpline applies segLen * tangentStrength * curvature, giving
+        // linear scaling with segment length (not quadratic).
         double distance = srt.position.distanceTo(end.position);
-        tangentSrt = scaleTangentMagnitude(tangentSrt, distance);
-        tangentEnd = scaleTangentMagnitude(tangentEnd, distance);
+        tangentSrt = scaleTangentMagnitude(tangentSrt, 1.0);
+        tangentEnd = scaleTangentMagnitude(tangentEnd, 1.0);
 
         // Step 1c: Clamp tangent components near cell boundaries to prevent spline overshoot
         tangentSrt = clampTangentToCellBoundary(tangentSrt, srt.position, distance);
