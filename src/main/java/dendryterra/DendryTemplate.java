@@ -70,7 +70,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("curvature")
     @Default
-    private @Meta double curvature = 0.9;
+    private @Meta double curvature = 1.5;
 
     // ========== Performance Tuning Flags ==========
 
@@ -249,7 +249,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (defaultBranches < 0 || defaultBranches > 1) {
             throw new ValidationException("default-branches must be between 0 and 1, got: " + defaultBranches);
         }
-        if (curvature < 0 || curvature > 1) {
+        if (curvature < 0 || curvature > 2) {
             throw new ValidationException("curvature must be in range [0, 1], got: " + curvature);
         }
         if (ConstellationScale < 1 || ConstellationScale > 10) {
