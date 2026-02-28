@@ -129,12 +129,10 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     private @Meta double tangentAngle = 45.0;
 
     /**
-     * Strength of spline tangents as a fraction of segment length.
-     * Controls how far the control point is from the node.
-     * 0 = control point at node (linear), 1 = control point at full tangent length.
-     * Higher values create more pronounced curves but risk overlap.
-     * Range: 0-1, default 0.4.
+     * @deprecated Use 'curvature' instead. tangent-strength has been consolidated into curvature.
+     * If set, its value is multiplied into curvature for backwards compatibility.
      */
+    @Deprecated
     @Value("tangent-strength")
     @Default
     private @Meta double tangentStrength = 1.0;
@@ -269,9 +267,6 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (tangentAngle < 0 || tangentAngle > 90) {
             throw new ValidationException("tangent-angle must be between 0 and 90, got: " + tangentAngle);
         }
-        if (tangentStrength < 0 || tangentStrength > 1) {
-            throw new ValidationException("tangent-strength must be between 0 and 1, got: " + tangentStrength);
-        }
         if (cachepixels < 0) {
             throw new ValidationException("cachepixels must be non-negative, got: " + cachepixels);
         }
@@ -296,15 +291,17 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
 
     @Override
     public Sampler get() {
+        // Multiply deprecated tangentStrength into curvature for backwards compatibility
+        double effectiveCurvature = curvature * tangentStrength;
         return new DendrySampler(
             n, epsilon, slope, gridsize,
             returnType, controlSampler, salt,
             branchesSampler, defaultBranches,
-            curvature,
+            effectiveCurvature,
             useParallel,
             debugTiming, parallelThreshold,
             ConstellationScale, constellationShape,
-            Math.toRadians(tangentAngle), tangentStrength,
+            Math.toRadians(tangentAngle),
             cachepixels,
             slopeWhenStraight, lowestSlopeCutoff,
             debug,

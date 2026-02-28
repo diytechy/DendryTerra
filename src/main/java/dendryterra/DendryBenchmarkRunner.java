@@ -37,7 +37,7 @@ public class DendryBenchmarkRunner {
     private static List<TestCase> createTestCases(int n, double epsilon, double slope, double gridsize,
             DendryReturnType returnType, long salt, int defaultBranches, double curvature,
             int parallelThreshold, int ConstellationScale,
-            ConstellationShape constellationShape, double tangentAngle, double tangentStrength,
+            ConstellationShape constellationShape, double tangentAngle,
             double max, double maxDist, int maxSegmentsPerLevel) {
 
         List<TestCase> cases = new ArrayList<>();
@@ -52,7 +52,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             0.0,    // cachepixels disabled
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -73,7 +73,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             0.0,    // cachepixels disabled
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -94,7 +94,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             0.0,    // cachepixels disabled
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -115,7 +115,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             0.0,    // cachepixels disabled
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -135,7 +135,7 @@ public class DendryBenchmarkRunner {
             curvature,
             true, false, parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             0.0,    // cachepixels disabled
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -156,7 +156,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             1.0,    // cachepixels enabled
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -177,7 +177,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             1.0,    // cachepixels enabled (required for PIXEL_RIVER)
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -198,7 +198,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             1.0,    // cachepixels enabled
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -219,7 +219,7 @@ public class DendryBenchmarkRunner {
             false,  // debugTiming
             parallelThreshold,
             ConstellationScale, constellationShape,
-            tangentAngle, tangentStrength,
+            tangentAngle,
             1.0,    // cachepixels enabled (required for PIXEL_RIVER_CTRL)
             0.1, 0.01,  // slopeWhenStraight, lowestSlopeCutoff
             0,          // debug
@@ -270,14 +270,13 @@ public class DendryBenchmarkRunner {
         int ConstellationScale = 1;  // Scale 1 = inscribed square is 3 gridspaces wide
         ConstellationShape constellationShape = ConstellationShape.SQUARE;
         double tangentAngle = Math.toRadians(45);  // 45 degrees max deviation
-        double tangentStrength = 0.4;  // Tangent length as fraction of segment
         double max = 2.0;  // Maximum expected elevation for PIXEL_RIVER
         double maxDist = 50.0;  // Maximum expected distance for PIXEL_RIVER
 
         // Create test cases in table-like format
         List<TestCase> testCases = createTestCases(n, epsilon, slope, gridsize, returnType, salt,
             defaultBranches, curvature,
-            parallelThreshold, ConstellationScale, constellationShape, tangentAngle, tangentStrength,
+            parallelThreshold, ConstellationScale, constellationShape, tangentAngle,
             max, maxDist, 500);
 
         // Run benchmarks

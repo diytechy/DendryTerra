@@ -125,7 +125,6 @@ public class DendrySampler implements Sampler {
 
     // Spline tangent parameters
     private final double tangentAngle;    // Max angle deviation (radians)
-    private final double tangentStrength; // Tangent length as fraction of segment length
 
     // Slope-based tangent alignment parameters
     private final double slopeWhenStraight; // Slope threshold for full tangent alignment (0-1)
@@ -286,7 +285,7 @@ public class DendrySampler implements Sampler {
                          boolean useParallel,
                          boolean debugTiming, int parallelThreshold,
                          int ConstellationScale, ConstellationShape constellationShape,
-                         double tangentAngle, double tangentStrength,
+                         double tangentAngle,
                          double cachepixels,
                          double slopeWhenStraight, double lowestSlopeCutoff,
                          int debug,
@@ -311,7 +310,6 @@ public class DendrySampler implements Sampler {
         this.ConstellationScale = ConstellationScale;
         this.constellationShape = constellationShape;
         this.tangentAngle = tangentAngle;
-        this.tangentStrength = tangentStrength;
         this.cachepixels = cachepixels;
         this.slopeWhenStraight = slopeWhenStraight;
         this.lowestSlopeCutoff = lowestSlopeCutoff;
@@ -1948,7 +1946,6 @@ public class DendrySampler implements Sampler {
         SegmentListConfig config = new SegmentListConfig(salt)
             .withSplines(useSplines)
             .withCurvature(curvature)
-            .withTangentStrength(tangentStrength)
             .withMaxTwistAngle(tangentAngle)
             .withSlopeWithoutTwist(slopeWhenStraight);
         SegmentList result = new SegmentList(config);
@@ -2852,7 +2849,7 @@ public class DendrySampler implements Sampler {
             boolean useSpline = USE_BSPLINE_PIXEL_SAMPLING && seg.hasTangents();
 
             // Precompute tangent scale for Hermite interpolation
-            double tangentScale = useSpline ? segLength * tangentStrength : 0;
+            double tangentScale = useSpline ? segLength * curvature : 0;
 
             for (int i = 0; i <= numSamples; i++) {
                 double t = (double) i / numSamples;
@@ -3861,21 +3858,18 @@ public class DendrySampler implements Sampler {
         double h01 = -2*t3 + 3*t2;      // (-2t³ + 3t²)
         double h11 = t3 - t2;            // (t³ - t²)
 
-        // Tangent vectors scaled by segment length and tangent strength
+        // Tangent vectors scaled by segment length and curvature
         double segLen = seg.length();
-        double tangentScale = segLen * tangentStrength;
-
-        // Apply curvature scaling
-        double effectiveCurvature = curvature;
+        double tangentScale = segLen * curvature;
 
         // Tangent vectors in 3D (tangents are 2D, z component from elevation difference)
-        double tx0 = seg.tangentSrt.x * tangentScale * effectiveCurvature;
-        double ty0 = seg.tangentSrt.y * tangentScale * effectiveCurvature;
-        double tz0 = (seg.end.z - seg.srt.z) * effectiveCurvature;
+        double tx0 = seg.tangentSrt.x * tangentScale;
+        double ty0 = seg.tangentSrt.y * tangentScale;
+        double tz0 = (seg.end.z - seg.srt.z) * curvature;
 
-        double tx1 = seg.tangentEnd.x * tangentScale * effectiveCurvature;
-        double ty1 = seg.tangentEnd.y * tangentScale * effectiveCurvature;
-        double tz1 = (seg.end.z - seg.srt.z) * effectiveCurvature;
+        double tx1 = seg.tangentEnd.x * tangentScale;
+        double ty1 = seg.tangentEnd.y * tangentScale;
+        double tz1 = (seg.end.z - seg.srt.z) * curvature;
 
         // Hermite interpolation
         double x = h00 * seg.srt.x + h10 * tx0 + h01 * seg.end.x + h11 * tx1;
@@ -3892,7 +3886,7 @@ public class DendrySampler implements Sampler {
         if (seg.tangentSrt != null && seg.tangentEnd != null && useSplines) {
             // True Hermite spline derivative: H'(t) = dh00*P0 + dh10*T0*s + dh01*P1 + dh11*T1*s
             double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
-            double s = segLen * tangentStrength * curvature;
+            double s = segLen * curvature;
             double t2 = t * t;
 
             double dh00 = 6 * t2 - 6 * t;

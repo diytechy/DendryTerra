@@ -306,7 +306,7 @@ public class SegmentList {
         Vec2D tangentEnd = tangents[1];
 
         // Step 1b: Normalize tangents to unit length — the Hermite evaluation in
-        // evaluateHermiteSpline applies segLen * tangentStrength * curvature, giving
+        // evaluateHermiteSpline applies segLen * curvature, giving
         // linear scaling with segment length (not quadratic).
         double distance = srt.position.distanceTo(end.position);
         tangentSrt = scaleTangentMagnitude(tangentSrt, 1.0);
@@ -376,7 +376,7 @@ public class SegmentList {
     /**
      * Clamp tangent components to prevent Hermite spline from crossing cell boundaries.
      * For a cubic Hermite spline, the maximum overshoot from a tangent is approximately
-     * 0.25 * tangent_component * segmentLength * tangentStrength.
+     * 0.25 * tangent_component * segmentLength * curvature.
      *
      * @param tangent The tangent vector to clamp
      * @param position The point position (to compute distance to cell edges)
@@ -398,7 +398,7 @@ public class SegmentList {
 
         // Maximum allowed tangent component = distToEdge / (overshootFactor * segmentLength * tangentStrength)
         // Using 0.25 as conservative overshoot factor for cubic Hermite
-        double overshootFactor = 0.25 * segmentLength * config.tangentStrength;
+        double overshootFactor = 0.25 * segmentLength * config.curvature;
         if (overshootFactor < MathUtils.EPSILON) return tangent;
 
         double clampedX = tangent.x;
@@ -709,7 +709,7 @@ public class SegmentList {
             Point3D intermediatePoint;
             if (config.useSplines && config.curvature > 0) {
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
-                                                           tangentSrt, tangentEnd, t, config.tangentStrength, jitterX, jitterY);
+                                                           tangentSrt, tangentEnd, t, config.curvature, jitterX, jitterY);
             } else {
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, jitterX, jitterY);
             }
@@ -723,7 +723,7 @@ public class SegmentList {
             Vec2D intermediateTangent;
             if (config.useSplines && config.curvature > 0 && tangentSrt != null && tangentEnd != null) {
                 intermediateTangent = computeHermiteTangent(srt.position, end.position,
-                                                           tangentSrt, tangentEnd, t, config.tangentStrength);
+                                                           tangentSrt, tangentEnd, t, config.curvature);
                 intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
                                                        config.maxIntermediateTwistAngle, rng);
             } else {
@@ -786,7 +786,7 @@ public class SegmentList {
      * @return Interpolated point with jitter applied
      */
     private Point3D interpolateHermiteSpline(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd,
-                                             double t, double tangentStrength, double jitterX, double jitterY) {
+                                             double t, double curvature, double jitterX, double jitterY) {
         double t2 = t * t;
         double t3 = t2 * t;
         double h00 = 2 * t3 - 3 * t2 + 1;
@@ -795,7 +795,7 @@ public class SegmentList {
         double h11 = t3 - t2;
 
         double segLength = srt.projectZ().distanceTo(end.projectZ());
-        double tangentScale = segLength * tangentStrength;
+        double tangentScale = segLength * curvature;
 
         double x = h00 * srt.x + h10 * (tangentSrt != null ? tangentSrt.x * tangentScale : 0)
                  + h01 * end.x + h11 * (tangentEnd != null ? tangentEnd.x * tangentScale : 0);
@@ -824,9 +824,9 @@ public class SegmentList {
      * Returns the derivative of the spline, which gives the direction at that point.
      */
     private Vec2D computeHermiteTangent(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd,
-                                        double t, double tangentStrength) {
+                                        double t, double curvature) {
         double segLength = srt.projectZ().distanceTo(end.projectZ());
-        double tangentScale = segLength * tangentStrength;
+        double tangentScale = segLength * curvature;
 
         // Hermite basis function derivatives
         double t2 = t * t;

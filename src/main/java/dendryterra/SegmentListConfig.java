@@ -8,7 +8,6 @@ public class SegmentListConfig {
     public long salt = 12345;
     public boolean useSplines = false;
     public double curvature = 0.0;
-    public double tangentStrength = 1.0;
     public double maxTwistAngle = 1.0; //  +/- degrees in radians when slope is 0, affects random rotation of origin points.
     public double maxIntermediateTwistAngle = 0.25; // +/- degrees in radians, for intermediate points, reduced by jitter magnitude
     public double SlopeWithoutTwist = 0.5;
@@ -30,11 +29,6 @@ public class SegmentListConfig {
 
     public SegmentListConfig withCurvature(double curvature) {
         this.curvature = curvature;
-        return this;
-    }
-
-    public SegmentListConfig withTangentStrength(double tangentStrength) {
-        this.tangentStrength = tangentStrength;
         return this;
     }
 
