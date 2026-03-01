@@ -69,6 +69,7 @@ tasks.jar {
 
 publishing {
     repositories {
+        mavenLocal()
         maven {
             name = "Repsy"
             url = uri("https://repo.repsy.io/mvn/diytechy/dendryterra")
@@ -84,6 +85,10 @@ publishing {
             artifactId = "dendryterra"
         }
     }
+}
+
+tasks.named("build") {
+    finalizedBy(tasks.named("publishToMavenLocal"))
 }
 
 // Make 'run' task use benchmark dependencies too
