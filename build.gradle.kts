@@ -67,6 +67,12 @@ tasks.jar {
     archiveBaseName.set("DendryTerra")
 }
 
+tasks.processResources {
+    filesMatching("terra.addon.yml") {
+        expand(mapOf("version" to project.version))
+    }
+}
+
 publishing {
     repositories {
         mavenLocal()
