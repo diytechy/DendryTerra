@@ -1991,6 +1991,11 @@ public class DendrySampler implements Sampler {
         }
         afterProbabilisticCount = cleanedPoints.size();
 
+        // Step 3.5: Hard-remove surviving points where branchesSampler returns <= 0
+        if (level > 0 && branchesSampler != null) {
+            cleanedPoints = removeZeroProbabilityPoints(cleanedPoints);
+        }
+
         if (cleanedPoints.isEmpty()) {
             // No points at this level — preserve previous level segments
             if (level > 0 && previousLevelSegments != null) {
@@ -2512,7 +2517,16 @@ public class DendrySampler implements Sampler {
         return result;
     }
 
-
+    private List<Point3D> removeZeroProbabilityPoints(List<Point3D> points) {
+        List<Point3D> result = new ArrayList<>();
+        for (Point3D point : points) {
+            double sample = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
+            if (sample > 0.0) {
+                result.add(point);
+            }
+        }
+        return result;
+    }
 
     /**
      * Calculate river width for a given level.
