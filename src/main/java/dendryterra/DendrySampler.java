@@ -452,6 +452,11 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double y, double z) {
+        // NaN trigger: if x or z is NaN, interpret y as a level and return the
+        // river width falloff factor for that level
+        if (Double.isNaN(x) || Double.isNaN(z)) {
+            return Math.pow(RIVER_WIDTH_FALLOFF, y);
+        }
         if (returnType == DendryReturnType.PIXEL_RIVER) {
             if (y >= 3.0) {
                 // 3<=y<4: quantized distance to next elevation change (world units)
@@ -4284,8 +4289,8 @@ public class DendrySampler implements Sampler {
             box.setDistanceUnsigned(distU8);
         }
 
-        // Level: lower wins, set over entire river distance range (distU8 0-255)
-        if (levelNibble < box.getLevelNibble()) {
+        // Level: lower wins, only set within river boundary (distU8 <= 127)
+        if (distU8 <= 127 && levelNibble < box.getLevelNibble()) {
             box.setLevelNibble(levelNibble);
         }
 
