@@ -4266,7 +4266,10 @@ public class DendrySampler implements Sampler {
         if (currentElev > elevationU8 && currentDist < 255 && outwardStep == 1) {
             int range = currentElev - elevationU8;
             int noise = (int)(Math.random() * range);
-            finalElevU8 = elevationU8 + noise;
+            //NOTE: This has been commented out as it appears to create a chance that two blocks are
+            //kitty-corner to eachother, resulting in flow propigation and source block generation.
+            //finalElevU8 = elevationU8 + noise;
+            finalElevU8 = elevationU8;
         }
 
         // Update this box
