@@ -1582,3 +1582,7 @@ You implied the elevation is not set beyond the river borders, but this should a
 To do this I think a temporary array will be needed (the same size as BigChunk), which can track the evaluated river distances.
 
 As segments are being evaluated, the lower elevation should always win within a river boundary (as should already be implimented).  Outside the river boundary, the elevation shall be overwritten only while the current evaluated river distance beyond the river border (>0) is less than the river distance that was used to last set that the elevation on that same block.
+
+####################################
+
+evaluateWithBigChunkDistChange should only reset distance to 0 when a confirmed change in elevation occurs (which should never be at the first or last point of a segment).  It looks like because "accumulatedArcLength" is initialized to 0 every evaluated sample around the start point is seeing it as a reset to the elevation step change.  I believe to fix this "accumulatedArcLength" just needs to be initialized to and infinite value.  Can you checkk that proposal and confirm that it will result in evaluateWithBigChunkDistChange only going to 0 when a detected change in elevation occurs?

@@ -3749,7 +3749,7 @@ public class DendrySampler implements Sampler {
         // === Level & distance-to-change tracking ===
         int levelNibble = Math.min(14, level);  // Clamp to 0-14 (15 = unset)
         double accumulatedArcLength = 0.0;
-        double lastElevChangeArcLength = 0.0;
+        double lastElevChangeArcLength = Double.NEGATIVE_INFINITY;
         int prevQuantizedElev = -1;
         Point3D prevSamplePoint = null;
 
