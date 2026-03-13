@@ -1530,3 +1530,37 @@ Add an additional mode to ENABLE_BLOT_FILLING, such that when it is "2" all 8 sq
 The normal angle used in evaluateWithBigChunkFarDistance2 should just be the perpendicular arrow from the river's evaluated tangent moving away from the river, instead of the angle computed between the segment sample and the far cell center.
 
 If an parameter is defined for the sampler which is NOT used (ex: default-riverwidth is a parameter which the sampler does use), produce a warning so the user knows the sampler may not be configured correctly.
+
+#################################
+
+Plan an update the removes any level 1+ point (so that it cannot be used in subsequent segment generation) if the probaility sampler (if not null) returns 0 (or nearly 0) at that point's position.
+
+####################################
+
+2 changes related to segment / flow elevation.
+
+In PIXEL_RIVER_CTRL, which returns the flow's elevation given the coordinates requested and resolution.  There should be additional protections against allowing the elevation to drop suddenly.
+
+1. When setting the elevation of a block, if the elevation was previously set (not IntMax)and the river distance exceeds 0 (outside the river border), do not update the elevation.
+2. When evaluating a segment's elevation, instead of interpolating the elevation from the higher position to the lower position over the entire range of the segment, interpolate the height from the heighest point to half of the segment length, this way the lowest elevation is achieved half-way down the segment, which may miticate a drop in elevation that may be seen at evaluation of the next segment.
+
+
+####################################
+
+Create a plan and ask questions for clarity if needed for 2 more changes related to this dendry filter, specifically this change would likely best add another uint8 variable to the block datatype (BigChunkBlock)
+
+Add 1 new parameters:
+
+"height-change-max-distance" - initialize to 15.
+
+Store 2 new variables in this uint8 variable:
+
+1. A 4 bit variable representing the level of the river segment.  Initialize level to 15 (To mean not available)
+2. A 4 bit variable storing a quantized distance to the next quantized change in elevation.  (Initialize to a bit value of 15 to mean undefined or too far)
+
+While setting the other variables related to the BigChunkBlock like elevation and distance, also set these two new variables:
+
+- Set the level according to the current segments starting / higher elevation point.  Lower level segments should take priority.  This should be set over the entire river distance from -1 to 1.  This would be returned from 0 to 15 when the 3d sampler is queried with 2<=y<3.
+- Set the quantized distance according to the distance from the last position along the segment quantized distance changed, noting this is quantized according to the "height-change-max-distance".  So with a default value of 15 (which is world units) and a gridsize of 1000 (which controls evaluation scaling), this quantized distance should range from 0 to 0.015.  Each time the quantized elevation along the segment decreases, this distance should be the distance along the segment spline to that step change in elevation.  It need only increase downward.  This would be returned from 0 to "height-change-max-distance" when the 3d sampler is queried with 3<=y<4.
+
+Finally, update the version of Dendry rivers to "-5" instead of "-4"

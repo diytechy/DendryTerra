@@ -224,7 +224,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("max")
     @Default
-    private @Meta double max = 2.0;
+    private @Meta double max = 2.55;
 
     /**
      * Maximum expected distance for PIXEL_RIVER normalization.

@@ -73,7 +73,7 @@ set CLASSPATH=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
 
 @rem Default to 'clean jar' when double-clicked (no arguments provided)
 set CMD_LINE_ARGS=%*
-if "%CMD_LINE_ARGS%"=="" set CMD_LINE_ARGS=clean jar
+if "%CMD_LINE_ARGS%"=="" set CMD_LINE_ARGS=clean build publishToMavenLocal
 
 @rem Execute Gradle
 "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %CMD_LINE_ARGS%
