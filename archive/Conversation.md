@@ -1572,3 +1572,13 @@ Plan for some tweaks.
 For level return value (based on the nibble), it should only update / set within the distance boundary of the river (outside the river (distance>0, distance integer > 128) the level should not be set.)
 
 Also, can you create a special return trigger such that if either x or y are NaN, y is interpretted as a level request, and the returned value is "Math.pow(RIVER_WIDTH_FALLOFF, level);" where the level in this case is the y level requested.  This way it can be understood how Dendry is changing the river width as a function of river width.
+
+###########################3
+
+Make a plan for some changes.
+
+You implied the elevation is not set beyond the river borders, but this should actually be a little more complex for better blending.
+
+To do this I think a temporary array will be needed (the same size as BigChunk), which can track the evaluated river distances.
+
+As segments are being evaluated, the lower elevation should always win within a river boundary (as should already be implimented).  Outside the river boundary, the elevation shall be overwritten only while the current evaluated river distance beyond the river border (>0) is less than the river distance that was used to last set that the elevation on that same block.

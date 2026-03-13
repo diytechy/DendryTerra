@@ -3401,11 +3401,16 @@ public class DendrySampler implements Sampler {
         for (int i = 0; i < sortedIndices.length; i++) sortedIndices[i] = i;
         java.util.Arrays.sort(sortedIndices, (a, b) -> Integer.compare(levels.get(b), levels.get(a)));
 
+        // Temporary tracker: per-block border distance at which elevation was last set (outside river).
+        // Initialized to 255 (unset). Only used for outside-river elevation blending.
+        int[][] elevDistTracker = new int[256][256];
+        for (int[] row : elevDistTracker) java.util.Arrays.fill(row, 255);
+
         // Phase 5: Process each segment in sorted order
         for (int idx : sortedIndices) {
             sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
                 startConns.get(idx), endConns.get(idx), endFlowLevels.get(idx),
-                chunk, chunkSizeGrid);
+                chunk, chunkSizeGrid, elevDistTracker);
         }
     }
 
@@ -3713,7 +3718,8 @@ public class DendrySampler implements Sampler {
     private void sampleSegmentAlongSpline(Segment3D seg, int level,
                                           int startConnections, int endConnections,
                                           int endFlowLevel,
-                                          BigChunk chunk, double chunkSizeGrid) {
+                                          BigChunk chunk, double chunkSizeGrid,
+                                          int[][] elevDistTracker) {
         // Pre-compute constants
         double segmentLength = seg.length();
         double cachepixelsGrid = cachepixels / gridsize;
@@ -3908,7 +3914,8 @@ public class DendrySampler implements Sampler {
                 centralRadius, innerRadius, outerRadius,
                 riverWidthGrid, borderWidthGrid, segmentFill, isStartPoint,
                 segmentSlope, chunk, chunkSizeGrid, level,
-                levelNibble, distChangeNibble);
+                levelNibble, distChangeNibble,
+                elevDistTracker);
 
             // Update state for next iteration
             prevEvalPos = samplePoint;
@@ -4049,7 +4056,8 @@ public class DendrySampler implements Sampler {
                                    double centralRadius, double innerRadius, double outerRadius,
                                    double riverWidthGrid, double borderWidthGrid, boolean segmentFill, boolean isStartPoint,
                                    double segmentSlope, BigChunk chunk, double chunkSizeGrid, int level,
-                                   int levelNibble, int distChangeNibble) {
+                                   int levelNibble, int distChangeNibble,
+                                   int[][] elevDistTracker) {
         double cachepixelsGrid = cachepixels / gridsize;
 
         // Determine cone angle and bow direction
@@ -4119,7 +4127,8 @@ public class DendrySampler implements Sampler {
                 int by = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
                 if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
                     updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid, borderWidthGrid,
-                             false, bx, by, chunk, step, level, levelNibble, distChangeNibble);
+                             false, bx, by, chunk, step, level, levelNibble, distChangeNibble,
+                             elevDistTracker);
                 }
             } else {
                 // Arc samples at this radius - active side, and optionally the opposite side
@@ -4153,7 +4162,8 @@ public class DendrySampler implements Sampler {
                         if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
                             updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
                                      riverWidthGrid, borderWidthGrid, blotAdjacentBoxes, bx, by, chunk, step, level,
-                                     levelNibble, distChangeNibble);
+                                     levelNibble, distChangeNibble,
+                                     elevDistTracker);
                         }
                     }
                 }
@@ -4229,7 +4239,8 @@ public class DendrySampler implements Sampler {
                           int elevationU8, double riverWidthGrid, double borderWidthGrid,
                           boolean blotAdjacentBoxes, int blockX, int blockY,
                           BigChunk chunk, int outwardStep, int level,
-                          int levelNibble, int distChangeNibble) {
+                          int levelNibble, int distChangeNibble,
+                          int[][] elevDistTracker) {
         // Quantize normalized distance to uint8 in range [0, 255]:
         //   [0, 127]   = inside river:  0 (center, output -1) → 127 (edge, output ≈ 0)
         //   [128, 255] = outside river: 128 (edge, output 0) → 255 (at borderwidth, output 1)
@@ -4259,7 +4270,8 @@ public class DendrySampler implements Sampler {
         }
 
         // Update this box
-        applyBoxUpdate(box, distU8, finalElevU8, levelNibble, distChangeNibble);
+        applyBoxUpdate(box, distU8, finalElevU8, levelNibble, distChangeNibble,
+                       elevDistTracker, blockX, blockY);
 
         // Blot: fill adjacent boxes with same values (pin-hole filling)
         if (ENABLE_BLOT_FILLING > 0 && blotAdjacentBoxes) {
@@ -4272,7 +4284,8 @@ public class DendrySampler implements Sampler {
             for (int[] d : neighbors) {
                 int nx = blockX + d[0], ny = blockY + d[1];
                 if (nx >= 0 && nx < 256 && ny >= 0 && ny < 256) {
-                    applyBoxUpdate(chunk.getBlock(nx, ny), distU8, finalElevU8, levelNibble, distChangeNibble);
+                    applyBoxUpdate(chunk.getBlock(nx, ny), distU8, finalElevU8, levelNibble, distChangeNibble,
+                                   elevDistTracker, nx, ny);
                 }
             }
         }
@@ -4284,7 +4297,8 @@ public class DendrySampler implements Sampler {
      * Elevation: lower wins (river valley).
      */
     private void applyBoxUpdate(BigChunk.BigChunkBlock box, int distU8, int elevU8,
-                                int levelNibble, int distChangeNibble) {
+                                int levelNibble, int distChangeNibble,
+                                int[][] elevDistTracker, int blockX, int blockY) {
         if (distU8 < box.getDistanceUnsigned()) {
             box.setDistanceUnsigned(distU8);
         }
@@ -4306,12 +4320,19 @@ public class DendrySampler implements Sampler {
             }
         }
 
-        // If elevation was previously set and we're outside the river border, don't update elevation
-        if (box.getElevationUnsigned() < 255 && distU8 > 127) {
-            return;
-        }
-        if (elevU8 < box.getElevationUnsigned()) {
-            box.setElevationUnsigned(elevU8);
+        // Elevation update with distance-based blending
+        if (distU8 <= 127) {
+            // Inside river: lower elevation always wins
+            if (elevU8 < box.getElevationUnsigned()) {
+                box.setElevationUnsigned(elevU8);
+            }
+        } else {
+            // Outside river: overwrite only if this border distance is closer
+            // than the distance used to last set this block's elevation
+            if (distU8 <= elevDistTracker[blockX][blockY]) {
+                box.setElevationUnsigned(elevU8);
+                elevDistTracker[blockX][blockY] = distU8;
+            }
         }
     }
 }
