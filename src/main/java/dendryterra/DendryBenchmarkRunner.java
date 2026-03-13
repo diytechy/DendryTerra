@@ -59,7 +59,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("Baseline", "parallel=ON, splines=ON, n=2", baseline, null));
 
@@ -80,7 +81,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("No Parallel", "parallel=OFF, splines=ON", noParallel, "Baseline"));
 
@@ -101,7 +103,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("No Splines", "parallel=ON, curvature=0 (splines OFF)", noSplines, "Baseline"));
 
@@ -122,7 +125,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("Minimal", "parallel=OFF, curvature=0 (splines OFF)", minimal, "Baseline"));
 
@@ -142,7 +146,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("High Resolution", "n=3, all optimizations ON", highRes, "Baseline"));
 
@@ -163,7 +168,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("CachePixels Enabled", "parallel=ON, splines=ON, cachepixels=1.0", cachePixelsEnabled, "Baseline"));
 
@@ -184,7 +190,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("PIXEL_RIVER", "new chunked cache, cachepixels=1.0, max=2.0, maxDist=50.0", pixelRiver, "PIXEL_RIVER_LEGACY"));
 
@@ -205,7 +212,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("PIXEL_RIVER_LEGACY", "legacy pixel cache implementation", pixelRiverLegacy, "Baseline"));
 
@@ -226,7 +234,8 @@ public class DendryBenchmarkRunner {
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
             max, maxDist, // max, maxDist
-            500  // maxSegmentsPerLevel
+            500, // maxSegmentsPerLevel
+            15.0 // heightChangeMaxDist
         );
         cases.add(new TestCase("PIXEL_RIVER_CTRL", "chunked cache elevation mode, cachepixels=1.0", pixelRiverCtrl, "PIXEL_ELEVATION"));
 

@@ -235,6 +235,15 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     @Default
     private @Meta double maxDist = 250.0;
 
+    /**
+     * Maximum world-unit distance for quantizing distance-to-elevation-change.
+     * Stored as a 4-bit nibble (0-15) in BigChunkBlock, so each step represents
+     * heightChangeMaxDist / 15 world units.
+     */
+    @Value("height-change-max-distance")
+    @Default
+    private @Meta double heightChangeMaxDist = 15.0;
+
     @Override
     public boolean validate() throws ValidationException {
         if (n < 0 || n > 5) {
@@ -297,7 +306,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             riverwidthSampler, defaultRiverwidth,
             borderwidthSampler, defaultBorderwidth,
             max, maxDist,
-            maxSegmentsPerLevel
+            maxSegmentsPerLevel,
+            heightChangeMaxDist
         );
     }
 }

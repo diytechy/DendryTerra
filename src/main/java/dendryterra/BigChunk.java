@@ -7,7 +7,7 @@ package dendryterra;
  *
  * Also contains an 8x8 far-distance cache for coarse directional distance queries.
  *
- * Memory usage: 256*256*2 bytes + 8*8*4 bytes + overhead ≈ 132 KB per chunk.
+ * Memory usage: 256*256*3 bytes + 8*8*4 bytes + overhead ≈ 196 KB per chunk.
  */
 public class BigChunk {
     /** Grid X coordinate of this chunk's origin (in normalized grid space) */
@@ -69,7 +69,8 @@ public class BigChunk {
     }
 
     /**
-     * A single block within a BigChunk, storing normalized elevation and distance.
+     * A single block within a BigChunk, storing normalized elevation, distance,
+     * and packed level/distance-to-change nibbles.
      */
     public static class BigChunkBlock {
         /** Normalized elevation (0-255) */
@@ -79,12 +80,21 @@ public class BigChunk {
         public byte distance;
 
         /**
+         * Packed level and distance-to-change nibbles.
+         * High 4 bits: segment level (0-14, 15 = not available)
+         * Low 4 bits: quantized distance to next elevation change (0-14, 15 = undefined/too far)
+         */
+        public byte levelAndDistChange;
+
+        /**
          * Create a new block with default values:
-         * elevation = 255 (unset), distance = 255 (maximum)
+         * elevation = 255 (unset), distance = 255 (maximum),
+         * levelAndDistChange = 0xFF (both nibbles = 15 = unset)
          */
         public BigChunkBlock() {
             this.elevation = (byte) 255;  // Max elevation initially (unset marker)
             this.distance = (byte) 255;   // Max distance initially
+            this.levelAndDistChange = (byte) 0xFF;  // Both nibbles = 15 (unset)
         }
 
         /**
@@ -113,6 +123,28 @@ public class BigChunk {
          */
         public void setDistanceUnsigned(int value) {
             this.distance = (byte) Math.min(255, Math.max(0, value));
+        }
+
+        /** Get segment level from high nibble (0-15, 15 = not available). */
+        public int getLevelNibble() {
+            return (levelAndDistChange >> 4) & 0x0F;
+        }
+
+        /** Set segment level in high nibble (0-15), preserving low nibble. */
+        public void setLevelNibble(int value) {
+            int clamped = Math.min(15, Math.max(0, value));
+            this.levelAndDistChange = (byte) ((clamped << 4) | (this.levelAndDistChange & 0x0F));
+        }
+
+        /** Get quantized distance-to-change from low nibble (0-15, 15 = undefined/too far). */
+        public int getDistChangeNibble() {
+            return this.levelAndDistChange & 0x0F;
+        }
+
+        /** Set quantized distance-to-change in low nibble (0-15), preserving high nibble. */
+        public void setDistChangeNibble(int value) {
+            int clamped = Math.min(15, Math.max(0, value));
+            this.levelAndDistChange = (byte) ((this.levelAndDistChange & 0xF0) | clamped);
         }
     }
 

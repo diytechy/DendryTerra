@@ -1564,3 +1564,11 @@ While setting the other variables related to the BigChunkBlock like elevation an
 - Set the quantized distance according to the distance from the last position along the segment quantized distance changed, noting this is quantized according to the "height-change-max-distance".  So with a default value of 15 (which is world units) and a gridsize of 1000 (which controls evaluation scaling), this quantized distance should range from 0 to 0.015.  Each time the quantized elevation along the segment decreases, this distance should be the distance along the segment spline to that step change in elevation.  It need only increase downward.  This would be returned from 0 to "height-change-max-distance" when the 3d sampler is queried with 3<=y<4.
 
 Finally, update the version of Dendry rivers to "-5" instead of "-4"
+
+##############################3
+
+Plan for some tweaks.
+
+For level return value (based on the nibble), it should only update / set within the distance boundary of the river (outside the river (distance>0, distance integer > 128) the level should not be set.)
+
+Also, can you create a special return trigger such that if either x or y are NaN, y is interpretted as a level request, and the returned value is "Math.pow(RIVER_WIDTH_FALLOFF, level);" where the level in this case is the y level requested.  This way it can be understood how Dendry is changing the river width as a function of river width.
