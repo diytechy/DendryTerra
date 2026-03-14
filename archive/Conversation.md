@@ -1586,3 +1586,21 @@ As segments are being evaluated, the lower elevation should always win within a 
 ####################################
 
 evaluateWithBigChunkDistChange should only reset distance to 0 when a confirmed change in elevation occurs (which should never be at the first or last point of a segment).  It looks like because "accumulatedArcLength" is initialized to 0 every evaluated sample around the start point is seeing it as a reset to the elevation step change.  I believe to fix this "accumulatedArcLength" just needs to be initialized to and infinite value.  Can you checkk that proposal and confirm that it will result in evaluateWithBigChunkDistChange only going to 0 when a detected change in elevation occurs?
+
+############################################
+
+The changes from "1f71054eadae" appear to be causing some unintended artifacts around the way elevation drop-off is happening across the width of the river and at river intersection points.
+
+Instead of evaluating on a compressed hermite (which then appears to get out of sync with other evaluations), the evaluated elevation should just be clamped to return the start points elevation from 0.0<t<0.25 then interpolate down to the end point elevation at 0.75<t<1.0.
+
+I'm also not sure if the changes to the segment distance (dcdbd569acb) affected outerElev and innerElev in unexpected ways.  As those elevation layers rely on distance travelled and slope information to create a curve across the width of the river.
+
+##########################################
+
+Reviewing the output, I'm seeing artifacts where just a few block points near the center of the river are lower elevation than the rest of the span of the river.  The intent of the innerElev / OuterElev is to create a smooth curve across the width of the river, and this was working before, but it appears some other update broke it.  I suspect either the radius is getting calculated to a very small value (making the centerElev evaluate for only a few segments, and then jumping up to a higher elevation for many inner / outper segments), or something else is causing the elevation to just overwrite for only that point.  Can you investigate what might be causing just a few points near centerElev to drop down when the radius should keep a consistent profile across the width of the river channel?
+
+I am seeing long strips in the river where it appears that only the central part of the river is at a lower elevation, and it does not spread out until far along into the river.
+
+#############################
+
+Next note: Any 3 elevation changes should trigger distance back to 0 for distance from calculation.

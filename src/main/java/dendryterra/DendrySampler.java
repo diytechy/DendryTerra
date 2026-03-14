@@ -3809,12 +3809,19 @@ public class DendrySampler implements Sampler {
 
             // Check if quantized elevation changed
             if (potentialElev != centralElev) {
-                outerElev = innerElev;
-                innerElev = centralElev;
+                int elevDelta = Math.abs(potentialElev - centralElev);
+                if (elevDelta > 1) {
+                    // Significant elevation jump: cascade the radius layers
+                    outerElev = innerElev;
+                    innerElev = centralElev;
+                    outerRadius = innerRadius;
+                    innerRadius = centralRadius;
+                    centralRadius = 1.0;  // 1.0 in normalized (river-width) space
+                }
+                // Always update centralElev to track the current elevation,
+                // but only cascade radii on significant jumps so gradual changes
+                // don't keep the radii inflated
                 centralElev = potentialElev;
-                outerRadius = innerRadius;
-                innerRadius = centralRadius;
-                centralRadius = 1.0;  // 1.0 in normalized (river-width) space
                 elevationChanged = true;
             }
 
@@ -3930,53 +3937,49 @@ public class DendrySampler implements Sampler {
      * Uses cubic Hermite interpolation: H(t) = (2t³-3t²+1)P0 + (t³-2t²+t)T0 + (-2t³+3t²)P1 + (t³-t²)T1
      */
     private Point3D evaluateHermiteSpline(Segment3D seg, double t) {
-        // Elevation interpolation compressed to first half of segment:
-        // tZ maps [0,0.5] -> [0,1] so lowest elevation is reached at midpoint,
-        // then stays at lowest for the second half.
-        double tZ = Math.min(1.0, t * 2.0);
+        // Elevation (z) uses simple clamped linear interpolation:
+        // t in [0, 0.25]: hold start elevation
+        // t in [0.25, 0.75]: linearly interpolate from start to end elevation
+        // t in [0.75, 1.0]: hold end elevation
+        double z;
+        if (t <= 0.25) {
+            z = seg.srt.z;
+        } else if (t >= 0.75) {
+            z = seg.end.z;
+        } else {
+            double tZ = (t - 0.25) / 0.5; // maps [0.25, 0.75] -> [0, 1]
+            z = seg.srt.z + (seg.end.z - seg.srt.z) * tZ;
+        }
 
         if (!useSplines || seg.tangentSrt == null || seg.tangentEnd == null) {
-            // Fall back to linear interpolation (x,y use original t, z uses compressed tZ)
+            // Fall back to linear interpolation for x,y
             double x = seg.srt.x + (seg.end.x - seg.srt.x) * t;
             double y = seg.srt.y + (seg.end.y - seg.srt.y) * t;
-            double z = seg.srt.z + (seg.end.z - seg.srt.z) * tZ;
             return new Point3D(x, y, z);
         }
 
         double t2 = t * t;
         double t3 = t2 * t;
 
-        // Hermite basis functions for x,y (original t)
+        // Hermite basis functions for x,y
         double h00 = 2*t3 - 3*t2 + 1;   // (2t³ - 3t² + 1)
         double h10 = t3 - 2*t2 + t;     // (t³ - 2t² + t)
         double h01 = -2*t3 + 3*t2;      // (-2t³ + 3t²)
         double h11 = t3 - t2;            // (t³ - t²)
 
-        // Hermite basis functions for z (compressed tZ)
-        double tZ2 = tZ * tZ;
-        double tZ3 = tZ2 * tZ;
-        double h00z = 2*tZ3 - 3*tZ2 + 1;
-        double h10z = tZ3 - 2*tZ2 + tZ;
-        double h01z = -2*tZ3 + 3*tZ2;
-        double h11z = tZ3 - tZ2;
-
         // Tangent vectors scaled by segment length and curvature
         double segLen = seg.length();
         double tangentScale = segLen * curvature;
 
-        // Tangent vectors in 3D (tangents are 2D, z component from elevation difference)
         double tx0 = seg.tangentSrt.x * tangentScale;
         double ty0 = seg.tangentSrt.y * tangentScale;
-        double tz0 = (seg.end.z - seg.srt.z) * curvature;
 
         double tx1 = seg.tangentEnd.x * tangentScale;
         double ty1 = seg.tangentEnd.y * tangentScale;
-        double tz1 = (seg.end.z - seg.srt.z) * curvature;
 
-        // Hermite interpolation: x,y with original t, z with compressed tZ
+        // Hermite interpolation for x,y only; z uses clamped linear above
         double x = h00 * seg.srt.x + h10 * tx0 + h01 * seg.end.x + h11 * tx1;
         double y = h00 * seg.srt.y + h10 * ty0 + h01 * seg.end.y + h11 * ty1;
-        double z = h00z * seg.srt.z + h10z * tz0 + h01z * seg.end.z + h11z * tz1;
 
         return new Point3D(x, y, z);
     }
