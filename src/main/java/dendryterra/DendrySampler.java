@@ -3396,6 +3396,9 @@ public class DendrySampler implements Sampler {
                 farSegments, farLevels, farStartConns, farEndConns, farEndFlowLevels,
                 segments, levels, startConns, endConns, endFlowLevels);
 
+        // Validation: ensure all segment endpoints at the same (x,y) position have the same elevation
+        validateSegmentEndpointElevations(segments, levels, chunk);
+
         // Phase 4: Sort by level descending (highest level segments processed first)
         Integer[] sortedIndices = new Integer[segments.size()];
         for (int i = 0; i < sortedIndices.length; i++) sortedIndices[i] = i;
@@ -3531,6 +3534,54 @@ public class DendrySampler implements Sampler {
                 outStartConns.add(farStartConns.get(i));
                 outEndConns.add(farEndConns.get(i));
                 outEndFlowLevels.add(farEndFlowLevels.get(i));
+            }
+        }
+    }
+
+    /**
+     * Validate that all segment endpoints sharing the same (x,y) position have the same elevation (z).
+     * Connected segments must agree on elevation at their shared junction point; a mismatch indicates
+     * a bug in segment generation that would produce visible discontinuities.
+     */
+    private void validateSegmentEndpointElevations(List<Segment3D> segments, List<Integer> levels, BigChunk chunk) {
+        // Map from (x,y) position key to (first seen elevation, segment index, endpoint label)
+        Map<Long, double[]> positionElevations = new HashMap<>();
+
+        for (int i = 0; i < segments.size(); i++) {
+            Segment3D seg = segments.get(i);
+            int level = levels.get(i);
+
+            // Check both endpoints
+            for (int ep = 0; ep < 2; ep++) {
+                Point3D pt = (ep == 0) ? seg.srt : seg.end;
+                String label = (ep == 0) ? "srt" : "end";
+
+                // Quantize position to detect co-located points (using grid-scale tolerance)
+                // Use a resolution fine enough to catch true co-located points but not false positives
+                long keyX = Math.round(pt.x * 1e6);
+                long keyY = Math.round(pt.y * 1e6);
+                long key = keyX * 1_000_000_007L + keyY;
+
+                double[] existing = positionElevations.get(key);
+                if (existing == null) {
+                    // First time seeing this position: store [elevation, segIndex, endpoint]
+                    positionElevations.put(key, new double[]{pt.z, i, ep});
+                } else {
+                    double existingZ = existing[0];
+                    int existingSegIdx = (int) existing[1];
+                    String existingLabel = (existing[2] == 0) ? "srt" : "end";
+
+                    if (Math.abs(pt.z - existingZ) > MathUtils.EPSILON) {
+                        LOGGER.error("ELEVATION MISMATCH at shared position ({}, {}): " +
+                                "segment[{}].{} z={} (level={}) vs segment[{}].{} z={} (level={}) " +
+                                "delta={} | bigchunk origin=({}, {})",
+                            pt.x, pt.y,
+                            i, label, pt.z, level,
+                            existingSegIdx, existingLabel, existingZ, levels.get(existingSegIdx),
+                            Math.abs(pt.z - existingZ),
+                            chunk.gridOriginX, chunk.gridOriginY);
+                    }
+                }
             }
         }
     }

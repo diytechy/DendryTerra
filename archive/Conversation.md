@@ -1603,4 +1603,10 @@ I am seeing long strips in the river where it appears that only the central part
 
 #############################
 
-Next note: Any 3 elevation changes should trigger distance back to 0 for distance from calculation.
+On line 3811, is where elevation is set.
+
+I'm trying to investigate discontinuities in this sampler project's output (Discontinuities.png, circled in a blue surround)
+
+After pruning segments for the big chunk (line 3399), can you create a validation that ensures all segment points that are located at the same position have the same elevation?  If not, produce an error, as it seems some segments (that are connected via the same points) somehow evaluate with a step change in elevation, which should not be possible.
+
+Additionally, I suspect some of this may be due to how the outerRadius and innerRadius variables are being used.  Those should be the distance till the elevation falls at the boundary of the river, but it appears it may be working inversly (elevation is falling at the edges earlier than the center).  Instead of limiting this to 3 variables (center / inner / outer) it might be better to redesign this into an array that can track multiple elevation changes and distances to outer dropoff (instead of using the simantics of "radius"), but it is not clear to me if this is a source of some discontinuities.
