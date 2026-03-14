@@ -2165,18 +2165,33 @@ public class DendrySampler implements Sampler {
                 segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
             }
 
-            // Check for crossings between newly added segments and pre-existing ones
+            // Check for crossings and proximity between newly added segments and pre-existing ones
             boolean hasCrossing = false;
             List<SegmentIdx> allSegs = segList.getSegments();
+            // Min separation: 2x the river width at this level (in grid coordinates)
+            double minSeparationSq = defaultRiverwidth / gridsize * Math.pow(RIVER_WIDTH_FALLOFF, level) * 2;
+            minSeparationSq = minSeparationSq * minSeparationSq;
             for (int i = segsBefore; i < segList.getSegmentCount() && !hasCrossing; i++) {
                 SegmentIdx newSeg = allSegs.get(i);
                 Point2D newA = newSeg.getSrt(segList).projectZ();
                 Point2D newB = newSeg.getEnd(segList).projectZ();
+                // Midpoint of new segment for proximity check
+                Point2D newMid = new Point2D((newA.x + newB.x) * 0.5, (newA.y + newB.y) * 0.5);
                 for (int j = 0; j < segsBefore; j++) {
                     SegmentIdx existing = allSegs.get(j);
                     Point2D exA = existing.getSrt(segList).projectZ();
                     Point2D exB = existing.getEnd(segList).projectZ();
+                    // Crossing check
                     if (segmentsIntersect(newA, newB, exA, exB)) {
+                        hasCrossing = true;
+                        break;
+                    }
+                    // Proximity check: skip segments sharing an endpoint
+                    if (newSeg.srtIdx == existing.srtIdx || newSeg.srtIdx == existing.endIdx ||
+                        newSeg.endIdx == existing.srtIdx || newSeg.endIdx == existing.endIdx) {
+                        continue;
+                    }
+                    if (pointToSegmentDistanceSquared(newMid, exA, exB) < minSeparationSq) {
                         hasCrossing = true;
                         break;
                     }

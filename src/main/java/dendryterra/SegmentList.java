@@ -301,7 +301,7 @@ public class SegmentList {
         Random rng = new Random(seed);
 
         // Step 1: Compute tangents based on connection patterns using global config
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, rng);
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, level, rng);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
 
@@ -480,7 +480,7 @@ public class SegmentList {
      * Compute tangents for a connection based on existing connectivity patterns.
      * Uses global configuration parameters.
      */
-    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, Random NoiseGen) {
+    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, int segmentLevel, Random NoiseGen) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
@@ -495,8 +495,8 @@ public class SegmentList {
         }
         
         // Compute tangents based on connection patterns
-        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true,NoiseGen);
-        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false,NoiseGen);
+        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true, segmentLevel, NoiseGen);
+        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false, segmentLevel, NoiseGen);
         
         return new Vec2D[] { tangentSrt, tangentEnd };
     }
@@ -505,7 +505,7 @@ public class SegmentList {
      * Compute tangent for a specific point based on its connections.
      * Uses global configuration parameters.
      */
-    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, Random NoiseGen) {
+    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, int segmentLevel, Random NoiseGen) {
         
         NetworkPoint point = points.get(pointIdx);
         NetworkPoint target = points.get(targetIdx);
@@ -558,24 +558,30 @@ public class SegmentList {
                 if (point.connections == 1) {
                     return continuousTangent;
                 }
-                // Multiple connections, take random angle between continuous tangent and direction to target
+                // Multiple connections: constrain departure angle based on whether this
+                // is a cross-level branch or a same-level continuation.
                 else {
-                        // Pick a random angle between continuousTangent and toTarget
+                        double magnitude = continuousTangent.length();
                         double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
                         double angleTarget = Math.atan2(segTangent.y, segTangent.x);
 
-                        // Calculate the angular difference (taking the shorter path)
+                        // Cross-level branch: new segment level > junction point's level.
+                        // Force departure roughly perpendicular (±20°) to parent flow direction.
+                        if (segmentLevel > point.level) {
+                            // Determine which side of the parent the target is on (cross product sign)
+                            double cross = continuousTangent.x * segTangent.y - continuousTangent.y * segTangent.x;
+                            double perpAngle = angleContinuous + ((cross >= 0) ? Math.PI / 2 : -Math.PI / 2);
+                            double branchOffset = (NoiseGen.nextFloat() * 2.0 - 1.0) * Math.toRadians(20);
+                            double resultAngle = perpAngle + branchOffset;
+                            return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
+                        }
+
+                        // Same-level continuation: random interpolation between continuous and target
                         double angleDiff = angleTarget - angleContinuous;
-                        // Normalize to [-PI, PI]
                         while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
                         while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-
-                        // Pick a random interpolation factor [0, 1] and interpolate the angle
                         double interpolationFactor = NoiseGen.nextFloat();
                         double resultAngle = angleContinuous + angleDiff * interpolationFactor;
-
-                        // Create vector at the interpolated angle with the magnitude of continuousTangent
-                        double magnitude = continuousTangent.length();
                         return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
                     }
 
@@ -714,9 +720,10 @@ public class SegmentList {
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, jitterX, jitterY);
             }
 
-            // Distance check (currently always passes since distanceToSel = MAX_VALUE)
-            double distanceToSel = Double.MAX_VALUE;
-            if (distanceToSel < minDistanceThreshold) {
+            // Skip points that are too close to the previous point in the chain
+            Point3D prevPoint = interPositions.isEmpty() ? srt.position : interPositions.get(interPositions.size() - 1);
+            double distToPrev = intermediatePoint.projectZ().distanceTo(prevPoint.projectZ());
+            if (distToPrev < minDistanceThreshold) {
                 continue;
             }
 
@@ -736,6 +743,42 @@ public class SegmentList {
 
             interPositions.add(intermediatePoint);
             interTangents.add(intermediateTangent);
+        }
+
+        // Self-intersection check: verify no two non-adjacent sub-segments cross.
+        // Chain is: srt -> interPositions[0] -> ... -> interPositions[n-1] -> end
+        // If a crossing is found, replace the offending intermediate point with a
+        // straight-line interpolation (remove jitter) to eliminate the loop.
+        if (interPositions.size() >= 3) {
+            boolean fixed;
+            do {
+                fixed = false;
+                // Build chain of 2D points
+                List<Point2D> chain = new ArrayList<>();
+                chain.add(srt.position.projectZ());
+                for (Point3D p : interPositions) chain.add(p.projectZ());
+                chain.add(end.position.projectZ());
+
+                // Check all pairs of non-adjacent chain segments
+                outer:
+                for (int i = 0; i < chain.size() - 1; i++) {
+                    for (int j = i + 2; j < chain.size() - 1; j++) {
+                        if (i == 0 && j == chain.size() - 2) continue; // skip first-last
+                        if (segmentsIntersect2D(chain.get(i), chain.get(i+1),
+                                                chain.get(j), chain.get(j+1))) {
+                            // Remove the intermediate point closest to the crossing
+                            // (j refers to the later segment; its start index in interPositions is j-1)
+                            int removeIdx = Math.min(j - 1, interPositions.size() - 1);
+                            if (removeIdx >= 0) {
+                                interPositions.remove(removeIdx);
+                                interTangents.remove(removeIdx);
+                                fixed = true;
+                                break outer;
+                            }
+                        }
+                    }
+                }
+            } while (fixed && interPositions.size() >= 3);
         }
 
         // Total segments = interPositions.size() + 1 (for the final segment to end)
@@ -858,9 +901,8 @@ public class SegmentList {
         // Compute twist reduction factor based on jitter
         // More jitter (more displacement) -> less twist
         // Use exponential decay: twist scales down as jitter increases
-        //double jitterRatio = Math.min(1.0, jitterMagnitude / 0.02); // Normalize to typical jitter scale
-        //double twistScale = Math.exp(-2.0 * jitterRatio); // Exponential decay
-        double twistScale = (1.0 - jitterMagnitude); // Linear decay alternative
+        // Steeper linear decay: twist falls off faster with jitter to prevent tight S-curves
+        double twistScale = Math.max(0, 1.0 - 2.0 * jitterMagnitude);
 
         // Random twist angle in range [-maxTwist, +maxTwist], scaled by twist reduction
         double twistAngle = (rng.nextDouble() * 2.0 - 1.0) * maxTwist * twistScale;
@@ -872,6 +914,19 @@ public class SegmentList {
         double newY = tangent.x * sin + tangent.y * cos;
 
         return new Vec2D(newX, newY);
+    }
+
+    /**
+     * Test if two 2D line segments intersect (excluding endpoints).
+     */
+    private static boolean segmentsIntersect2D(Point2D a1, Point2D a2, Point2D b1, Point2D b2) {
+        double d1x = a2.x - a1.x, d1y = a2.y - a1.y;
+        double d2x = b2.x - b1.x, d2y = b2.y - b1.y;
+        double cross = d1x * d2y - d1y * d2x;
+        if (Math.abs(cross) < MathUtils.EPSILON) return false;
+        double t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / cross;
+        double u = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / cross;
+        return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
     }
 
     /**
