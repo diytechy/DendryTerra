@@ -3809,18 +3809,11 @@ public class DendrySampler implements Sampler {
 
             // Check if quantized elevation changed
             if (potentialElev != centralElev) {
-                int elevDelta = Math.abs(potentialElev - centralElev);
-                if (elevDelta > 1) {
-                    // Significant elevation jump: cascade the radius layers
-                    outerElev = innerElev;
-                    innerElev = centralElev;
-                    outerRadius = innerRadius;
-                    innerRadius = centralRadius;
-                    centralRadius = 1.0;  // 1.0 in normalized (river-width) space
-                }
-                // Always update centralElev to track the current elevation,
-                // but only cascade radii on significant jumps so gradual changes
-                // don't keep the radii inflated
+                outerElev = innerElev;
+                innerElev = centralElev;
+                outerRadius = innerRadius;
+                innerRadius = centralRadius;
+                centralRadius = 1.0;  // 1.0 in normalized (river-width) space
                 centralElev = potentialElev;
                 elevationChanged = true;
             }
