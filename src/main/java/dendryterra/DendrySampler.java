@@ -4331,6 +4331,11 @@ public class DendrySampler implements Sampler {
             // Inside river: lower elevation always wins
             if (elevU8 < box.getElevationUnsigned()) {
                 box.setElevationUnsigned(elevU8);
+                // Update the distance if it's less, to prevent other samples from compariing
+                // to older positoins and newer elevations.
+                if (distU8 <= elevDistTracker[blockX][blockY]) {
+                    elevDistTracker[blockX][blockY] = distU8;
+                }
             }
         } else {
             // Outside river: overwrite only if this border distance is closer
