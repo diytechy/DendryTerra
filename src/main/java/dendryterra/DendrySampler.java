@@ -112,6 +112,9 @@ public class DendrySampler implements Sampler {
      */
     private static final boolean ENABLE_SEGMENT_FILL_ALL = true;
 
+    /** Maximum number of elevation transition layers tracked per segment walk. */
+    private static final int MAX_ELEV_LAYERS = 8;
+
     /**
      * When true, the opposite-side cone sweep is computed in projectConeToBoxes (inside curve).
      * When false, only the active tangent side is projected — sufficient when blot filling is enabled.
@@ -3786,9 +3789,10 @@ public class DendrySampler implements Sampler {
         // Evaluation distance threshold: 70% of cachepixels in grid coordinates
         double evalDistThreshold = 0.7 * cachepixelsGrid;
 
-        // === Elevation tracking state (3 layers) ===
-        int outerElev = 0, innerElev = 0, centralElev = 0;
-        double outerRadius = 0, innerRadius = 0, centralRadius = 0;
+        // === Elevation tracking state (dynamic layers, index 0 = newest) ===
+        int[] layerElev = new int[MAX_ELEV_LAYERS];
+        double[] layerRadius = new double[MAX_ELEV_LAYERS];
+        int layerCount = 0;
 
         // === Stream tracking state ===
         boolean isNewStream = true;
@@ -3830,8 +3834,9 @@ public class DendrySampler implements Sampler {
             // === Step A: New stream initialization ===
             if (i == 0 || wasOutOfBounds) {
                 int quantizedElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
-                outerElev = innerElev = centralElev = quantizedElev;
-                outerRadius = innerRadius = centralRadius = 0;
+                layerElev[0] = quantizedElev;
+                layerRadius[0] = 0;
+                layerCount = 1;
                 prevLoopTangent = currentTangent;
                 prevEvalPos = samplePoint;
                 prevEvalTangent = currentTangent;
@@ -3858,14 +3863,15 @@ public class DendrySampler implements Sampler {
             int potentialElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
             boolean elevationChanged = false;
 
-            // Check if quantized elevation changed
-            if (potentialElev != centralElev) {
-                outerElev = innerElev;
-                innerElev = centralElev;
-                outerRadius = innerRadius;
-                innerRadius = centralRadius;
-                centralRadius = 1.0;  // 1.0 in normalized (river-width) space
-                centralElev = potentialElev;
+            // Check if quantized elevation changed (compare against newest layer)
+            if (potentialElev != layerElev[0]) {
+                // Shift all layers right (drop oldest if full)
+                int shiftCount = Math.min(layerCount, MAX_ELEV_LAYERS - 1);
+                System.arraycopy(layerElev, 0, layerElev, 1, shiftCount);
+                System.arraycopy(layerRadius, 0, layerRadius, 1, shiftCount);
+                layerElev[0] = potentialElev;
+                layerRadius[0] = 1.0;  // 1.0 in normalized (river-width) space
+                layerCount = Math.min(layerCount + 1, MAX_ELEV_LAYERS);
                 elevationChanged = true;
             }
 
@@ -3926,9 +3932,13 @@ public class DendrySampler implements Sampler {
                 double dx = samplePoint.x - prevEvalPos.x;
                 double dy = samplePoint.y - prevEvalPos.y;
                 double distSinceLastEval = Math.sqrt(dx * dx + dy * dy) / riverWidthGrid;
-                outerRadius = Math.max(0, outerRadius - distSinceLastEval);
-                innerRadius = Math.max(0, innerRadius - distSinceLastEval);
-                centralRadius = Math.max(0, centralRadius - distSinceLastEval);
+                for (int li = 0; li < layerCount; li++) {
+                    layerRadius[li] = Math.max(0, layerRadius[li] - distSinceLastEval);
+                }
+                // Prune fully-decayed layers from the tail (keep at least 1)
+                while (layerCount > 1 && layerRadius[layerCount - 1] <= 0) {
+                    layerCount--;
+                }
             }
 
             // Saturate radii to distance from segment end (normalized by river width)
@@ -3937,9 +3947,9 @@ public class DendrySampler implements Sampler {
                 double dyEnd = samplePoint.y - seg.end.y;
                 double distToEndNorm = Math.sqrt(dxEnd * dxEnd + dyEnd * dyEnd) / riverWidthGrid;
                 double maxRadius = Math.max(0, distToEndNorm - 1);
-                outerRadius = Math.min(outerRadius, maxRadius);
-                innerRadius = Math.min(innerRadius, maxRadius);
-                centralRadius = Math.min(centralRadius, maxRadius);
+                for (int li = 0; li < layerCount; li++) {
+                    layerRadius[li] = Math.min(layerRadius[li], maxRadius);
+                }
             }
 
             // === Step F: Segment fill flag ===
@@ -3961,8 +3971,7 @@ public class DendrySampler implements Sampler {
                 : 15;
 
             projectConeToBoxes(samplePoint, currentTangent, prevEvalTangent,
-                centralElev, innerElev, outerElev,
-                centralRadius, innerRadius, outerRadius,
+                layerElev, layerRadius, layerCount,
                 riverWidthGrid, borderWidthGrid, segmentFill, isStartPoint,
                 segmentSlope, chunk, chunkSizeGrid, level,
                 levelNibble, distChangeNibble,
@@ -4074,22 +4083,11 @@ public class DendrySampler implements Sampler {
      * Project a cone of influence from a sample point onto bigchunk boxes.
      * All coordinates and distances are in grid coordinate space.
      * @param samplePoint Sample position in grid coordinates
-     * @param elevation Elevation value
-     * @param riverWidthGrid River width in grid coordinates
-     * @param chunkSizeGrid Chunk size in grid coordinates
-     */
-    /**
-     * Project a cone of influence from a sample point onto bigchunk boxes.
-     * All coordinates and distances are in grid coordinate space.
-     * @param samplePoint Sample position in grid coordinates
      * @param currentTangent Current tangent direction at sample point
      * @param prevTangent Previous evaluated tangent direction
-     * @param centralElev Pre-quantized central elevation (UInt8)
-     * @param innerElev Pre-quantized inner elevation (UInt8)
-     * @param outerElev Pre-quantized outer elevation (UInt8)
-     * @param centralRadius Central elevation radius (normalized by river width, 0-1)
-     * @param innerRadius Inner elevation radius (normalized by river width, 0-1)
-     * @param outerRadius Outer elevation radius (normalized by river width, 0-1)
+     * @param layerElev Array of pre-quantized elevations (UInt8), index 0 = newest
+     * @param layerRadius Array of elevation radii (normalized by river width, 0-1), index 0 = newest
+     * @param layerCount Number of active layers in the arrays
      * @param riverWidthGrid River width in grid coordinates
      * @param segmentFill If true, fill a 180° semicircle at segment endpoint
      * @param isStartPoint True if this is the start of the segment (affects semicircle direction)
@@ -4099,8 +4097,7 @@ public class DendrySampler implements Sampler {
      */
     private void projectConeToBoxes(Point3D samplePoint, dendryterra.math.Vec2D currentTangent,
                                    dendryterra.math.Vec2D prevTangent,
-                                   int centralElev, int innerElev, int outerElev,
-                                   double centralRadius, double innerRadius, double outerRadius,
+                                   int[] layerElev, double[] layerRadius, int layerCount,
                                    double riverWidthGrid, double borderWidthGrid, boolean segmentFill, boolean isStartPoint,
                                    double segmentSlope, BigChunk chunk, double chunkSizeGrid, int level,
                                    int levelNibble, int distChangeNibble,
@@ -4141,29 +4138,25 @@ public class DendrySampler implements Sampler {
             // Normalized distance from river center (in river-width units)
             double normDistFromCenter = (riverWidthGrid > 0) ? distanceGrid / riverWidthGrid : 1.0;
 
-            // Determine which elevation to use based on centroid distances
-            int selectedElev = centralElev;  // Default
+            // Determine which elevation to use based on centroid distances.
+            // Check newest-first: newest layer (largest radius) qualifies in the narrowest
+            // zone near center; older layers (smaller radii) qualify in progressively wider
+            // zones. First qualifying layer wins.
+            // Result: center = newest elevation, edges = oldest elevation.
+            int selectedElev = layerElev[layerCount - 1];  // Default = oldest layer
             if (normDistFromCenter < 1.0) {
-                // Check elevation layers from biggest radius to smallest
-                if (outerRadius > 0) {
-                    double centroidDist = Math.sqrt(
-                        normDistFromCenter * normDistFromCenter +
-                        Math.pow(outerRadius * slopeFactor, 2)
-                    );
-                    if (centroidDist < 1.0) {
-                        selectedElev = outerElev;
+                for (int li = 0; li < layerCount; li++) {
+                    if (layerRadius[li] > 0) {
+                        double centroidDist = Math.sqrt(
+                            normDistFromCenter * normDistFromCenter +
+                            Math.pow(layerRadius[li] * slopeFactor, 2)
+                        );
+                        if (centroidDist < 1.0) {
+                            selectedElev = layerElev[li];
+                            break;
+                        }
                     }
                 }
-                if (selectedElev == centralElev && innerRadius > 0) {
-                    double centroidDist = Math.sqrt(
-                        normDistFromCenter * normDistFromCenter +
-                        Math.pow(innerRadius * slopeFactor, 2)
-                    );
-                    if (centroidDist < 1.0) {
-                        selectedElev = innerElev;
-                    }
-                }
-                // Otherwise centralElev (already set)
             }
 
             boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING > 0;
