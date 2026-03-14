@@ -1610,3 +1610,24 @@ I'm trying to investigate discontinuities in this sampler project's output (Disc
 After pruning segments for the big chunk (line 3399), can you create a validation that ensures all segment points that are located at the same position have the same elevation?  If not, produce an error, as it seems some segments (that are connected via the same points) somehow evaluate with a step change in elevation, which should not be possible.
 
 Additionally, I suspect some of this may be due to how the outerRadius and innerRadius variables are being used.  Those should be the distance till the elevation falls at the boundary of the river, but it appears it may be working inversly (elevation is falling at the edges earlier than the center).  Instead of limiting this to 3 variables (center / inner / outer) it might be better to redesign this into an array that can track multiple elevation changes and distances to outer dropoff (instead of using the simantics of "radius"), but it is not clear to me if this is a source of some discontinuities.
+
+##############################
+
+To address some non-ideal behavior with the distance tracking to elevation change, plan for some updates:
+
+1. The distance to elevation change (from the 4 bit nibble, return y value 3.0) should also change along the length of the river just like the actual elevation changes as a function of the array based layer elevation / layer radius delays changes in elevation to further down the segment.
+2. The distance to elevation change should only be populated within the river boundary (river distance <=0, or integer 127 value) right now it appears to extend beyond that border.
+
+
+
+The source of discontinuity appears to be due to very small loops causing the elevation to change as it's wrapping around a point.  
+
+3 things:
+
+1. It appears some segments cross over other segments creating knots / loops that create these discontinuities if they are offset slightly.  I'd like to explore some options to reduce / mitigate segment knotting / looping above level 0:
+    Curvature might need to fall off with level, but this is already normalized for distance.
+    If a segment is in range of another segment (the maximum river width * 2) that it is not connecting with, it might risk creating an overlap.  The actual segmeent branch shouldn't be removed, but how can the segmeent winding be compensated differently?
+    The jitter might need to be reduced during segment subdivision.  But jitter is already restricted to a function of the segment length.
+    Perhaps as jitter increases, curvature also needs to be decreased.
+    To give river / flow structures more variation, it might be good to have a minimum jitter while also decreasing the maximum jitter, and further restricting any applied twist as a funciton of applied jitter, but I thougght that was already completed.
+

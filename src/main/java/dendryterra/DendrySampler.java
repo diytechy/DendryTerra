@@ -3792,6 +3792,7 @@ public class DendrySampler implements Sampler {
         // === Elevation tracking state (dynamic layers, index 0 = newest) ===
         int[] layerElev = new int[MAX_ELEV_LAYERS];
         double[] layerRadius = new double[MAX_ELEV_LAYERS];
+        double[] layerLastElevChangeArc = new double[MAX_ELEV_LAYERS];
         int layerCount = 0;
 
         // === Stream tracking state ===
@@ -3804,7 +3805,7 @@ public class DendrySampler implements Sampler {
         // === Level & distance-to-change tracking ===
         int levelNibble = Math.min(14, level);  // Clamp to 0-14 (15 = unset)
         double accumulatedArcLength = 0.0;
-        double lastElevChangeArcLength = Double.NEGATIVE_INFINITY;
+        // lastElevChangeArcLength is now tracked per-layer in layerLastElevChangeArc[]
         int prevQuantizedElev = -1;
         Point3D prevSamplePoint = null;
 
@@ -3823,12 +3824,8 @@ public class DendrySampler implements Sampler {
                 accumulatedArcLength += Math.sqrt(dx * dx + dy * dy);
             }
 
-            // Detect quantized elevation decrease (terrain getting lower)
+            // Track quantized elevation for decrease detection (used in cascade below)
             int currentQuantizedElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
-            if (prevQuantizedElev >= 0 && currentQuantizedElev < prevQuantizedElev) {
-                lastElevChangeArcLength = accumulatedArcLength;
-            }
-            prevQuantizedElev = currentQuantizedElev;
             prevSamplePoint = samplePoint;
 
             // === Step A: New stream initialization ===
@@ -3836,6 +3833,7 @@ public class DendrySampler implements Sampler {
                 int quantizedElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
                 layerElev[0] = quantizedElev;
                 layerRadius[0] = 0;
+                layerLastElevChangeArc[0] = Double.NEGATIVE_INFINITY;
                 layerCount = 1;
                 prevLoopTangent = currentTangent;
                 prevEvalPos = samplePoint;
@@ -3865,15 +3863,23 @@ public class DendrySampler implements Sampler {
 
             // Check if quantized elevation changed (compare against newest layer)
             if (potentialElev != layerElev[0]) {
+                boolean isDecrease = potentialElev < layerElev[0];
                 // Shift all layers right (drop oldest if full)
                 int shiftCount = Math.min(layerCount, MAX_ELEV_LAYERS - 1);
                 System.arraycopy(layerElev, 0, layerElev, 1, shiftCount);
                 System.arraycopy(layerRadius, 0, layerRadius, 1, shiftCount);
+                System.arraycopy(layerLastElevChangeArc, 0, layerLastElevChangeArc, 1, shiftCount);
                 layerElev[0] = potentialElev;
                 layerRadius[0] = 1.0;  // 1.0 in normalized (river-width) space
+                // Only reset arc tracking on elevation decrease; on increase, inherit
+                // from previous layer so the distance-to-change reflects the last *drop*.
+                layerLastElevChangeArc[0] = isDecrease
+                    ? accumulatedArcLength
+                    : layerLastElevChangeArc[1];
                 layerCount = Math.min(layerCount + 1, MAX_ELEV_LAYERS);
                 elevationChanged = true;
             }
+            prevQuantizedElev = currentQuantizedElev;
 
             // === Step D: Should this sample be evaluated/projected? ===
             boolean shouldEvaluate = false;
@@ -3964,17 +3970,20 @@ public class DendrySampler implements Sampler {
             }
 
             // === Project to boxes ===
-            // Compute distance-to-change nibble from accumulated arc length
-            double distChangeSinceLastStep = accumulatedArcLength - lastElevChangeArcLength;
-            int distChangeNibble = (heightChangeMaxDistGrid > 0)
-                ? (int) Math.min(15, distChangeSinceLastStep / heightChangeMaxDistGrid * 15)
-                : 15;
+            // Compute per-layer distance-to-change nibbles from accumulated arc length
+            int[] layerDistChangeNibble = new int[layerCount];
+            for (int li = 0; li < layerCount; li++) {
+                double distChange = accumulatedArcLength - layerLastElevChangeArc[li];
+                layerDistChangeNibble[li] = (heightChangeMaxDistGrid > 0)
+                    ? (int) Math.min(15, distChange / heightChangeMaxDistGrid * 15)
+                    : 15;
+            }
 
             projectConeToBoxes(samplePoint, currentTangent, prevEvalTangent,
                 layerElev, layerRadius, layerCount,
                 riverWidthGrid, borderWidthGrid, segmentFill, isStartPoint,
                 segmentSlope, chunk, chunkSizeGrid, level,
-                levelNibble, distChangeNibble,
+                levelNibble, layerDistChangeNibble,
                 elevDistTracker);
 
             // Update state for next iteration
@@ -4092,6 +4101,7 @@ public class DendrySampler implements Sampler {
      * @param segmentFill If true, fill a 180° semicircle at segment endpoint
      * @param isStartPoint True if this is the start of the segment (affects semicircle direction)
      * @param segmentSlope Segment slope (abs(height change / euclidean distance))
+     * @param layerDistChangeNibble Per-layer distance-to-elevation-change nibbles (0-15), index 0 = newest
      * @param chunk BigChunk to project onto
      * @param chunkSizeGrid Chunk size in grid coordinates
      */
@@ -4100,7 +4110,7 @@ public class DendrySampler implements Sampler {
                                    int[] layerElev, double[] layerRadius, int layerCount,
                                    double riverWidthGrid, double borderWidthGrid, boolean segmentFill, boolean isStartPoint,
                                    double segmentSlope, BigChunk chunk, double chunkSizeGrid, int level,
-                                   int levelNibble, int distChangeNibble,
+                                   int levelNibble, int[] layerDistChangeNibble,
                                    int[][] elevDistTracker) {
         double cachepixelsGrid = cachepixels / gridsize;
 
@@ -4143,7 +4153,8 @@ public class DendrySampler implements Sampler {
             // zone near center; older layers (smaller radii) qualify in progressively wider
             // zones. First qualifying layer wins.
             // Result: center = newest elevation, edges = oldest elevation.
-            int selectedElev = layerElev[layerCount - 1];  // Default = oldest layer
+            int selectedLayerIndex = layerCount - 1;  // Default = oldest layer
+            int selectedElev = layerElev[selectedLayerIndex];
             if (normDistFromCenter < 1.0) {
                 for (int li = 0; li < layerCount; li++) {
                     if (layerRadius[li] > 0) {
@@ -4152,12 +4163,14 @@ public class DendrySampler implements Sampler {
                             Math.pow(layerRadius[li] * slopeFactor, 2)
                         );
                         if (centroidDist < 1.0) {
+                            selectedLayerIndex = li;
                             selectedElev = layerElev[li];
                             break;
                         }
                     }
                 }
             }
+            int distChangeNibble = layerDistChangeNibble[selectedLayerIndex];
 
             boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING > 0;
 
@@ -4351,17 +4364,13 @@ public class DendrySampler implements Sampler {
             box.setLevelNibble(levelNibble);
         }
 
-        // DistChange: outside river border (distU8 > 127), don't overwrite if already set
-        // Inside river border (distU8 <= 127), lower wins
+        // DistChange: only set within river boundary (distU8 <= 127), lower wins
         if (distU8 <= 127) {
             if (distChangeNibble < box.getDistChangeNibble()) {
                 box.setDistChangeNibble(distChangeNibble);
             }
-        } else {
-            if (box.getDistChangeNibble() == 15) {
-                box.setDistChangeNibble(distChangeNibble);
-            }
         }
+        // Outside river (distU8 > 127): nibble stays at default 15 (unset)
 
         // Elevation update with distance-based blending
         if (distU8 <= 127) {
