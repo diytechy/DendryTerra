@@ -2410,28 +2410,71 @@ public class DendrySampler implements Sampler {
 
 
     /**
-     * Remove points that are within merge distance of any lower-level segment.
+     * Remove points that are within merge distance of any lower-level segment spline.
+     * Uses Hermite spline evaluation (when curvature is enabled) to accurately account
+     * for curved segments, rather than linear approximation.
      */
     private List<Point3D> removePointsNearSegments(List<Point3D> points, SegmentList segmentList, double mergeDistance) {
         List<Point3D> result = new ArrayList<>();
         double mergeDistSq = mergeDistance * mergeDistance;
 
+        // Pre-sample spline positions for all segments to avoid re-evaluating per point
+        SegmentListConfig segConfig = segmentList.getConfig();
+        boolean useSplines = segConfig.useSplines && segConfig.curvature > 0;
+        int samplesPerSegment = 8;  // Number of interior samples along each segment spline
+
+        List<Point2D[]> segmentSamples = new ArrayList<>();
+        for (SegmentIdx seg : segmentList.getSegments()) {
+            Point3D srtPos = seg.getSrt(segmentList);
+            Point3D endPos = seg.getEnd(segmentList);
+            Point2D[] samples = new Point2D[samplesPerSegment + 2]; // include endpoints
+            samples[0] = srtPos.projectZ();
+            samples[samplesPerSegment + 1] = endPos.projectZ();
+
+            if (useSplines && seg.tangentSrt != null && seg.tangentEnd != null) {
+                double segLength = srtPos.projectZ().distanceTo(endPos.projectZ());
+                double tangentScale = segLength * segConfig.curvature;
+                for (int s = 1; s <= samplesPerSegment; s++) {
+                    double t = (double) s / (samplesPerSegment + 1);
+                    double t2 = t * t;
+                    double t3 = t2 * t;
+                    double h00 = 2 * t3 - 3 * t2 + 1;
+                    double h10 = t3 - 2 * t2 + t;
+                    double h01 = -2 * t3 + 3 * t2;
+                    double h11 = t3 - t2;
+                    double x = h00 * srtPos.x + h10 * seg.tangentSrt.x * tangentScale
+                             + h01 * endPos.x + h11 * seg.tangentEnd.x * tangentScale;
+                    double y = h00 * srtPos.y + h10 * seg.tangentSrt.y * tangentScale
+                             + h01 * endPos.y + h11 * seg.tangentEnd.y * tangentScale;
+                    samples[s] = new Point2D(x, y);
+                }
+            } else {
+                // Linear fallback
+                for (int s = 1; s <= samplesPerSegment; s++) {
+                    double t = (double) s / (samplesPerSegment + 1);
+                    samples[s] = new Point2D(
+                        MathUtils.lerp(srtPos.x, endPos.x, t),
+                        MathUtils.lerp(srtPos.y, endPos.y, t));
+                }
+            }
+            segmentSamples.add(samples);
+        }
+
+        // Check each candidate point against all sampled spline positions
         for (Point3D point : points) {
             boolean tooClose = false;
             Point2D p2d = point.projectZ();
 
-            for (SegmentIdx seg : segmentList.getSegments()) {
-                // Find closest point on segment using linear interpolation
-                Point3D srtPos = seg.getSrt(segmentList);
-                Point3D endPos = seg.getEnd(segmentList);
-                Point2D segA = srtPos.projectZ();
-                Point2D segB = endPos.projectZ();
-                double distSq = pointToSegmentDistanceSquared(p2d, segA, segB);
-
-                if (distSq < mergeDistSq) {
-                    tooClose = true;
-                    break;
+            for (Point2D[] samples : segmentSamples) {
+                // Check distance to each polyline segment between consecutive samples
+                for (int s = 0; s < samples.length - 1; s++) {
+                    double distSq = pointToSegmentDistanceSquared(p2d, samples[s], samples[s + 1]);
+                    if (distSq < mergeDistSq) {
+                        tooClose = true;
+                        break;
+                    }
                 }
+                if (tooClose) break;
             }
 
             if (!tooClose) {

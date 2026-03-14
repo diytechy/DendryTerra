@@ -1620,14 +1620,30 @@ To address some non-ideal behavior with the distance tracking to elevation chang
 
 
 
-The source of discontinuity appears to be due to very small loops causing the elevation to change as it's wrapping around a point.  
+The source of discontinuity appears to be due to very small loops causing the elevation to change as it's wrapping around a point and doubling back on itself.  
 
-3 things:
+I need some deeper analysis around segment generation.
 
-1. It appears some segments cross over other segments creating knots / loops that create these discontinuities if they are offset slightly.  I'd like to explore some options to reduce / mitigate segment knotting / looping above level 0:
+It appears some segments cross over other segments creating knots / loops that create these discontinuities if they are offset slightly.  I'd like to explore some options to reduce / mitigate segment knotting / looping above level 0:
     Curvature might need to fall off with level, but this is already normalized for distance.
     If a segment is in range of another segment (the maximum river width * 2) that it is not connecting with, it might risk creating an overlap.  The actual segmeent branch shouldn't be removed, but how can the segmeent winding be compensated differently?
     The jitter might need to be reduced during segment subdivision.  But jitter is already restricted to a function of the segment length.
     Perhaps as jitter increases, curvature also needs to be decreased.
     To give river / flow structures more variation, it might be good to have a minimum jitter while also decreasing the maximum jitter, and further restricting any applied twist as a funciton of applied jitter, but I thougght that was already completed.
 
+Additionally, segments need to come into their lower level segment at -20 to +20 perpendicular to the lower level segment that they are branching from (aka: A segment that already has 2+ connections), or else the segment can travel right next to the lower level segment, but with a different elevation profile, which will also cause discontinuities.
+
+Please provide recommendations for this initial analysis and any other suspecious items that are observed while investigating.
+
+#########################################
+
+Much better, the only time I see double-backing now is due to points being located on top of a segments, for which there is currently no protection (points are only compared to existing points).
+
+After point cloud generation (likely also including point merging and probabilistic removal) also remove any points that are within merge distance of a lower level segment spline.  It will probably be important to use hermite calculations here as well instead of linear approximation given how much the tangents change the distance.  It may be easier to just evaluate points along the segment vs the point cloud of the next level, since this doesn't need to be exact, it just needs to remove points from the next level that are in proximity to the segment line.
+
+
+############################################
+
+Future considerations:
+
+IMPORTANT: Distance to elevation changes are still not following the elevation arc, this may not be a big issue but should be corrected in the future.
