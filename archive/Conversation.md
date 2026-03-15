@@ -1641,6 +1641,9 @@ Much better, the only time I see double-backing now is due to points being locat
 
 After point cloud generation (likely also including point merging and probabilistic removal) also remove any points that are within merge distance of a lower level segment spline.  It will probably be important to use hermite calculations here as well instead of linear approximation given how much the tangents change the distance.  It may be easier to just evaluate points along the segment vs the point cloud of the next level, since this doesn't need to be exact, it just needs to remove points from the next level that are in proximity to the segment line.
 
+##########################################
+
+Interesting.  I still see level 1 points basically directly on top of a level 0 segment.  Based on the segment shortening per level, do the number of samples need to increase?  Is the cutoff distance the merge distance?  The divisions to check on the lower level segment should have at least 1/3 the distance between them commpared to the cutoff / rejection distance.
 
 ############################################
 

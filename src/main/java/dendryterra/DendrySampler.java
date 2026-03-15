@@ -2165,23 +2165,53 @@ public class DendrySampler implements Sampler {
                 segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
             }
 
-            // Check for crossings and proximity between newly added segments and pre-existing ones
+            // Check for crossings and proximity between newly added segments and pre-existing ones.
+            // Uses spline-sampled points for both new and existing segments to catch curved overlaps.
             boolean hasCrossing = false;
             List<SegmentIdx> allSegs = segList.getSegments();
+            SegmentListConfig segCfg = segList.getConfig();
+            boolean splineProximity = segCfg.useSplines && segCfg.curvature > 0;
             // Min separation: 2x the river width at this level (in grid coordinates)
-            double minSeparationSq = defaultRiverwidth / gridsize * Math.pow(RIVER_WIDTH_FALLOFF, level) * 2;
-            minSeparationSq = minSeparationSq * minSeparationSq;
+            double minSeparation = defaultRiverwidth / gridsize * Math.pow(RIVER_WIDTH_FALLOFF, level) * 2;
+            double minSeparationSq = minSeparation * minSeparation;
+            // Sample spacing for proximity: 1/3 of min separation (same principle as point removal)
+            double proxySampleSpacing = minSeparation / 3.0;
+
             for (int i = segsBefore; i < segList.getSegmentCount() && !hasCrossing; i++) {
                 SegmentIdx newSeg = allSegs.get(i);
-                Point2D newA = newSeg.getSrt(segList).projectZ();
-                Point2D newB = newSeg.getEnd(segList).projectZ();
-                // Midpoint of new segment for proximity check
-                Point2D newMid = new Point2D((newA.x + newB.x) * 0.5, (newA.y + newB.y) * 0.5);
+                Point3D newSrt = newSeg.getSrt(segList);
+                Point3D newEnd = newSeg.getEnd(segList);
+                Point2D newA = newSrt.projectZ();
+                Point2D newB = newEnd.projectZ();
+                double newLen = newA.distanceTo(newB);
+                int newSamples = Math.max(1, (int) Math.ceil(newLen / proxySampleSpacing));
+                Point2D[] newSamplePts = new Point2D[newSamples + 1];
+                newSamplePts[0] = newA;
+                newSamplePts[newSamples] = newB;
+                if (splineProximity && newSeg.tangentSrt != null && newSeg.tangentEnd != null) {
+                    double ts = newLen * segCfg.curvature;
+                    for (int s = 1; s < newSamples; s++) {
+                        double t = (double) s / newSamples;
+                        double t2 = t * t, t3 = t2 * t;
+                        newSamplePts[s] = new Point2D(
+                            (2*t3-3*t2+1)*newSrt.x + (t3-2*t2+t)*newSeg.tangentSrt.x*ts
+                            + (-2*t3+3*t2)*newEnd.x + (t3-t2)*newSeg.tangentEnd.x*ts,
+                            (2*t3-3*t2+1)*newSrt.y + (t3-2*t2+t)*newSeg.tangentSrt.y*ts
+                            + (-2*t3+3*t2)*newEnd.y + (t3-t2)*newSeg.tangentEnd.y*ts);
+                    }
+                } else {
+                    for (int s = 1; s < newSamples; s++) {
+                        double t = (double) s / newSamples;
+                        newSamplePts[s] = new Point2D(
+                            MathUtils.lerp(newA.x, newB.x, t), MathUtils.lerp(newA.y, newB.y, t));
+                    }
+                }
+
                 for (int j = 0; j < segsBefore; j++) {
                     SegmentIdx existing = allSegs.get(j);
                     Point2D exA = existing.getSrt(segList).projectZ();
                     Point2D exB = existing.getEnd(segList).projectZ();
-                    // Crossing check
+                    // Crossing check (linear — sufficient for intersection detection)
                     if (segmentsIntersect(newA, newB, exA, exB)) {
                         hasCrossing = true;
                         break;
@@ -2191,10 +2221,43 @@ public class DendrySampler implements Sampler {
                         newSeg.endIdx == existing.srtIdx || newSeg.endIdx == existing.endIdx) {
                         continue;
                     }
-                    if (pointToSegmentDistanceSquared(newMid, exA, exB) < minSeparationSq) {
-                        hasCrossing = true;
-                        break;
+                    // Sample existing segment spline
+                    Point3D exSrt = existing.getSrt(segList);
+                    Point3D exEnd = existing.getEnd(segList);
+                    double exLen = exA.distanceTo(exB);
+                    int exSamples = Math.max(1, (int) Math.ceil(exLen / proxySampleSpacing));
+                    Point2D[] exSamplePts = new Point2D[exSamples + 1];
+                    exSamplePts[0] = exA;
+                    exSamplePts[exSamples] = exB;
+                    if (splineProximity && existing.tangentSrt != null && existing.tangentEnd != null) {
+                        double ts = exLen * segCfg.curvature;
+                        for (int s = 1; s < exSamples; s++) {
+                            double t = (double) s / exSamples;
+                            double t2 = t * t, t3 = t2 * t;
+                            exSamplePts[s] = new Point2D(
+                                (2*t3-3*t2+1)*exSrt.x + (t3-2*t2+t)*existing.tangentSrt.x*ts
+                                + (-2*t3+3*t2)*exEnd.x + (t3-t2)*existing.tangentEnd.x*ts,
+                                (2*t3-3*t2+1)*exSrt.y + (t3-2*t2+t)*existing.tangentSrt.y*ts
+                                + (-2*t3+3*t2)*exEnd.y + (t3-t2)*existing.tangentEnd.y*ts);
+                        }
+                    } else {
+                        for (int s = 1; s < exSamples; s++) {
+                            double t = (double) s / exSamples;
+                            exSamplePts[s] = new Point2D(
+                                MathUtils.lerp(exA.x, exB.x, t), MathUtils.lerp(exA.y, exB.y, t));
+                        }
                     }
+                    // Check each new sample point against each existing polyline segment
+                    for (Point2D np : newSamplePts) {
+                        for (int es = 0; es < exSamplePts.length - 1; es++) {
+                            if (pointToSegmentDistanceSquared(np, exSamplePts[es], exSamplePts[es+1]) < minSeparationSq) {
+                                hasCrossing = true;
+                                break;
+                            }
+                        }
+                        if (hasCrossing) break;
+                    }
+                    if (hasCrossing) break;
                 }
             }
             if (hasCrossing) {
@@ -2418,21 +2481,26 @@ public class DendrySampler implements Sampler {
         List<Point3D> result = new ArrayList<>();
         double mergeDistSq = mergeDistance * mergeDistance;
 
-        // Pre-sample spline positions for all segments to avoid re-evaluating per point
+        // Pre-sample spline positions for all segments to avoid re-evaluating per point.
+        // Sample spacing must be <= mergeDistance/3 so no point on the spline can be
+        // further than mergeDistance from the nearest polyline segment.
         SegmentListConfig segConfig = segmentList.getConfig();
         boolean useSplines = segConfig.useSplines && segConfig.curvature > 0;
-        int samplesPerSegment = 8;  // Number of interior samples along each segment spline
+        double maxSampleSpacing = mergeDistance / 3.0;
 
         List<Point2D[]> segmentSamples = new ArrayList<>();
         for (SegmentIdx seg : segmentList.getSegments()) {
             Point3D srtPos = seg.getSrt(segmentList);
             Point3D endPos = seg.getEnd(segmentList);
+            double segLength = srtPos.projectZ().distanceTo(endPos.projectZ());
+
+            // Compute number of interior samples based on segment length vs rejection distance
+            int samplesPerSegment = Math.max(1, (int) Math.ceil(segLength / maxSampleSpacing) - 1);
             Point2D[] samples = new Point2D[samplesPerSegment + 2]; // include endpoints
             samples[0] = srtPos.projectZ();
             samples[samplesPerSegment + 1] = endPos.projectZ();
 
             if (useSplines && seg.tangentSrt != null && seg.tangentEnd != null) {
-                double segLength = srtPos.projectZ().distanceTo(endPos.projectZ());
                 double tangentScale = segLength * segConfig.curvature;
                 for (int s = 1; s <= samplesPerSegment; s++) {
                     double t = (double) s / (samplesPerSegment + 1);
