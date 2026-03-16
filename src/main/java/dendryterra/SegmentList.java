@@ -558,31 +558,52 @@ public class SegmentList {
                 if (point.connections == 1) {
                     return continuousTangent;
                 }
-                // Multiple connections: constrain departure angle based on whether this
-                // is a cross-level branch or a same-level continuation.
+                // Multiple connections (2+): compute tangent that points toward the average
+                // direction of already-connected points, so the new segment flows into the
+                // junction without overlapping existing segments.
                 else {
-                        double magnitude = continuousTangent.length();
-                        double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
-                        double angleTarget = Math.atan2(segTangent.y, segTangent.x);
-
-                        // Cross-level branch: new segment level > junction point's level.
-                        // Force departure roughly perpendicular (±20°) to parent flow direction.
-                        if (segmentLevel > point.level) {
-                            // Determine which side of the parent the target is on (cross product sign)
-                            double cross = continuousTangent.x * segTangent.y - continuousTangent.y * segTangent.x;
-                            double perpAngle = angleContinuous + ((cross >= 0) ? Math.PI / 2 : -Math.PI / 2);
-                            double branchOffset = (NoiseGen.nextFloat() * 2.0 - 1.0) * Math.toRadians(20);
-                            double resultAngle = perpAngle + branchOffset;
+                        // For level 0, keep original perpendicular/interpolation behavior
+                        if (segmentLevel == 0) {
+                            double magnitude = continuousTangent.length();
+                            double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
+                            double angleTarget = Math.atan2(segTangent.y, segTangent.x);
+                            double angleDiff = angleTarget - angleContinuous;
+                            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                            double interpolationFactor = NoiseGen.nextFloat();
+                            double resultAngle = angleContinuous + angleDiff * interpolationFactor;
                             return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
                         }
 
-                        // Same-level continuation: random interpolation between continuous and target
-                        double angleDiff = angleTarget - angleContinuous;
-                        while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-                        while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-                        double interpolationFactor = NoiseGen.nextFloat();
-                        double resultAngle = angleContinuous + angleDiff * interpolationFactor;
-                        return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
+                        // Level 1+: average-of-neighbors approach to avoid overlap.
+                        // Compute average direction from junction to all connected endpoints.
+                        List<SegmentConnection> conns = pointToSegments.get(pointIdx);
+                        Point2D junctionPos = point.position.projectZ();
+                        double avgX = 0, avgY = 0;
+                        for (SegmentConnection conn : conns) {
+                            SegmentIdx seg = segments.get(conn.segmentIndex);
+                            int otherIdx = conn.isStart ? seg.endIdx : seg.srtIdx;
+                            Point2D otherPos = points.get(otherIdx).position.projectZ();
+                            Vec2D toOther = new Vec2D(junctionPos, otherPos);
+                            double len = toOther.length();
+                            if (len > MathUtils.EPSILON) {
+                                avgX += toOther.x / len;
+                                avgY += toOther.y / len;
+                            }
+                        }
+
+                        Vec2D avgDirection;
+                        double avgLen = Math.sqrt(avgX * avgX + avgY * avgY);
+                        if (avgLen > MathUtils.EPSILON) {
+                            avgDirection = new Vec2D(avgX / avgLen, avgY / avgLen);
+                        } else {
+                            // Connected points cancel out (symmetric) — fall back to segTangent
+                            avgDirection = segTangent;
+                        }
+
+                        // Clamp to within 60 degrees of the raw point-to-target direction
+                        double maxTangentAngle = Math.PI / 3.0;
+                        return clampTangentAngle(avgDirection, segTangent, maxTangentAngle);
                     }
 
                 }
