@@ -4125,12 +4125,12 @@ public class DendrySampler implements Sampler {
         // t in [0.25, 0.75]: linearly interpolate from start to end elevation
         // t in [0.75, 1.0]: hold end elevation
         double z;
-        if (t <= 0.0) {
+        if (t <= 0.25) {
             z = seg.srt.z;
-        } else if (t >= 0.50) {
+        } else if (t >= 0.75) {
             z = seg.end.z;
         } else {
-            double tZ = (t - 0.0) / 0.5; // maps [0.25, 0.75] -> [0, 1]
+            double tZ = (t - 0.25) / 0.5; // maps [0.25, 0.75] -> [0, 1]
             z = seg.srt.z + (seg.end.z - seg.srt.z) * tZ;
         }
 

@@ -122,11 +122,11 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      * Maximum angle deviation for spline tangents at nodes (in degrees).
      * 0 = tangents point directly at connected nodes (linear-ish curves)
      * 90 = tangents can be perpendicular to the connection direction (maximum curvature)
-     * Range: 0-90, default 45.
+     * Range: 0-90, default 39.
      */
     @Value("tangent-angle")
     @Default
-    private @Meta double tangentAngle = 45.0;
+    private @Meta double tangentAngle = 39.0;
 
     /**
      * Pixel cache resolution for faster repeated queries.
