@@ -1643,10 +1643,33 @@ After point cloud generation (likely also including point merging and probabilis
 
 ##########################################
 
-Interesting.  I still see level 1 points basically directly on top of a level 0 segment.  Based on the segment shortening per level, do the number of samples need to increase?  Is the cutoff distance the merge distance?  The divisions to check on the lower level segment should have at least 1/3 the distance between them commpared to the cutoff / rejection distance.
+Interesting.  I still see level 1 points basically directly on top of a level 0 segment.  Based on the segment shortening per level, do the number of samples need to increase?  Is the cutoff distance the merge distance?  The divisions to check on the lower level segment should have at least 1/3 the distance between them compared to the cutoff / rejection distance.
+
+##########################################
+
+No, I'm still seeing it, I suppose it could be from segment subdivision and jitter, since those points aren't filtered out, but then the overlapping filter should reject and rollback.  Is the segment overlap and rollback being compared to both segments on the same level and segments at lower levels?
 
 ############################################
 
-Future considerations:
+Perform some investigations and plan respective updates:
 
-IMPORTANT: Distance to elevation changes are still not following the elevation arc, this may not be a big issue but should be corrected in the future.
+IMPORTANT: Distance to elevation changes are still not following the elevation arc, they all appear as straight lines, but the elevation shifts that occur with the array restricted by MAX_ELEV_LAYERS all produce an arc in elevation steps across the width of the river.
+
+The elevation itself also appears to sometimes be overwriting the elevation that was set by adjacent but non-intersecting rivers.  This may be related to earlier changes related to tracking elevation changes in an array (MAX_ELEV_LAYERS).  Once outside the river boundary, the same elevation that was used at the edge of the river should continue to push outward, continuing to also set it's distance for the tracking array to indicate what distance was used to set the elevation.  Once outside the river border, if the elevation block was already written and the distance that was set was less than the current river distance + blot distance (since blotting expands the size of a segment), the already set elevation should not be overwritten.
+
+Finally, there are still some issues with overlap, I think the max allowable jitter needs to fall off more heavily for higher level segments, and perhaps points created during subdivision also need to be checked for being to close to a level 0 segment.  Or does jitter need to make sure subdivided points are only pushed away from the segment they are connected to.  There might be a few options here, but I'm convinced it is rooted in subdivided points somehow landing on top of a different segment.
+
+######################################
+
+I'm still seeing issues with the distance to elevation changes and elevation overwriting zones within the bounds of other rivers / segments.  Perhaps this  implementation should be refactored, and another source of corruption here might that elevation is blotted and perhaps distance and change from elevation is not blotted (though this is speculation on my side).  Can you investigate and create a plan to address first issues that are still present with elevation overrides that I suspect are due to distance?
+
+For setting box parameters like river distance, elevation, distance since last elevation change, and river level, they should allow follow the same blotting rules, and should also follow similar rules for determining when an evaluated point is outside of a rivers edge (distance > 0) AND for determining if it should overwrite a box that has already been set outside of a river edge (if the distance that was set in the box + the outward cone distance with blotting (distanceGrid * 3) is more than the current sample distance from the river)
+
+*****************************************
+
+For the next item I'd still like to address some of the artifacts that I assume are due to jitter.
+
+
+1. For distance from elevation, I would expect the layer distance from last elevation change to be tracked just like the radius change (layerRadius), the only difference is that the change in radius is also scaled with slope, but the distance since last change in a layer can just increase with actual distance traveled along the segment.  When a box needs to be use a different layer depending on it's distance from the center, it can also use the distance that the layer has traveled along the segment.
+
+The simpler approach is just to have a temporary array tracking the distance traveled down the width of the river (at int step = 0; step <= maxSteps; in projectConeToBoxes) as this already walks through each point across the width of the river.  Each time the projectConeToBoxes is called, each point going outward can just be given a 

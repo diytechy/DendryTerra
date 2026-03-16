@@ -720,6 +720,34 @@ public class SegmentList {
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, jitterX, jitterY);
             }
 
+            // For levels > 0, check if the jittered point lands too close to any
+            // lower-level segment. If so, recompute without jitter to avoid overlap.
+            if (level > 0 && (jitterX != 0 || jitterY != 0)) {
+                Point2D pt2D = intermediatePoint.projectZ();
+                double proximityThreshold = minDistanceThreshold;
+                boolean tooClose = false;
+                for (SegmentIdx existingSeg : segments) {
+                    if (existingSeg.level >= level) continue; // only check lower levels
+                    Point2D segSrt = points.get(existingSeg.srtIdx).position.projectZ();
+                    Point2D segEnd = points.get(existingSeg.endIdx).position.projectZ();
+                    MathUtils.DistanceResult dr = MathUtils.distanceToLineSegment(pt2D, segSrt, segEnd);
+                    if (dr.distance < proximityThreshold) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                if (tooClose) {
+                    // Recompute without jitter
+                    if (config.useSplines && config.curvature > 0) {
+                        intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
+                                                                   tangentSrt, tangentEnd, t, config.curvature, 0, 0);
+                    } else {
+                        intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, 0, 0);
+                    }
+                    jitterMagnitude = 0;
+                }
+            }
+
             // Skip points that are too close to the previous point in the chain
             Point3D prevPoint = interPositions.isEmpty() ? srt.position : interPositions.get(interPositions.size() - 1);
             double distToPrev = intermediatePoint.projectZ().distanceTo(prevPoint.projectZ());

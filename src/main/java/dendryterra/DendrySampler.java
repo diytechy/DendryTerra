@@ -3533,16 +3533,13 @@ public class DendrySampler implements Sampler {
         for (int i = 0; i < sortedIndices.length; i++) sortedIndices[i] = i;
         java.util.Arrays.sort(sortedIndices, (a, b) -> Integer.compare(levels.get(b), levels.get(a)));
 
-        // Temporary tracker: per-block border distance at which elevation was last set (outside river).
-        // Initialized to 255 (unset). Only used for outside-river elevation blending.
-        int[][] elevDistTracker = new int[256][256];
-        for (int[] row : elevDistTracker) java.util.Arrays.fill(row, 255);
-
         // Phase 5: Process each segment in sorted order
+        // The box's own distance value serves as the overwrite authority —
+        // no separate elevDistTracker needed.
         for (int idx : sortedIndices) {
             sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
                 startConns.get(idx), endConns.get(idx), endFlowLevels.get(idx),
-                chunk, chunkSizeGrid, elevDistTracker);
+                chunk, chunkSizeGrid);
         }
     }
 
@@ -3898,8 +3895,7 @@ public class DendrySampler implements Sampler {
     private void sampleSegmentAlongSpline(Segment3D seg, int level,
                                           int startConnections, int endConnections,
                                           int endFlowLevel,
-                                          BigChunk chunk, double chunkSizeGrid,
-                                          int[][] elevDistTracker) {
+                                          BigChunk chunk, double chunkSizeGrid) {
         // Pre-compute constants
         double segmentLength = seg.length();
         double cachepixelsGrid = cachepixels / gridsize;
@@ -4096,21 +4092,20 @@ public class DendrySampler implements Sampler {
             }
 
             // === Project to boxes ===
-            // Compute per-layer distance-to-change nibbles from accumulated arc length
-            int[] layerDistChangeNibble = new int[layerCount];
+            // Compute per-layer base distance-to-change from accumulated arc length.
+            // These raw distances are passed to projectConeToBoxes so that each arc
+            // sample can add its angular displacement, producing curved contours
+            // instead of straight radial lines.
+            double[] layerBaseDistChange = new double[layerCount];
             for (int li = 0; li < layerCount; li++) {
-                double distChange = accumulatedArcLength - layerLastElevChangeArc[li];
-                layerDistChangeNibble[li] = (heightChangeMaxDistGrid > 0)
-                    ? (int) Math.min(15, distChange / heightChangeMaxDistGrid * 15)
-                    : 15;
+                layerBaseDistChange[li] = accumulatedArcLength - layerLastElevChangeArc[li];
             }
 
             projectConeToBoxes(samplePoint, currentTangent, prevEvalTangent,
                 layerElev, layerRadius, layerCount,
                 riverWidthGrid, borderWidthGrid, segmentFill, isStartPoint,
                 segmentSlope, chunk, chunkSizeGrid, level,
-                levelNibble, layerDistChangeNibble,
-                elevDistTracker);
+                levelNibble, layerBaseDistChange, heightChangeMaxDistGrid);
 
             // Update state for next iteration
             prevEvalPos = samplePoint;
@@ -4130,12 +4125,12 @@ public class DendrySampler implements Sampler {
         // t in [0.25, 0.75]: linearly interpolate from start to end elevation
         // t in [0.75, 1.0]: hold end elevation
         double z;
-        if (t <= 0.25) {
+        if (t <= 0.0) {
             z = seg.srt.z;
-        } else if (t >= 0.75) {
+        } else if (t >= 0.50) {
             z = seg.end.z;
         } else {
-            double tZ = (t - 0.25) / 0.5; // maps [0.25, 0.75] -> [0, 1]
+            double tZ = (t - 0.0) / 0.5; // maps [0.25, 0.75] -> [0, 1]
             z = seg.srt.z + (seg.end.z - seg.srt.z) * tZ;
         }
 
@@ -4227,7 +4222,8 @@ public class DendrySampler implements Sampler {
      * @param segmentFill If true, fill a 180° semicircle at segment endpoint
      * @param isStartPoint True if this is the start of the segment (affects semicircle direction)
      * @param segmentSlope Segment slope (abs(height change / euclidean distance))
-     * @param layerDistChangeNibble Per-layer distance-to-elevation-change nibbles (0-15), index 0 = newest
+     * @param layerBaseDistChange Per-layer base distance-to-elevation-change (arc length), index 0 = newest
+     * @param heightChangeMaxDistGrid Maximum distance over which dist-change nibble spans 0-15
      * @param chunk BigChunk to project onto
      * @param chunkSizeGrid Chunk size in grid coordinates
      */
@@ -4236,8 +4232,7 @@ public class DendrySampler implements Sampler {
                                    int[] layerElev, double[] layerRadius, int layerCount,
                                    double riverWidthGrid, double borderWidthGrid, boolean segmentFill, boolean isStartPoint,
                                    double segmentSlope, BigChunk chunk, double chunkSizeGrid, int level,
-                                   int levelNibble, int[] layerDistChangeNibble,
-                                   int[][] elevDistTracker) {
+                                   int levelNibble, double[] layerBaseDistChange, double heightChangeMaxDistGrid) {
         double cachepixelsGrid = cachepixels / gridsize;
 
         // Determine cone angle and bow direction
@@ -4296,18 +4291,21 @@ public class DendrySampler implements Sampler {
                     }
                 }
             }
-            int distChangeNibble = layerDistChangeNibble[selectedLayerIndex];
+            // Base distance-to-change for the selected layer (no arc displacement yet)
+            double baseDistChange = layerBaseDistChange[selectedLayerIndex];
 
             boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING > 0;
 
             if (step == 0) {
-                // Center point - set the box at samplePoint
+                // Center point - set the box at samplePoint (zero arc displacement)
+                int distChangeNibble = (heightChangeMaxDistGrid > 0)
+                    ? (int) Math.min(15, baseDistChange / heightChangeMaxDistGrid * 15)
+                    : 15;
                 int bx = gridToBlockIndex(samplePoint.x, chunk.gridOriginX, cachepixelsGrid);
                 int by = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
                 if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
                     updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid, borderWidthGrid,
-                             false, bx, by, chunk, step, level, levelNibble, distChangeNibble,
-                             elevDistTracker);
+                             false, bx, by, chunk, step, level, levelNibble, distChangeNibble);
                 }
             } else {
                 // Arc samples at this radius - active side, and optionally the opposite side
@@ -4335,14 +4333,22 @@ public class DendrySampler implements Sampler {
                         double px = samplePoint.x + Math.cos(angle) * distanceGrid;
                         double py = samplePoint.y + Math.sin(angle) * distanceGrid;
 
+                        // Adjust distance-to-change by adding angular arc displacement.
+                        // Points further from the perpendicular center are further in arc
+                        // terms from the elevation change, producing curved contours.
+                        double arcDisplacement = Math.abs(angleOffset) * distanceGrid;
+                        double adjustedDistChange = baseDistChange + arcDisplacement;
+                        int distChangeNibble = (heightChangeMaxDistGrid > 0)
+                            ? (int) Math.min(15, adjustedDistChange / heightChangeMaxDistGrid * 15)
+                            : 15;
+
                         int bx = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
                         int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
 
                         if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
                             updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
                                      riverWidthGrid, borderWidthGrid, blotAdjacentBoxes, bx, by, chunk, step, level,
-                                     levelNibble, distChangeNibble,
-                                     elevDistTracker);
+                                     levelNibble, distChangeNibble);
                         }
                     }
                 }
@@ -4408,7 +4414,7 @@ public class DendrySampler implements Sampler {
      * @param distanceGrid Distance in grid coordinates
      * @param elevationU8 Pre-quantized elevation value (0-255)
      * @param riverWidthGrid River width in grid coordinates
-     * @param blotAdjacentBoxes If true, also fill 4 adjacent boxes with same values
+     * @param blotAdjacentBoxes If true, also fill adjacent boxes with same values
      * @param blockX Block X index within chunk (for adjacent access)
      * @param blockY Block Y index within chunk (for adjacent access)
      * @param chunk BigChunk for adjacent box access
@@ -4418,12 +4424,10 @@ public class DendrySampler implements Sampler {
                           int elevationU8, double riverWidthGrid, double borderWidthGrid,
                           boolean blotAdjacentBoxes, int blockX, int blockY,
                           BigChunk chunk, int outwardStep, int level,
-                          int levelNibble, int distChangeNibble,
-                          int[][] elevDistTracker) {
+                          int levelNibble, int distChangeNibble) {
         // Quantize normalized distance to uint8 in range [0, 255]:
         //   [0, 127]   = inside river:  0 (center, output -1) → 127 (edge, output ≈ 0)
         //   [128, 255] = outside river: 128 (edge, output 0) → 255 (at borderwidth, output 1)
-        // "Lower wins" in applyBoxUpdate is correct for both regions.
         int distU8;
         if (distanceGrid <= riverWidthGrid) {
             double ratio = (riverWidthGrid > 0) ? distanceGrid / riverWidthGrid : 0.0;
@@ -4434,29 +4438,18 @@ public class DendrySampler implements Sampler {
             distU8 = (int)(128 + Math.min(127, ratio * 127));
         }
 
-        // Apply elevation smoothing noise at river edge transitions
-        // Make sure l1 rivers get a height boost?  May need further exploration, but allows E=0 to filter distance for L0 segments to filter certain terrain artifacts.
+        // Make sure l1 rivers get a height boost — allows E=0 to filter distance
+        // for L0 segments to filter certain terrain artifacts.
         int finalElevU8 = Math.max(elevationU8, Math.min(1, level));
-        int currentElev = box.getElevationUnsigned();
-        int currentDist = box.getDistanceUnsigned();
 
-        // If box was previously set (distance < 255), new elevation is lower,
-        // and we're at the first outward step from river edge, add random noise
-        if (currentElev > elevationU8 && currentDist < 255 && outwardStep == 1) {
-            int range = currentElev - elevationU8;
-            int noise = (int)(Math.random() * range);
-            //NOTE: This has been commented out as it appears to create a chance that two blocks are
-            //kitty-corner to eachother, resulting in flow propigation and source block generation.
-            //finalElevU8 = elevationU8 + noise;
-            finalElevU8 = elevationU8;
-        }
-
-        // Update this box
-        applyBoxUpdate(box, distU8, finalElevU8, levelNibble, distChangeNibble,
-                       elevDistTracker, blockX, blockY);
+        // Update this box (applyBoxUpdate uses unified rules for all parameters)
+        applyBoxUpdate(box, distU8, finalElevU8, levelNibble, distChangeNibble);
 
         // Blot: fill adjacent boxes with same values (pin-hole filling)
+        // Outside river (distU8 > 127), blotted neighbors use distU8 + 1 so they
+        // don't aggressively claim territory at equal priority to the source block.
         if (ENABLE_BLOT_FILLING > 0 && blotAdjacentBoxes) {
+            int blotDistU8 = (distU8 > 127) ? Math.min(255, distU8 + 1) : distU8;
             int[][] neighbors;
             if (ENABLE_BLOT_FILLING >= 2) {
                 neighbors = new int[][]{{-1,0},{1,0},{0,-1},{0,1},{-1,-1},{-1,1},{1,-1},{1,1}};
@@ -4466,55 +4459,48 @@ public class DendrySampler implements Sampler {
             for (int[] d : neighbors) {
                 int nx = blockX + d[0], ny = blockY + d[1];
                 if (nx >= 0 && nx < 256 && ny >= 0 && ny < 256) {
-                    applyBoxUpdate(chunk.getBlock(nx, ny), distU8, finalElevU8, levelNibble, distChangeNibble,
-                                   elevDistTracker, nx, ny);
+                    applyBoxUpdate(chunk.getBlock(nx, ny), blotDistU8, finalElevU8, levelNibble, distChangeNibble);
                 }
             }
         }
     }
 
     /**
-     * Apply distance and elevation updates to a single box.
-     * Distance: lower wins (closer to river).
-     * Elevation: lower wins (river valley).
+     * Apply distance, elevation, level, and distChange updates to a single box.
+     * All parameters follow unified rules:
+     *   Inside river  (distU8 <= 127): lower wins independently for each parameter.
+     *   Outside river (distU8 >  127): overwrite ALL parameters atomically only if
+     *       the new distance is strictly closer than the existing distance.
+     *       The box's own distance serves as the overwrite authority (no external tracker).
      */
     private void applyBoxUpdate(BigChunk.BigChunkBlock box, int distU8, int elevU8,
-                                int levelNibble, int distChangeNibble,
-                                int[][] elevDistTracker, int blockX, int blockY) {
-        if (distU8 < box.getDistanceUnsigned()) {
-            box.setDistanceUnsigned(distU8);
-        }
+                                int levelNibble, int distChangeNibble) {
+        int existingDist = box.getDistanceUnsigned();
 
-        // Level: lower wins, only set within river boundary (distU8 <= 127)
-        if (distU8 <= 127 && levelNibble < box.getLevelNibble()) {
-            box.setLevelNibble(levelNibble);
-        }
-
-        // DistChange: only set within river boundary (distU8 <= 127), lower wins
         if (distU8 <= 127) {
+            // INSIDE RIVER: lower wins for each parameter independently
+            if (distU8 < existingDist) {
+                box.setDistanceUnsigned(distU8);
+            }
+            if (elevU8 < box.getElevationUnsigned()) {
+                box.setElevationUnsigned(elevU8);
+            }
+            if (levelNibble < box.getLevelNibble()) {
+                box.setLevelNibble(levelNibble);
+            }
             if (distChangeNibble < box.getDistChangeNibble()) {
                 box.setDistChangeNibble(distChangeNibble);
             }
-        }
-        // Outside river (distU8 > 127): nibble stays at default 15 (unset)
-
-        // Elevation update with distance-based blending
-        if (distU8 <= 127) {
-            // Inside river: lower elevation always wins
-            if (elevU8 < box.getElevationUnsigned()) {
-                box.setElevationUnsigned(elevU8);
-                // Update the distance if it's less, to prevent other samples from compariing
-                // to older positoins and newer elevations.
-                if (distU8 <= elevDistTracker[blockX][blockY]) {
-                    elevDistTracker[blockX][blockY] = distU8;
-                }
-            }
         } else {
-            // Outside river: overwrite only if this border distance is closer
-            // than the distance used to last set this block's elevation
-            if (distU8 <= elevDistTracker[blockX][blockY]) {
+            // OUTSIDE RIVER: overwrite ALL parameters only if this distance is
+            // strictly closer than what's already stored. This prevents
+            // non-intersecting rivers from corrupting each other's values.
+            // Blotted writes use distU8+1, making them naturally weaker.
+            if (distU8 < existingDist) {
+                box.setDistanceUnsigned(distU8);
                 box.setElevationUnsigned(elevU8);
-                elevDistTracker[blockX][blockY] = distU8;
+                box.setLevelNibble(levelNibble);
+                box.setDistChangeNibble(distChangeNibble);
             }
         }
     }
