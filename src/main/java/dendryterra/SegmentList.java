@@ -716,6 +716,23 @@ public class SegmentList {
                 jitterY = 0;
             }
 
+            // Prevent jitter from moving points closer to end point (backward along segment).
+            // segAxis points srt→end; a positive dot means jitter pushes toward end, so remove it.
+            if (jitterX != 0 || jitterY != 0) {
+                double segAxisX = end.position.x - srt.position.x;
+                double segAxisY = end.position.y - srt.position.y;
+                double segLen = Math.sqrt(segAxisX * segAxisX + segAxisY * segAxisY);
+                if (segLen > MathUtils.EPSILON) {
+                    double normX = segAxisX / segLen;
+                    double normY = segAxisY / segLen;
+                    double dot = jitterX * normX + jitterY * normY;
+                    if (dot > 0) {
+                        jitterX -= dot * normX;
+                        jitterY -= dot * normY;
+                    }
+                }
+            }
+
             Point3D intermediatePoint;
             if (config.useSplines && config.curvature > 0) {
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,

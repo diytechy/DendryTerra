@@ -1681,6 +1681,13 @@ Reducing twist angle helps significantly, but when a segment is subdivided it st
 
 At subdivision of a segment, the start and end tangents probably need their tangent magnitudes reduced as a function of how much twist and jitter is applied - as that twist and jitter pushes the points away from their original hermite interpolation line and the original tangent vectors, but it's not clear to me how much their tangent's should be reduced to prevent overlap but still give unique curvatures to the segments.
 
+#############################################
+
+Plan an update:
+
+When a segment is subdivided, jitter should never move points closer to the end point.  That is, the vector created by moving from the end point to the start point of the segment before subdivision defines where it is pointing defines the vector to the start.  Jitter should only move points on this axis and perpendicular to this axis, but never backwards / closer to the original segment end point, which can cause overlap.
+
+
 
 1. For distance from elevation, I would expect the layer distance from last elevation change to be tracked just like the radius change (layerRadius), the only difference is that the change in radius is also scaled with slope, but the distance since last change in a layer can just increase with actual distance traveled along the segment.  When a box needs to be use a different layer depending on it's distance from the center, it can also use the distance that the layer has traveled along the segment.
 

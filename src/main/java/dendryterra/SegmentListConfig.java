@@ -12,7 +12,7 @@ public class SegmentListConfig {
     public double maxIntermediateTwistAngle = 0.25; // +/- degrees in radians, for intermediate points, reduced by jitter magnitude
     public double SlopeWithoutTwist = 0.5;
     // Decrease for greater rolloff of jitter as levels increase.
-    public double jitterReductionBase = 0.4; // Base for jitter reduction per level: Math.pow(jitterReductionBase, level)
+    public double jitterReductionBase = 0.3; // Base for jitter reduction per level: Math.pow(jitterReductionBase, level)
     // Increase for greater rolloff of tangent strength as levels increase.
     public double tangentReductionBase = 1.75; // Base for tangent magnitude reduction per level: Math.pow(tangentReductionBase, level)
 
