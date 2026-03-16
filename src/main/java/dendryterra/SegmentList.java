@@ -726,7 +726,7 @@ public class SegmentList {
             double rawMagnitude = Math.sqrt(jitterX * jitterX + jitterY * jitterY);
             double jitterMagnitude = rawMagnitude / Math.sqrt(0.5);
 
-            double maxJitter = maxSegmentLength * 0.5 * Math.pow(config.jitterReductionBase, level);
+            double maxJitter = maxSegmentLength * 0.6 * Math.pow(config.jitterReductionBase, level);
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
             if (rawMagnitude > MathUtils.EPSILON) {
@@ -798,15 +798,17 @@ public class SegmentList {
             }
 
             Vec2D intermediateTangent;
+            // Reduce twist angle with level, same decay rate as jitter
+            double levelTwist = config.maxIntermediateTwistAngle * Math.pow(config.jitterReductionBase, level);
             if (config.useSplines && config.curvature > 0 && tangentSrt != null && tangentEnd != null) {
                 intermediateTangent = computeHermiteTangent(srt.position, end.position,
                                                            tangentSrt, tangentEnd, t, config.curvature);
                 intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
-                                                       config.maxIntermediateTwistAngle, rng);
+                                                       levelTwist, rng);
             } else {
                 Vec2D baseDirection = new Vec2D(srt.position.projectZ(), end.position.projectZ()).normalize();
                 intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
-                                                       config.maxIntermediateTwistAngle, rng);
+                                                       levelTwist, rng);
             }
             // Normalize intermediate tangents to unit length (matching start/end tangent convention).
             // The sampler's evaluateHermiteSpline scales by segLength * curvature, so unit-length

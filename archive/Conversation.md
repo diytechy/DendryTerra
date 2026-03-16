@@ -1700,6 +1700,16 @@ When a segment is getting attached to a node that already has 2 or more connecti
 
 The correct angle can be determined by looking at the existing tangents and their points.  For example, if a segment's end point is getting connected to a point that already exists, the new segment's end tangent should be set so that it points towards the average of the vector to the already connected points, in this way it will flow into the point such that it reduces the likelihood it overlaps an existing segment at that intersection.
 
+********************************************
+
+Plan an update to also reduce intermediate twist angle during subdivision.  Like jitter is reduced as a function of level, twist angle should also reduce.
+
+*******************************************
+
+It looks like the issue is actually with the main twist applied at point creation.
+
+
+
 Ex:
 
 Segment A flows into a lower level segment, and has a start point of point 0, Segment B flows into point A, and inherits the tangent and at point 0 that was originally set.  Segment C flows into point 0, and is given a tangent at point 0 that pushes it to a near perpendicular value closest to .
