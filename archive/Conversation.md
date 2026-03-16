@@ -1667,7 +1667,19 @@ For setting box parameters like river distance, elevation, distance since last e
 
 *****************************************
 
-For the next item I'd still like to address some of the artifacts that I assume are due to jitter.
+For the next item I'd still like to address some of the remaining artifacts that I assume are due to jitter.
+
+First, can you tell me which hard-coded parameters (assuming there are some) control the jitter amount and falloff per level?
+
+Okay, disabling jitter does not appear to change much, it appears the overlap is being caused by incorrect tangent vectors.  For example, a start tangent lint should point to the lower level segment that it connects to, and then get some twist applied, if enabled.  What I see appears to indicate the start tangent pointing away from the end point (opposite direction) which causes the segment to push away from the segment it's flowing into, and double-back on itself.  Can you investigate available parameters for twist and see if there might be defect in how the initial tangent is calculated such that it would point opposite of the end point?
+
+######################################
+
+IMPORTANT "twist-angle" set to 30 gives much better results.
+
+Reducing twist angle helps, but when a segment is subdivided it still get's a twist that can cause it's trajectory to be far misaligned with the start / stop tangents of the segment, likewise as a point jitter get's more magnitude.
+
+At subdivision of a segment, the start and end tangents probably need their tangent magnitudes reduced as a function of how much twist and jitter is applied as it pushes the points away from their original hermite interpolation line, but it's not clear to me how much their tangent's should be reduced to prevent overlap.
 
 
 1. For distance from elevation, I would expect the layer distance from last elevation change to be tracked just like the radius change (layerRadius), the only difference is that the change in radius is also scaled with slope, but the distance since last change in a layer can just increase with actual distance traveled along the segment.  When a box needs to be use a different layer depending on it's distance from the center, it can also use the distance that the layer has traveled along the segment.

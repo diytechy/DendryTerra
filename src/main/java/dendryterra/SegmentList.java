@@ -770,8 +770,11 @@ public class SegmentList {
                 intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
                                                        config.maxIntermediateTwistAngle, rng);
             }
+            // Normalize intermediate tangents to unit length (matching start/end tangent convention).
+            // The sampler's evaluateHermiteSpline scales by segLength * curvature, so unit-length
+            // tangents produce curvature proportional to sub-segment length.
             intermediateTangent = scaleTangentMagnitude(intermediateTangent,
-                ((maxSegmentLength * 8) / Math.pow(config.tangentReductionBase, level)));
+                (1.0 / Math.pow(config.tangentReductionBase, level)));
 
             interPositions.add(intermediatePoint);
             interTangents.add(intermediateTangent);
@@ -816,6 +819,40 @@ public class SegmentList {
         // Total segments = interPositions.size() + 1 (for the final segment to end)
         int totalSegments = interPositions.size() + 1;
 
+        // === Reduce original start/end tangent magnitudes based on intermediate point displacement ===
+        // When jitter and twist push intermediate points away from the original Hermite curve,
+        // the original tangent vectors become less valid for the resulting sub-segments.
+        // Scale tangent magnitude down proportionally to displacement.
+        Vec2D adjustedTangentSrt = tangentSrt;
+        Vec2D adjustedTangentEnd = tangentEnd;
+
+        if (!interPositions.isEmpty()) {
+            // Measure displacement of first intermediate point from its un-jittered curve position
+            double tFirst = 1.0 / numDivisions;
+            Point3D idealFirst = (config.useSplines && config.curvature > 0)
+                ? interpolateHermiteSpline(srt.position, end.position, tangentSrt, tangentEnd, tFirst, config.curvature, 0, 0)
+                : interpolateLinearWithJitter(srt.position, end.position, tFirst, 0, 0);
+            double displacementFirst = interPositions.get(0).projectZ().distanceTo(idealFirst.projectZ());
+            double subSegLen = srt.position.projectZ().distanceTo(interPositions.get(0).projectZ());
+            if (subSegLen > MathUtils.EPSILON) {
+                double reductionFirst = Math.max(0.0, 1.0 - displacementFirst / subSegLen);
+                adjustedTangentSrt = scaleTangentMagnitude(tangentSrt, tangentSrt.length() * reductionFirst);
+            }
+
+            // Measure displacement of last intermediate point from its un-jittered curve position
+            double tLast = (double)(numDivisions - 1) / numDivisions;
+            Point3D idealLast = (config.useSplines && config.curvature > 0)
+                ? interpolateHermiteSpline(srt.position, end.position, tangentSrt, tangentEnd, tLast, config.curvature, 0, 0)
+                : interpolateLinearWithJitter(srt.position, end.position, tLast, 0, 0);
+            Point3D actualLast = interPositions.get(interPositions.size() - 1);
+            double displacementLast = actualLast.projectZ().distanceTo(idealLast.projectZ());
+            subSegLen = actualLast.projectZ().distanceTo(end.position.projectZ());
+            if (subSegLen > MathUtils.EPSILON) {
+                double reductionLast = Math.max(0.0, 1.0 - displacementLast / subSegLen);
+                adjustedTangentEnd = scaleTangentMagnitude(tangentEnd, tangentEnd.length() * reductionLast);
+            }
+        }
+
         // Determine which segments to materialize (closest to end = highest indices)
         int startFrom = Math.max(0, totalSegments - maxSegments);
 
@@ -826,7 +863,7 @@ public class SegmentList {
         if (startFrom == 0) {
             // Creating all segments from the original start
             prevIdx = srtIdx;
-            prevTangent = tangentSrt;
+            prevTangent = adjustedTangentSrt;
         } else {
             // Skip early segments; start from an intermediate point
             // The point at index (startFrom - 1) becomes the new chain start
@@ -844,7 +881,7 @@ public class SegmentList {
         }
 
         // Create final segment to end point
-        addBasicSegment(prevIdx, endIdx, level, prevTangent, tangentEnd);
+        addBasicSegment(prevIdx, endIdx, level, prevTangent, adjustedTangentEnd);
     }
     
     /**
