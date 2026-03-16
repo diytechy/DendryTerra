@@ -1692,6 +1692,19 @@ When a segment is subdivided, jitter should never move points closer to the end 
 Need to reduce intermittent twist on subdivide segments.
 Need to reduce number of subdivisions entirely, at each level are we getting more and more segments?  Is the distance for subdivision getting set inappropriately?  maxSegmentLength is too small?
 
+###################################################3
+
+Plan an update, but note this can be restricted level 1+ segments:
+
+When a segment is getting attached to a node that already has 2 or more connections, (Is already connected to an existing segment) the end tangent angle needs of the segment that is to be connected needs to be set so that it is at an angle so it does not overlap other segments.  It appears to currently set a tangent that is on the side of existing tangent that is closest to the point, but that causes overlaps depending on how the first two points are configured.
+
+The correct angle can be determined by looking at the existing tangents and their points.  For example, if a segment's end point is getting connected to a point that already exists, the new segment's end tangent should be set so that it points towards the average of the vector to the already connected points, in this way it will flow into the point such that it reduces the likelihood it overlaps an existing segment at that intersection.
+
+Ex:
+
+Segment A flows into a lower level segment, and has a start point of point 0, Segment B flows into point A, and inherits the tangent and at point 0 that was originally set.  Segment C flows into point 0, and is given a tangent at point 0 that pushes it to a near perpendicular value closest to .
+Segment D flows into point 0, but right now it is ea
+
 1. For distance from elevation, I would expect the layer distance from last elevation change to be tracked just like the radius change (layerRadius), the only difference is that the change in radius is also scaled with slope, but the distance since last change in a layer can just increase with actual distance traveled along the segment.  When a box needs to be use a different layer depending on it's distance from the center, it can also use the distance that the layer has traveled along the segment.
 
 The simpler approach is just to have a temporary array tracking the distance traveled down the width of the river (at int step = 0; step <= maxSteps; in projectConeToBoxes) as this already walks through each point across the width of the river.  Each time the projectConeToBoxes is called, each point going outward can just be given a 

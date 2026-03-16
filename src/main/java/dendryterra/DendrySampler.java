@@ -86,6 +86,10 @@ public class DendrySampler implements Sampler {
         }
     }
 
+    // Maximum number of connections a single point can have when connecting segments to neighbors.
+    // Points that already have this many connections are skipped as candidates.
+    private static final int MAX_CONNECTIONS_PER_POINT = 3;
+
     // Slope calculation parameters for neighbor selection
     // DistanceFalloffPower: Use dist^power in denominator to prefer tighter connections
     private static final double DISTANCE_FALLOFF_POWER = 3.0;
@@ -2436,7 +2440,7 @@ public class DendrySampler implements Sampler {
         for (int i = 0; i < segList.getPointCount(); i++) {
             NetworkPoint candidate = segList.getPoint(i);
             if (candidate.pointType == PointType.EDGE) continue;
-            if (candidate.connections >= 5) continue;
+            if (candidate.connections >= MAX_CONNECTIONS_PER_POINT) continue;
 
             Point2D candidatePos = candidate.position.projectZ();
             double dist = sourcePos.distanceTo(candidatePos);
