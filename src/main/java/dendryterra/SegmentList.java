@@ -705,7 +705,7 @@ public class SegmentList {
             double rawMagnitude = Math.sqrt(jitterX * jitterX + jitterY * jitterY);
             double jitterMagnitude = rawMagnitude / Math.sqrt(0.5);
 
-            double maxJitter = maxSegmentLength * 0.0 * Math.pow(config.jitterReductionBase, level);
+            double maxJitter = maxSegmentLength * 0.5 * Math.pow(config.jitterReductionBase, level);
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
             if (rawMagnitude > MathUtils.EPSILON) {
