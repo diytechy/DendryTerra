@@ -638,14 +638,18 @@ public class SegmentList {
             }
         }
 
-        // Determine if we need to negate based on connection types:
-        // Same-side connections (start-start or end-end): negate for opposite flow
-        // Opposite-side connections (start-end or end-start): same direction for continuous flow
+        // Determine orientation based on connection types:
+        // Opposite-side (end→start or start→end): C1 continuity applies — both tangents
+        //   point in the travel direction through the junction. Same direction.
+        // Same-side (start→start or end→end): this is a merge or split point where
+        //   two segments meet on the same side. C1 path continuity doesn't apply.
+        //   Return null to let the caller fall back to the segment's own direction,
+        //   preventing the curve from doubling back on itself.
         boolean sameType = (conn.isStart == isNewSegmentStart);
 
         if (sameType) {
-            // start→start or end→end: negate for proper flow direction
-            return existingTangent.negate();
+            // start→start or end→end: merge/split point — no continuous tangent
+            return null;
         } else {
             // end→start or start→end: same direction for continuous flow
             return existingTangent;
@@ -701,7 +705,7 @@ public class SegmentList {
             double rawMagnitude = Math.sqrt(jitterX * jitterX + jitterY * jitterY);
             double jitterMagnitude = rawMagnitude / Math.sqrt(0.5);
 
-            double maxJitter = maxSegmentLength * 0.5 * Math.pow(config.jitterReductionBase, level);
+            double maxJitter = maxSegmentLength * 0.0 * Math.pow(config.jitterReductionBase, level);
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
             if (rawMagnitude > MathUtils.EPSILON) {
