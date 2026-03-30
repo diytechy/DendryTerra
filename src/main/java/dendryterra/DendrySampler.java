@@ -1981,7 +1981,8 @@ public class DendrySampler implements Sampler {
         if(level==0){
             mergeDistance = MERGE_POINT_SPACING * getGridSpacingForLevel(level+1);
         }
-        else if (level<3){
+        else {
+        //else if (level<3){
             mergeDistance = MERGE_POINT_SPACING * gridSpacing;
         }
         double maxSegmentDistance = Double.MAX_VALUE;
