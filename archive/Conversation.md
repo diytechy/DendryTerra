@@ -1718,3 +1718,7 @@ Segment D flows into point 0, but right now it is ea
 1. For distance from elevation, I would expect the layer distance from last elevation change to be tracked just like the radius change (layerRadius), the only difference is that the change in radius is also scaled with slope, but the distance since last change in a layer can just increase with actual distance traveled along the segment.  When a box needs to be use a different layer depending on it's distance from the center, it can also use the distance that the layer has traveled along the segment.
 
 The simpler approach is just to have a temporary array tracking the distance traveled down the width of the river (at int step = 0; step <= maxSteps; in projectConeToBoxes) as this already walks through each point across the width of the river.  Each time the projectConeToBoxes is called, each point going outward can just be given a 
+
+##########################
+
+The "branches" parameter is intended to define how segments proliferate.  It is also supposed to remove points (specifically points for level 1+) for segment creation when the value is 0 to prevent segments from flowing into areas they should not, but it appears there may be cases where points are still retained even when their evaluated "branches" value is 0.  Can you check if there might be something that is allowing points with a "branches" value of 0 to be retained?  Are there places where the points are merged or their coordinates shifted and their "branches" value is not reevaluated?
