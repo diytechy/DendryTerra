@@ -146,7 +146,7 @@ public class DendrySampler implements Sampler {
     private final double defaultRiverwidth;      // Default river width when no sampler
     private final Sampler borderwidthSampler;   // Sampler for border width around rivers
     private final double defaultBorderwidth;    // Default border width when no sampler
-    private static final double RIVER_WIDTH_FALLOFF = 0.6;  // River width reduction per level
+    private final double riverWidthFalloff;  // River width reduction per level
     private volatile boolean warnedRiverwidth = false;
     private volatile boolean warnedBorderwidth = false;
 
@@ -300,6 +300,7 @@ public class DendrySampler implements Sampler {
                          int debug,
                          Sampler riverwidthSampler, double defaultRiverwidth,
                          Sampler borderwidthSampler, double defaultBorderwidth,
+                         double riverWidthFalloff,
                          double max, double maxDist,
                          int maxSegmentsPerLevel,
                          double heightChangeMaxDist) {
@@ -328,6 +329,7 @@ public class DendrySampler implements Sampler {
         this.defaultRiverwidth = defaultRiverwidth;
         this.borderwidthSampler = borderwidthSampler;
         this.defaultBorderwidth = defaultBorderwidth;
+        this.riverWidthFalloff = riverWidthFalloff;
         this.max = max;
         this.maxSegmentsPerLevel = maxSegmentsPerLevel;
         this.maxDistGrid = maxDist / gridsize;  // Convert from sampler to grid coordinates
@@ -462,7 +464,7 @@ public class DendrySampler implements Sampler {
         // NaN trigger: if x or z is NaN, interpret y as a level and return the
         // river width falloff factor for that level
         if (Double.isNaN(x) || Double.isNaN(z)) {
-            return Math.pow(RIVER_WIDTH_FALLOFF, y);
+            return Math.pow(riverWidthFalloff, y);
         }
         if (returnType == DendryReturnType.PIXEL_RIVER) {
             if (y >= 3.0) {
@@ -2183,7 +2185,7 @@ public class DendrySampler implements Sampler {
             SegmentListConfig segCfg = segList.getConfig();
             boolean splineProximity = segCfg.useSplines && segCfg.curvature > 0;
             // Min separation: 2x the river width at this level (in grid coordinates)
-            double minSeparation = defaultRiverwidth / gridsize * Math.pow(RIVER_WIDTH_FALLOFF, level) * 2;
+            double minSeparation = defaultRiverwidth / gridsize * Math.pow(riverWidthFalloff, level) * 2;
             double minSeparationSq = minSeparation * minSeparation;
             // Sample spacing for proximity: 1/3 of min separation (same principle as point removal)
             double proxySampleSpacing = minSeparation / 3.0;
@@ -2687,7 +2689,7 @@ public class DendrySampler implements Sampler {
 
     /**
      * Calculate river width for a given level.
-     * River width decreases by RIVER_WIDTH_FALLOFF (0.6) per level.
+     * River width decreases by riverWidthFalloff per level.
      * @param level The segment level (0-5)
      * @param x World X coordinate for sampling
      * @param y World Y coordinate for sampling
@@ -2720,7 +2722,7 @@ public class DendrySampler implements Sampler {
 
         // Convert to grid coordinates and apply level falloff
         double baseWidthGrid = baseWidthSampler / gridsize;
-        return baseWidthGrid * Math.pow(RIVER_WIDTH_FALLOFF, level);
+        return baseWidthGrid * Math.pow(riverWidthFalloff, level);
     }
 
 
@@ -3167,7 +3169,7 @@ public class DendrySampler implements Sampler {
             baseWidth = defaultRiverwidth;
         }
         // Apply level-based falloff: width * (0.6^level)
-        double levelWidth = baseWidth * Math.pow(RIVER_WIDTH_FALLOFF, level);
+        double levelWidth = baseWidth * Math.pow(riverWidthFalloff, level);
         // Minimum width is 2x pixel resolution
         double minWidth = 2.0 * cachepixels;
         return Math.max(levelWidth, minWidth) / gridsize;  // Normalize to cell units

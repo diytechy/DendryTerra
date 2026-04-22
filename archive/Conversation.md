@@ -1722,3 +1722,7 @@ The simpler approach is just to have a temporary array tracking the distance tra
 ##########################
 
 The "branches" parameter is intended to define how segments proliferate.  It is also supposed to remove points (specifically points for level 1+) for segment creation when the value is 0 to prevent segments from flowing into areas they should not, but it appears there may be cases where points are still retained even when their evaluated "branches" value is 0.  Can you check if there might be something that is allowing points with a "branches" value of 0 to be retained?  Are there places where the points are merged or their coordinates shifted and their "branches" value is not reevaluated?
+
+#################
+
+Can you confirm when the "branches" sampler is evaluated, are higher values increasing the probability of point removal?  Or are higher values increasing the probability of a point staying and getting used in segment branching?

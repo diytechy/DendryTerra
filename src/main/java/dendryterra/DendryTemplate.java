@@ -187,9 +187,18 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     private @Meta int maxSegmentsPerLevel = 500;
 
     /**
+     * River width falloff factor per level.
+     * River width at each level = riverwidth * (river-width-falloff ^ level).
+     * Range: 0-1, default 0.6.
+     */
+    @Value("river-width-falloff")
+    @Default
+    private @Meta double riverWidthFalloff = 0.6;
+
+    /**
      * Sampler for river width at a given point.
      * The sampled value determines base river width in world units.
-     * Actual river width per level = riverwidth * (0.6^level), minimum 2x pixel resolution.
+     * Actual river width per level = riverwidth * (river-width-falloff^level), minimum 2x pixel resolution.
      */
     @Value("riverwidth")
     @Default
@@ -305,6 +314,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             debug,
             riverwidthSampler, defaultRiverwidth,
             borderwidthSampler, defaultBorderwidth,
+            riverWidthFalloff,
             max, maxDist,
             maxSegmentsPerLevel,
             heightChangeMaxDist
