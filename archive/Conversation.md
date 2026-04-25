@@ -1775,6 +1775,12 @@ If benchmark shows about the same or better performance:
 #####################3
 
 Is there just an issue in the way the benchmark is assessed?  The latest benchmark (BenchmarkRun.txt) shows the raster step for standard Pixel_River took almost 40 s, but the farfill (PIXEL_RIVER_FAR) took only 3.4 s for the actual fill step.  The segment collection is also relatively small.  So the core calculation difference is more than 10x, but the reported difference is "37.7% FASTER".  Is there another source of timing that's missing?
+
+############################
+
+Why is the memory consumption for PIXEL_RIVER and for PIXEL_RIVER_FAR the same?  (Both shown in benchmark.txt as mem=638KB)?  The segment cache will consume the same amount of memory, but the lower resolution far cache should consume significantly less memory than the standard resolution cache for PIXEl_RIVER.  Or is it just storage resolution / object overhead that coincidentally causes them to consume exactly the same amount of memory?
+
+
 3. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements noted earlier:
 
 Math.sqrt with AVX-512 — JDK 25 (via JVMCI/Graal improvements) better exploits SIMD for Math.sqrt calls in tight loops like computeFarCache. Worth benchmarking with -XX:+UseAVX=3
