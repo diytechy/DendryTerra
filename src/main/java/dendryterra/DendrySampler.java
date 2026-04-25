@@ -3584,7 +3584,7 @@ public class DendrySampler implements Sampler {
                 if (!chunk.blocksComputed) {
                     if (chunk.blocks == null) {
                         chunk.allocateBlocks();
-                        bigChunkCache.notifyBlocksAllocated();
+                        bigChunkCache.notifyBlocksAllocated(chunk);
                     }
                     computeMainBlockPhases(chunk);
                     chunk.blocksComputed = true;

@@ -3,26 +3,25 @@ package dendryterra;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Thread-safe LRU cache for BigChunk instances.
+ * Thread-safe LRU cache for BigChunk instances with memory-based eviction.
  *
- * Memory estimates per chunk (JVM 64-bit with compressed refs):
- *   farCache[64][64]: 4,096 FarCacheCell objects × ~16 bytes = ~64 KB
- *   blocks[256][256]: 65,536 BigChunkBlock objects × ~16 bytes = ~1,024 KB (only when allocated)
+ * Memory estimates per chunk (JVM 64-bit, compressed refs, ~16 bytes/object):
+ *   farCache[64][64]: 4,096 FarCacheCell objects  → ~64 KB  (always allocated)
+ *   blocks[256][256]: 65,536 BigChunkBlock objects → ~1,024 KB  (allocated lazily)
  *
- * PIXEL_RIVER_FAR chunks have blocks=null, so they consume ~64 KB each.
- * PIXEL_RIVER chunks have blocks allocated, so they consume ~1,088 KB each.
- * The cache limit is enforced by chunk count, not exact byte tracking.
+ * PIXEL_RIVER_FAR chunks keep blocks=null: ~64 KB each → ~312 FAR-only chunks per 20 MB.
+ * PIXEL_RIVER chunks allocate blocks: ~1,088 KB each → ~18 full chunks per 20 MB.
+ * Eviction is triggered whenever estimated total exceeds MAX_MEMORY — both at chunk
+ * creation (far-cache cost) and when blocks are lazily allocated (block cost).
  */
 public class BigChunkCache {
-    // Estimated JVM memory per chunk layer (object array of N items × ~16 bytes/object)
-    private static final long FAR_CACHE_BYTES  =  64L * 1024; // 4096 FarCacheCell objects
-    private static final long BLOCKS_BYTES     = 1024L * 1024; // 65536 BigChunkBlock objects
+    private static final long MAX_MEMORY = 20L * 1024 * 1024; // 20 MB hard limit
 
-    // Cap at ~150 FAR-only chunks (~9.6 MB) or ~9 full chunks (~9.8 MB)
-    private static final int MAX_CHUNKS = 150;
+    // Estimated JVM heap bytes per chunk layer (object arrays of N items × ~16 bytes/item)
+    static final long FAR_CACHE_BYTES = 64L  * 1024; // 4,096 FarCacheCell objects
+    static final long BLOCKS_BYTES    = 1024L * 1024; // 65,536 BigChunkBlock objects
 
     /** Map from chunk coordinates to BigChunk instances */
     private final ConcurrentHashMap<ChunkKey, BigChunk> cache;
@@ -30,18 +29,18 @@ public class BigChunkCache {
     /** LRU counter for cache eviction (incremented on each access) */
     private final AtomicInteger lruCounter;
 
-    /** Running estimate of total allocated memory across all cached chunks */
-    private final AtomicLong estimatedMemoryBytes = new AtomicLong(0);
+    /** Running estimate of total heap bytes used by all cached chunks. */
+    private long estimatedMemoryBytes = 0;
 
-    /** Count of chunks evicted since creation */
-    private final AtomicLong evictions = new AtomicLong(0);
+    /** Count of chunks evicted since creation. */
+    private long evictions = 0;
 
     public BigChunkCache() {
         this.cache = new ConcurrentHashMap<>();
         this.lruCounter = new AtomicInteger(0);
     }
 
-    /** Estimated JVM heap bytes consumed by one BigChunk based on its allocation state. */
+    /** Estimated heap bytes for one BigChunk based on what is currently allocated. */
     private static long estimateChunkBytes(BigChunk chunk) {
         return FAR_CACHE_BYTES + (chunk.blocks != null ? BLOCKS_BYTES : 0);
     }
@@ -76,14 +75,13 @@ public class BigChunkCache {
             BigChunk chunk = new BigChunk(gridOriginX, gridOriginY);
             chunk.lruCounter = lruCounter.incrementAndGet();
 
-            if (cache.size() >= MAX_CHUNKS) {
+            // Evict until adding this chunk's far-cache cost fits within MAX_MEMORY
+            while (estimatedMemoryBytes + FAR_CACHE_BYTES > MAX_MEMORY && !cache.isEmpty()) {
                 evictOldest();
             }
 
             cache.put(key, chunk);
-            // Note: chunk.blocks is null at this point; memory is updated lazily.
-            // We add only the far-cache cost now; block cost is added when blocks are allocated.
-            estimatedMemoryBytes.addAndGet(FAR_CACHE_BYTES);
+            estimatedMemoryBytes += FAR_CACHE_BYTES;
             return chunk;
         }
     }
@@ -110,33 +108,62 @@ public class BigChunkCache {
         if (oldestKey != null) {
             BigChunk removed = cache.remove(oldestKey);
             if (removed != null) {
-                estimatedMemoryBytes.addAndGet(-estimateChunkBytes(removed));
-                evictions.incrementAndGet();
+                estimatedMemoryBytes -= estimateChunkBytes(removed);
+                evictions++;
             }
         }
     }
 
     /**
-     * Notify the cache that a chunk's blocks array has just been allocated.
-     * Call this after chunk.allocateBlocks() so the memory estimate stays accurate.
+     * Notify the cache that a chunk's blocks array has just been lazily allocated.
+     * Triggers eviction of other chunks if adding the block cost exceeds MAX_MEMORY.
+     * The chunk whose blocks were just allocated is never itself evicted here.
      */
-    public void notifyBlocksAllocated() {
-        estimatedMemoryBytes.addAndGet(BLOCKS_BYTES);
+    public synchronized void notifyBlocksAllocated(BigChunk allocatedChunk) {
+        estimatedMemoryBytes += BLOCKS_BYTES;
+        // Evict older chunks (not the one we just allocated) until within limit
+        while (estimatedMemoryBytes > MAX_MEMORY && cache.size() > 1) {
+            evictOldestExcept(allocatedChunk);
+        }
     }
 
     /**
-     * Return a stats string reporting chunk count, estimated heap usage, and evictions.
-     * Memory figures are estimates based on JVM object sizing (64-bit, compressed refs).
+     * Evict the LRU chunk from the cache, skipping the given chunk.
+     * Must be called while holding the synchronized lock.
      */
-    public String getStats() {
-        int chunks = cache.size();
-        long memKB = estimatedMemoryBytes.get() / 1024;
-        long evict = evictions.get();
-        // Count how many chunks have blocks allocated (PIXEL_RIVER) vs far-only (PIXEL_RIVER_FAR)
+    private void evictOldestExcept(BigChunk skip) {
+        ChunkKey oldestKey = null;
+        int oldestLru = Integer.MAX_VALUE;
+        for (Map.Entry<ChunkKey, BigChunk> entry : cache.entrySet()) {
+            if (entry.getValue() != skip && entry.getValue().lruCounter < oldestLru) {
+                oldestLru = entry.getValue().lruCounter;
+                oldestKey = entry.getKey();
+            }
+        }
+        if (oldestKey != null) {
+            BigChunk removed = cache.remove(oldestKey);
+            if (removed != null) {
+                estimatedMemoryBytes -= estimateChunkBytes(removed);
+                evictions++;
+            }
+        }
+    }
+
+    /**
+     * Return a stats string: chunk count, blocks-vs-far split, estimated heap, evictions.
+     * Memory is estimated based on JVM object sizing (64-bit, compressed refs).
+     * MAX_MEMORY limit = 20 MB; PIXEL_RIVER chunks are ~1,088 KB each (far+blocks),
+     * PIXEL_RIVER_FAR chunks are ~64 KB each (far only).
+     */
+    public synchronized String getStats() {
         int withBlocks = 0;
         for (BigChunk c : cache.values()) if (c.blocks != null) withBlocks++;
-        return String.format("chunks=%d (%d w/ blocks, %d far-only), est. heap=%dKB, evictions=%d",
-                chunks, withBlocks, chunks - withBlocks, memKB, evict);
+        int total = cache.size();
+        return String.format(
+                "chunks=%d (%d w/blocks ~%dMB, %d far-only ~%dMB), est.total=%dKB / %dKB limit, evictions=%d",
+                total, withBlocks, withBlocks * BLOCKS_BYTES / (1024 * 1024),
+                total - withBlocks, (total - withBlocks) * FAR_CACHE_BYTES / (1024 * 1024),
+                estimatedMemoryBytes / 1024, MAX_MEMORY / 1024, evictions);
     }
 
     /**
