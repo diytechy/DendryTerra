@@ -1,0 +1,147 @@
+============================================================
+DendryTerra Benchmark Runner
+============================================================
+
+Using JAVA_HOME: C:\JAVA\jdk-23
+Grid Size: 400x400
+Mode:      far
+Spacing:   4 world units/sample
+
+Building project...
+
+[Incubating] Problems report is available at: file:///C:/Projects/DendryTerra/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.2/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 5s
+9 actionable tasks: 7 executed, 2 up-to-date
+
+Running benchmarks...
+
+> Task :compileJava UP-TO-DATE
+> Task :processResources UP-TO-DATE
+> Task :classes UP-TO-DATE
+
+> Task :benchmark
+============================================================
+DendrySampler Benchmark Runner
+============================================================
+
+Grid size: 400x400 = 160000 samples
+Mode:      far
+Spacing:   4 world units/sample  (covers 1600x1600 world units)
+
+------------------------------------------------------------
+TEST 1: PIXEL_RIVER (full 256x256 block cache, cachepixels=1.0)
+------------------------------------------------------------
+[main] INFO dendryterra.DendryBenchmark - Cold pass (160000 samples)...
+[main] INFO dendryterra.DendryBenchmark - Warm pass (160000 samples)...
+  -- Cold pass (chunk build + queries) --
+  Samples:      160,000
+  Total time:   27963.88 ms
+  Avg/sample:   0.1748 ms (174774 ns)
+  Throughput:   5,722 samples/sec
+  Value range:  [-1.0000, 1.0000]
+
+  -- Warm pass (cached, lookup only) --
+  Samples:      160,000
+  Total time:   23.09 ms
+  Avg/sample:   0.0001 ms (144 ns)
+  Throughput:   6,929,707 samples/sec
+  Value range:  [-1.0000, 1.0000]
+
+  Chunk build:  MAIN chunks=49 | segCollect=3102ms (avg 63ms) | raster=24751ms (avg 505ms)
+  Seg cache:    hits=864, misses=900 (49.0% hit rate), evictions=0, entries=900, mem=638KB
+
+------------------------------------------------------------
+TEST 2: PIXEL_RIVER_FAR (far cache only (no block raster), cachepixels=1.0)
+------------------------------------------------------------
+[main] INFO dendryterra.DendryBenchmark - Cold pass (160000 samples)...
+[main] INFO dendryterra.DendryBenchmark - Warm pass (160000 samples)...
+  -- Cold pass (chunk build + queries) --
+  Samples:      160,000
+  Total time:   4443.40 ms
+  Avg/sample:   0.0278 ms (27771 ns)
+  Throughput:   36,008 samples/sec
+  Value range:  [0.0000, 50.0000]
+
+  -- Warm pass (cached, lookup only) --
+  Samples:      160,000
+  Total time:   18.44 ms
+  Avg/sample:   0.0001 ms (115 ns)
+  Throughput:   8,677,213 samples/sec
+  Value range:  [0.0000, 50.0000]
+
+  Chunk build:  FAR chunks=49 | segCollect=2171ms (avg 44ms) | farFill=2246ms (avg 45ms)
+  Seg cache:    hits=864, misses=900 (49.0% hit rate), evictions=0, entries=900, mem=638KB
+
+  vs PIXEL_RIVER (warm): 25.2% FASTER
+
+  vs PIXEL_RIVER (cold): 529.3% FASTER
+
+------------------------------------------------------------
+TEST 3: PIXEL_RIVER_FAR2 (far cache + normal compensation, cachepixels=1.0)
+------------------------------------------------------------
+[main] INFO dendryterra.DendryBenchmark - Cold pass (160000 samples)...
+[main] INFO dendryterra.DendryBenchmark - Warm pass (160000 samples)...
+  -- Cold pass (chunk build + queries) --
+  Samples:      160,000
+  Total time:   4357.39 ms
+  Avg/sample:   0.0272 ms (27234 ns)
+  Throughput:   36,719 samples/sec
+  Value range:  [0.0000, 50.0000]
+
+  -- Warm pass (cached, lookup only) --
+  Samples:      160,000
+  Total time:   31.70 ms
+  Avg/sample:   0.0002 ms (198 ns)
+  Throughput:   5,047,860 samples/sec
+  Value range:  [0.0000, 50.0000]
+
+  Chunk build:  FAR chunks=49 | segCollect=2145ms (avg 43ms) | farFill=2169ms (avg 44ms)
+  Seg cache:    hits=864, misses=900 (49.0% hit rate), evictions=0, entries=900, mem=638KB
+
+  vs PIXEL_RIVER (warm): 27.2% SLOWER
+
+  vs PIXEL_RIVER (cold): 541.8% FASTER
+
+
+================================================================================
+SUMMARY
+================================================================================
+  Test Case                   Samples     Samples/sec     vs Baseline
+  ----------------------------------------------------------------------------
+  PIXEL_RIVER_FAR             160,000       8,677,213       see below
+  PIXEL_RIVER_FAR2            160,000       5,047,860       see below
+
+  Special Comparisons:
+  ----------------------------------------------------------------------------
+  PIXEL_RIVER_FAR        vs PIXEL_RIVER           : +25.2% FASTER
+    PIXEL_RIVER_FAR:       8,677,213 samples/sec (160,000 samples)
+    PIXEL_RIVER:       6,929,707 samples/sec (160,000 samples)
+
+  PIXEL_RIVER_FAR2       vs PIXEL_RIVER           : -27.2% SLOWER
+    PIXEL_RIVER_FAR2:       5,047,860 samples/sec (160,000 samples)
+    PIXEL_RIVER:       6,929,707 samples/sec (160,000 samples)
+
+================================================================================
+Benchmark complete.
+
+[Incubating] Problems report is available at: file:///C:/Projects/DendryTerra/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.2/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 42s
+3 actionable tasks: 1 executed, 2 up-to-date
+
+============================================================
+Benchmark completed successfully!
+============================================================

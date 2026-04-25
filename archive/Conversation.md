@@ -1766,10 +1766,15 @@ For the far distance there is some misunderstanding, the size was intended to mo
 
 ##########################
 
-1. Implement plan "Plan: Far cache resize to 64×64 + lazy per-mode computation"
+1. Implement plan "Plan: Far cache resize to 64×64 + lazy per-mode computation" and bump the version up one (Ex: From -A to -B or from -B to -C)
 
 If benchmark shows about the same or better performance:
 
-2. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements:
+2. Looking at the results, it is not much slower and there are significantly more points evaluated, which is surprising.  It suggests more time is actually spent trimming the segment cache before computing the individual cell distances for the sample, but that should not be occurring very often.  The benchmark's default settings walk a 1600 x 1600 real world size, for each 256x256 real world size, that means there are about 49 big chunks that need to be created.  Since the time difference is not significant between standard distance and far distance evaluation, it indicates the time to build a far cache and the normal cache are about the same despite the significant difference in the number of samples identified.  Can you investigate if there is something else forcing recalculation in some cases when it would not be expected?  Or do we need to add debugs to understand how much time is spent just trimming the segment list down compared to evaluating the distances?  Should the big cache actually evaluate a larger overall size (such as spanning a 2x2 size of the standard higher resolution cache (that would be a bigger change, but would reduce how often trimming needs to occure)
+
+#####################3
+
+Is there just an issue in the way the benchmark is assessed?  The latest benchmark (BenchmarkRun.txt) shows the raster step for standard Pixel_River took almost 40 s, but the farfill (PIXEL_RIVER_FAR) took only 3.4 s for the actual fill step.  The segment collection is also relatively small.  So the core calculation difference is more than 10x, but the reported difference is "37.7% FASTER".  Is there another source of timing that's missing?
+3. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements noted earlier:
 
 Math.sqrt with AVX-512 — JDK 25 (via JVMCI/Graal improvements) better exploits SIMD for Math.sqrt calls in tight loops like computeFarCache. Worth benchmarking with -XX:+UseAVX=3
