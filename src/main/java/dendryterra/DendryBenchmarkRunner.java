@@ -401,9 +401,12 @@ public class DendryBenchmarkRunner {
         }
 
         // Run benchmarks
+        // "far" mode uses cold+warm measurement to expose chunk build cost separately.
+        // "all" mode uses the existing 1-warmup approach (measures hot-cache lookup speed).
         double worldScale = spacing;
-        int warmupIterations = 1;
-        Map<String, DendryBenchmark.BenchmarkResult> results = new HashMap<>();
+        boolean useColdWarm = "far".equals(mode);
+        Map<String, DendryBenchmark.BenchmarkResult> results     = new HashMap<>(); // warm result for comparison
+        Map<String, DendryBenchmark.BenchmarkResult> coldResults = new HashMap<>(); // cold result
 
         // Execute all test cases
         for (int i = 0; i < testCases.size(); i++) {
@@ -413,16 +416,30 @@ public class DendryBenchmarkRunner {
             System.out.printf("TEST %d: %s (%s)%n", i + 1, testCase.name, testCase.description);
             System.out.println("-".repeat(60));
 
-            // Reset stats before each test
+            // Reset stats before each test (caches are fresh per sampler instance)
             testCase.sampler.resetPixelCacheStats();
             testCase.sampler.resetChunkBuildStats();
 
-            DendryBenchmark.BenchmarkResult result = DendryBenchmark.benchmark(testCase.sampler, gridSize, worldScale, warmupIterations);
+            DendryBenchmark.BenchmarkResult result;
+            if (useColdWarm) {
+                DendryBenchmark.BenchmarkResult[] cw = DendryBenchmark.benchmarkColdWarm(
+                        testCase.sampler, gridSize, worldScale);
+                DendryBenchmark.BenchmarkResult cold = cw[0];
+                DendryBenchmark.BenchmarkResult warm = cw[1];
+                result = warm; // use warm for comparison table (apples-to-apples lookup speed)
+                coldResults.put(testCase.name, cold);
+
+                System.out.println("  -- Cold pass (chunk build + queries) --");
+                printResult(cold);
+                System.out.println("  -- Warm pass (cached, lookup only) --");
+                printResult(warm);
+            } else {
+                result = DendryBenchmark.benchmark(testCase.sampler, gridSize, worldScale, 1);
+                printResult(result);
+            }
             results.put(testCase.name, result);
 
-            printResult(result);
-
-            // Always print chunk build breakdown (segment collection vs fill/raster)
+            // Chunk build breakdown (from coldResults or warmup — whichever captured the build)
             String chunkReport = testCase.sampler.getChunkBuildReport();
             if (!chunkReport.startsWith("No chunks")) {
                 System.out.printf("  Chunk build:  %s%n", chunkReport);
@@ -437,10 +454,17 @@ public class DendryBenchmarkRunner {
                 System.out.println();
             }
 
-            // Print comparison if this test case has a comparison target
+            // Print comparison (warm vs warm, or single vs single)
             if (testCase.compareAgainst != null && results.containsKey(testCase.compareAgainst)) {
                 DendryBenchmark.BenchmarkResult baselineResult = results.get(testCase.compareAgainst);
-                printComparison("vs " + testCase.compareAgainst, baselineResult, result);
+                printComparison("vs " + testCase.compareAgainst + " (warm)", baselineResult, result);
+
+                // Also compare cold pass if available
+                if (useColdWarm && coldResults.containsKey(testCase.name)
+                        && coldResults.containsKey(testCase.compareAgainst)) {
+                    printComparison("vs " + testCase.compareAgainst + " (cold)",
+                            coldResults.get(testCase.compareAgainst), coldResults.get(testCase.name));
+                }
             }
         }
 
