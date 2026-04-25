@@ -3859,12 +3859,14 @@ public class DendrySampler implements Sampler {
         final int FAR_GRID = 64;
         double farCellSize = chunkSizeGrid / FAR_GRID;
 
-        // Pre-compute cell centers as float arrays — constant for this chunk, fit in L1.
-        float[] cellCenterX = new float[FAR_GRID];
-        float[] cellCenterY = new float[FAR_GRID];
+        // Pre-compute cell reference points (corners) as float arrays — constant for this
+        // chunk, fits in L1 cache. Corners align with the biome pipeline's 4-unit query
+        // grid so queries at (0,4,8,...) are exact rather than offset by half a cell.
+        float[] cellRefX = new float[FAR_GRID];
+        float[] cellRefY = new float[FAR_GRID];
         for (int i = 0; i < FAR_GRID; i++) {
-            cellCenterX[i] = (float)(chunk.gridOriginX + (i + 0.5) * farCellSize);
-            cellCenterY[i] = (float)(chunk.gridOriginY + (i + 0.5) * farCellSize);
+            cellRefX[i] = (float)(chunk.gridOriginX + i * farCellSize);
+            cellRefY[i] = (float)(chunk.gridOriginY + i * farCellSize);
         }
 
         // Float conversion of the quantization scale factor (grid dist → quantized units).
@@ -3894,14 +3896,14 @@ public class DendrySampler implements Sampler {
                 float ptYf = (float) pt.y;
 
                 for (int ci = 0; ci < FAR_GRID; ci++) {
-                    float dy = ptYf - cellCenterY[ci];
+                    float dy = ptYf - cellRefY[ci];
                     // Row-skip (float): |dy| * invCpg >= maxStoredDist means no cell in
                     // this row has a stored distance high enough to be improved.
                     if (Math.abs(dy) * invCpgF >= maxStoredDist) continue;
 
                     float dySq = dy * dy;
                     for (int cj = 0; cj < FAR_GRID; cj++) {
-                        float dx   = ptXf - cellCenterX[cj];
+                        float dx   = ptXf - cellRefX[cj];
                         float distSq = dx * dx + dySq;
                         int stored = chunk.getFarDistance(ci, cj);
                         // Squared-distance early-exit: distSq * invCpgSq >= stored^2 means
@@ -3940,8 +3942,8 @@ public class DendrySampler implements Sampler {
                 double perpY = tangent.x;
 
                 // toCellX/Y only needs to give the correct sign for the dot product
-                double toCellX = cellCenterX[cj] - closestPointX[ci][cj];
-                double toCellY = cellCenterY[ci] - closestPointY[ci][cj];
+                double toCellX = cellRefX[cj] - closestPointX[ci][cj];
+                double toCellY = cellRefY[ci] - closestPointY[ci][cj];
 
                 if (perpX * toCellX + perpY * toCellY < 0) {
                     perpX = -perpX;
@@ -3977,8 +3979,8 @@ public class DendrySampler implements Sampler {
 
     /**
      * Evaluate far distance with normal-based offset compensation using the 64x64 far-distance cache.
-     * Projects the query's offset from cell center onto the normal direction
-     * to adjust the base distance for sub-cell accuracy.
+     * Projects the query's offset from the cell corner (the reference point where the distance
+     * was measured) onto the normal direction to adjust the base distance for sub-cell accuracy.
      */
     private double evaluateWithBigChunkFarDistance2(double gridX, double gridY) {
         BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, true, false);
@@ -3998,11 +4000,11 @@ public class DendrySampler implements Sampler {
         double normalX = Math.cos(normalRad);
         double normalY = Math.sin(normalRad);
 
-        // Query offset from cell center in world units
-        double cellCenterX = chunk.gridOriginX + (cellJ + 0.5) * farCellSize;
-        double cellCenterY = chunk.gridOriginY + (cellI + 0.5) * farCellSize;
-        double offsetX = (gridX - cellCenterX) * gridsize;
-        double offsetY = (gridY - cellCenterY) * gridsize;
+        // Query offset from the cell corner (the reference point used during cache fill) in world units
+        double cellRefX = chunk.gridOriginX + cellJ * farCellSize;
+        double cellRefY = chunk.gridOriginY + cellI * farCellSize;
+        double offsetX = (gridX - cellRefX) * gridsize;
+        double offsetY = (gridY - cellRefY) * gridsize;
 
         // Project offset onto normal: positive = further from river, negative = closer
         double dotProduct = offsetX * normalX + offsetY * normalY;
