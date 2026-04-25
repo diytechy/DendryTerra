@@ -7,7 +7,7 @@ Benchmark JVM: C:\JAVA\jdk-25.0.1  (via Gradle toolchain)
 Grid Size:   500x500
 Mode:        far
 Spacing:     4 world units/sample
-AVX level:   2
+AVX level:   3
 
 Building project...
 
@@ -44,48 +44,48 @@ TEST 1: PIXEL_RIVER (full 256x256 block cache, cachepixels=1.0)
 [main] INFO dendryterra.DendryBenchmark - Warm pass (250000 samples)...
   -- Cold pass (chunk build + queries) --
   Samples:      250,000
-  Total time:   29260.88 ms
-  Avg/sample:   0.1170 ms (117044 ns)
-  Throughput:   8,544 samples/sec
+  Total time:   30629.78 ms
+  Avg/sample:   0.1225 ms (122519 ns)
+  Throughput:   8,162 samples/sec
   Value range:  [-1.0000, 1.0000]
 
   -- Warm pass (cached, lookup only) --
   Samples:      250,000
-  Total time:   22.81 ms
-  Avg/sample:   0.0001 ms (91 ns)
-  Throughput:   10,958,280 samples/sec
+  Total time:   20.55 ms
+  Avg/sample:   0.0001 ms (82 ns)
+  Throughput:   12,166,457 samples/sec
   Value range:  [-1.0000, 1.0000]
 
-  Chunk build:  MAIN chunks=64 | segCollect=3776ms (avg 59ms) | raster=25393ms (avg 396ms)
+  Chunk build:  MAIN chunks=64 | segCollect=3991ms (avg 62ms) | raster=26548ms (avg 414ms)
   BigChunk mem: chunks=64 (64 w/blocks ~12MB, 0 far-only ~0MB), est.total=12800KB / 20480KB limit, evictions=0
   Seg cache:    hits=1148, misses=1156 (49.8% hit rate), evictions=0, entries=1156, mem=823KB
 
 ------------------------------------------------------------
 TEST 2: PIXEL_RIVER_FAR (far cache only (no block raster), cachepixels=1.0)
-[main] INFO dendryterra.DendryBenchmark - Cold pass (250000 samples)...
 ------------------------------------------------------------
+[main] INFO dendryterra.DendryBenchmark - Cold pass (250000 samples)...
 [main] INFO dendryterra.DendryBenchmark - Warm pass (250000 samples)...
   -- Cold pass (chunk build + queries) --
   Samples:      250,000
-  Total time:   6020.67 ms
-  Avg/sample:   0.0241 ms (24083 ns)
-  Throughput:   41,524 samples/sec
+  Total time:   5454.52 ms
+  Avg/sample:   0.0218 ms (21818 ns)
+  Throughput:   45,834 samples/sec
   Value range:  [0.0000, 50.0000]
 
   -- Warm pass (cached, lookup only) --
   Samples:      250,000
-  Total time:   20.54 ms
-  Avg/sample:   0.0001 ms (82 ns)
-  Throughput:   12,170,662 samples/sec
+  Total time:   19.76 ms
+  Avg/sample:   0.0001 ms (79 ns)
+  Throughput:   12,652,974 samples/sec
   Value range:  [0.0000, 50.0000]
 
-  Chunk build:  FAR chunks=64 | segCollect=3080ms (avg 48ms) | farFill=2911ms (avg 45ms)
+  Chunk build:  FAR chunks=64 | segCollect=2787ms (avg 43ms) | farFill=2637ms (avg 41ms)
   BigChunk mem: chunks=64 (0 w/blocks ~0MB, 64 far-only ~0MB), est.total=512KB / 20480KB limit, evictions=0
   Seg cache:    hits=1148, misses=1156 (49.8% hit rate), evictions=0, entries=1156, mem=823KB
 
-  vs PIXEL_RIVER (warm): 11.1% FASTER
+  vs PIXEL_RIVER (warm): 4.0% FASTER
 
-  vs PIXEL_RIVER (cold): 386.0% FASTER
+  vs PIXEL_RIVER (cold): 461.5% FASTER
 
 ------------------------------------------------------------
 TEST 3: PIXEL_RIVER_FAR2 (far cache + normal compensation, cachepixels=1.0)
@@ -94,25 +94,25 @@ TEST 3: PIXEL_RIVER_FAR2 (far cache + normal compensation, cachepixels=1.0)
 [main] INFO dendryterra.DendryBenchmark - Warm pass (250000 samples)...
   -- Cold pass (chunk build + queries) --
   Samples:      250,000
-  Total time:   5875.81 ms
-  Avg/sample:   0.0235 ms (23503 ns)
-  Throughput:   42,547 samples/sec
+  Total time:   5101.70 ms
+  Avg/sample:   0.0204 ms (20407 ns)
+  Throughput:   49,003 samples/sec
   Value range:  [0.0000, 50.0000]
 
   -- Warm pass (cached, lookup only) --
   Samples:      250,000
-  Total time:   55.44 ms
-  Avg/sample:   0.0002 ms (222 ns)
-  Throughput:   4,509,428 samples/sec
+  Total time:   43.59 ms
+  Avg/sample:   0.0002 ms (174 ns)
+  Throughput:   5,735,721 samples/sec
   Value range:  [0.0000, 50.0000]
 
-  Chunk build:  FAR chunks=64 | segCollect=3074ms (avg 48ms) | farFill=2747ms (avg 42ms)
+  Chunk build:  FAR chunks=64 | segCollect=2637ms (avg 41ms) | farFill=2417ms (avg 37ms)
   BigChunk mem: chunks=64 (0 w/blocks ~0MB, 64 far-only ~0MB), est.total=512KB / 20480KB limit, evictions=0
   Seg cache:    hits=1148, misses=1156 (49.8% hit rate), evictions=0, entries=1156, mem=823KB
 
-  vs PIXEL_RIVER (warm): 58.8% SLOWER
+  vs PIXEL_RIVER (warm): 52.9% SLOWER
 
-  vs PIXEL_RIVER (cold): 398.0% FASTER
+  vs PIXEL_RIVER (cold): 500.4% FASTER
 
 
 ================================================================================
@@ -120,18 +120,18 @@ SUMMARY
 ================================================================================
   Test Case                   Samples     Samples/sec     vs Baseline
   ----------------------------------------------------------------------------
-  PIXEL_RIVER_FAR             250,000      12,170,662       see below
-  PIXEL_RIVER_FAR2            250,000       4,509,428       see below
+  PIXEL_RIVER_FAR             250,000      12,652,974       see below
+  PIXEL_RIVER_FAR2            250,000       5,735,721       see below
 
   Special Comparisons:
   ----------------------------------------------------------------------------
-  PIXEL_RIVER_FAR        vs PIXEL_RIVER           : +11.1% FASTER
-    PIXEL_RIVER_FAR:      12,170,662 samples/sec (250,000 samples)
-    PIXEL_RIVER:      10,958,280 samples/sec (250,000 samples)
+  PIXEL_RIVER_FAR        vs PIXEL_RIVER           : +4.0% FASTER
+    PIXEL_RIVER_FAR:      12,652,974 samples/sec (250,000 samples)
+    PIXEL_RIVER:      12,166,457 samples/sec (250,000 samples)
 
-  PIXEL_RIVER_FAR2       vs PIXEL_RIVER           : -58.8% SLOWER
-    PIXEL_RIVER_FAR2:       4,509,428 samples/sec (250,000 samples)
-    PIXEL_RIVER:      10,958,280 samples/sec (250,000 samples)
+  PIXEL_RIVER_FAR2       vs PIXEL_RIVER           : -52.9% SLOWER
+    PIXEL_RIVER_FAR2:       5,735,721 samples/sec (250,000 samples)
+    PIXEL_RIVER:      12,166,457 samples/sec (250,000 samples)
 
 ================================================================================
 Benchmark complete.
