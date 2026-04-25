@@ -251,51 +251,139 @@ public class DendryBenchmarkRunner {
         return cases;
     }
 
+    /**
+     * Creates a focused set of test cases comparing PIXEL_RIVER and PIXEL_RIVER_FAR performance.
+     * Used when mode="far" to isolate the cost of each caching strategy.
+     */
+    private static List<TestCase> createFarTestCases(int n, double epsilon, double slope, double gridsize,
+            long salt, int defaultBranches, double curvature, int parallelThreshold,
+            int ConstellationScale, ConstellationShape constellationShape, double tangentAngle,
+            double max, double maxDist) {
+
+        List<TestCase> cases = new ArrayList<>();
+
+        // PIXEL_RIVER — full 256x256 block rasterization (reference)
+        DendrySampler pixelRiver = new DendrySampler(
+            n, epsilon, slope, gridsize,
+            DendryReturnType.PIXEL_RIVER, null, salt,
+            null, defaultBranches,
+            curvature,
+            true, false, parallelThreshold,
+            ConstellationScale, constellationShape,
+            tangentAngle,
+            1.0,        // cachepixels=1.0
+            0.1, 0.01,
+            0,
+            null, 16.0,
+            null, 20.0,
+            0.7,
+            max, maxDist,
+            500,
+            15.0
+        );
+        cases.add(new TestCase("PIXEL_RIVER", "full 256x256 block cache, cachepixels=1.0", pixelRiver, null));
+
+        // PIXEL_RIVER_FAR — only far cache computed (skips main block rasterization)
+        DendrySampler pixelRiverFar = new DendrySampler(
+            n, epsilon, slope, gridsize,
+            DendryReturnType.PIXEL_RIVER_FAR, null, salt,
+            null, defaultBranches,
+            curvature,
+            true, false, parallelThreshold,
+            ConstellationScale, constellationShape,
+            tangentAngle,
+            1.0,        // cachepixels=1.0
+            0.1, 0.01,
+            0,
+            null, 16.0,
+            null, 20.0,
+            0.7,
+            max, maxDist,
+            500,
+            15.0
+        );
+        cases.add(new TestCase("PIXEL_RIVER_FAR", "far cache only (no block raster), cachepixels=1.0", pixelRiverFar, "PIXEL_RIVER"));
+
+        // PIXEL_RIVER_FAR2 — far cache with normal-based offset compensation
+        DendrySampler pixelRiverFar2 = new DendrySampler(
+            n, epsilon, slope, gridsize,
+            DendryReturnType.PIXEL_RIVER_FAR2, null, salt,
+            null, defaultBranches,
+            curvature,
+            true, false, parallelThreshold,
+            ConstellationScale, constellationShape,
+            tangentAngle,
+            1.0,        // cachepixels=1.0
+            0.1, 0.01,
+            0,
+            null, 16.0,
+            null, 20.0,
+            0.7,
+            max, maxDist,
+            500,
+            15.0
+        );
+        cases.add(new TestCase("PIXEL_RIVER_FAR2", "far cache + normal compensation, cachepixels=1.0", pixelRiverFar2, "PIXEL_RIVER"));
+
+        return cases;
+    }
+
     public static void main(String[] args) {
         System.out.println("=".repeat(60));
         System.out.println("DendrySampler Benchmark Runner");
         System.out.println("=".repeat(60));
         System.out.println();
 
-        // Parse command line args for grid size (default 64)
+        // Parse command line args: [gridSize] [mode]
+        // mode: "all" (default) runs all test cases; "far" runs PIXEL_RIVER vs FAR only
         int gridSize = 64;
+        String mode = "all";
         if (args.length > 0) {
             try {
                 gridSize = Integer.parseInt(args[0]);
             } catch (NumberFormatException e) {
-                System.out.println("Usage: DendryBenchmarkRunner [gridSize]");
+                System.out.println("Usage: DendryBenchmarkRunner [gridSize] [mode]");
                 System.out.println("  gridSize: number of samples per axis (default 64)");
-                System.out.println("  Example: DendryBenchmarkRunner 128");
+                System.out.println("  mode: 'all' (default) or 'far' (PIXEL_RIVER vs FAR only)");
+                System.out.println("  Example: DendryBenchmarkRunner 128 far");
                 return;
             }
         }
+        if (args.length > 1) {
+            mode = args[1].toLowerCase();
+        }
 
         System.out.println("Grid size: " + gridSize + "x" + gridSize + " = " + (gridSize * gridSize) + " samples");
+        System.out.println("Mode:      " + mode);
         System.out.println();
 
         // Common parameters
-        int n = 2;              // resolution levels
+        int n = 2;
         double epsilon = 0.0;
         double slope = 0.005;
-        // gridsize must be ≤ query span to guarantee segments in query region
-        // For 64x64 grid at worldScale=1.0, query span is 0-63, so use gridsize=64
         double gridsize = 64.0;
         DendryReturnType returnType = DendryReturnType.DISTANCE;
         long salt = 12345;
         int defaultBranches = 2;
         double curvature = 0.5;
         int parallelThreshold = 100;
-        int ConstellationScale = 1;  // Scale 1 = inscribed square is 3 gridspaces wide
+        int ConstellationScale = 1;
         ConstellationShape constellationShape = ConstellationShape.SQUARE;
-        double tangentAngle = Math.toRadians(45);  // 45 degrees max deviation
-        double max = 2.0;  // Maximum expected elevation for PIXEL_RIVER
-        double maxDist = 50.0;  // Maximum expected distance for PIXEL_RIVER
+        double tangentAngle = Math.toRadians(45);
+        double max = 2.0;
+        double maxDist = 50.0;
 
-        // Create test cases in table-like format
-        List<TestCase> testCases = createTestCases(n, epsilon, slope, gridsize, returnType, salt,
-            defaultBranches, curvature,
-            parallelThreshold, ConstellationScale, constellationShape, tangentAngle,
-            max, maxDist, 500);
+        // Select test suite based on mode
+        List<TestCase> testCases;
+        if ("far".equals(mode)) {
+            testCases = createFarTestCases(n, epsilon, slope, gridsize, salt, defaultBranches,
+                curvature, parallelThreshold, ConstellationScale, constellationShape, tangentAngle,
+                max, maxDist);
+        } else {
+            testCases = createTestCases(n, epsilon, slope, gridsize, returnType, salt,
+                defaultBranches, curvature, parallelThreshold, ConstellationScale,
+                constellationShape, tangentAngle, max, maxDist, 500);
+        }
 
         // Run benchmarks
         double worldScale = 1.0;

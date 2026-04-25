@@ -1,8 +1,13 @@
 # DendryTerra Benchmark Runner Script
 # Executes benchmark tests comparing different DendrySampler configurations
+#
+# Usage: .\run-benchmark.ps1 [-GridSize 128] [-Mode far|all]
+#   Mode 'far' (default): PIXEL_RIVER vs PIXEL_RIVER_FAR/FAR2 comparison
+#   Mode 'all':           full benchmark suite
 
 param(
     [int]$GridSize = 64,
+    [string]$Mode = "far",
     [string]$JavaHome = "C:/JAVA/jdk-23"
 )
 
@@ -25,6 +30,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Java detected successfully" -ForegroundColor Green
 
 Write-Host "Grid Size: ${GridSize}x${GridSize} = $($GridSize * $GridSize) samples" -ForegroundColor Green
+Write-Host "Mode:      $Mode" -ForegroundColor Green
 Write-Host ""
 Write-Host "Building project..." -ForegroundColor Yellow
 
@@ -40,8 +46,7 @@ Write-Host "Running benchmarks..." -ForegroundColor Yellow
 Write-Host ""
 
 # Run the benchmark using the dedicated benchmark task
-# Alternatively, you can use: .\gradlew.bat run --args="$GridSize"
-& .\gradlew.bat benchmark --args="$GridSize" --console=plain
+& .\gradlew.bat benchmark --args="$GridSize $Mode" --console=plain
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
