@@ -334,27 +334,42 @@ public class DendryBenchmarkRunner {
         System.out.println("=".repeat(60));
         System.out.println();
 
-        // Parse command line args: [gridSize] [mode]
-        // mode: "all" (default) runs all test cases; "far" runs PIXEL_RIVER vs FAR only
+        // Parse command line args: [gridSize] [mode] [spacing]
+        //   gridSize — number of sample points per axis (default 64)
+        //   mode     — "far" (PIXEL_RIVER vs FAR, default) or "all" (full suite)
+        //   spacing  — world-unit step between consecutive sample points (default 1)
+        //              e.g. spacing=10 samples at x=0,10,20,... covering gridSize*spacing world units
         int gridSize = 64;
-        String mode = "all";
+        String mode = "far";
+        int spacing = 1;
         if (args.length > 0) {
             try {
                 gridSize = Integer.parseInt(args[0]);
             } catch (NumberFormatException e) {
-                System.out.println("Usage: DendryBenchmarkRunner [gridSize] [mode]");
-                System.out.println("  gridSize: number of samples per axis (default 64)");
-                System.out.println("  mode: 'all' (default) or 'far' (PIXEL_RIVER vs FAR only)");
-                System.out.println("  Example: DendryBenchmarkRunner 128 far");
+                System.out.println("Usage: DendryBenchmarkRunner [gridSize] [mode] [spacing]");
+                System.out.println("  gridSize: sample points per axis (default 64)");
+                System.out.println("  mode:     'far' (default) or 'all'");
+                System.out.println("  spacing:  world units between samples (default 1)");
+                System.out.println("  Example: DendryBenchmarkRunner 5000 far 10");
                 return;
             }
         }
         if (args.length > 1) {
             mode = args[1].toLowerCase();
         }
+        if (args.length > 2) {
+            try {
+                spacing = Integer.parseInt(args[2]);
+                if (spacing < 1) spacing = 1;
+            } catch (NumberFormatException e) {
+                System.out.println("Warning: invalid spacing '" + args[2] + "', using 1");
+            }
+        }
 
+        long coveredWorldUnits = (long) gridSize * spacing;
         System.out.println("Grid size: " + gridSize + "x" + gridSize + " = " + (gridSize * gridSize) + " samples");
         System.out.println("Mode:      " + mode);
+        System.out.println("Spacing:   " + spacing + " world units/sample  (covers " + coveredWorldUnits + "x" + coveredWorldUnits + " world units)");
         System.out.println();
 
         // Common parameters
@@ -386,7 +401,7 @@ public class DendryBenchmarkRunner {
         }
 
         // Run benchmarks
-        double worldScale = 1.0;
+        double worldScale = spacing;
         int warmupIterations = 1;
         Map<String, DendryBenchmark.BenchmarkResult> results = new HashMap<>();
 

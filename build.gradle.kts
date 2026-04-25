@@ -61,9 +61,10 @@ tasks.register<JavaExec>("benchmark") {
     classpath = sourceSets.main.get().output + configurations["benchmarkRuntimeOnly"]
     mainClass.set("dendryterra.DendryBenchmarkRunner")
 
-    val benchGrid = project.findProperty("benchmarkGrid") as String? ?: "64"
-    val benchMode = project.findProperty("benchmarkMode") as String? ?: "far"
-    args = listOf(benchGrid, benchMode)
+    val benchGrid    = project.findProperty("benchmarkGrid")    as String? ?: "64"
+    val benchMode    = project.findProperty("benchmarkMode")    as String? ?: "far"
+    val benchSpacing = project.findProperty("benchmarkSpacing") as String? ?: "1"
+    args = listOf(benchGrid, benchMode, benchSpacing)
 }
 
 tasks.jar {

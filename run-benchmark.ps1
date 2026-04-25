@@ -6,8 +6,9 @@
 #   Mode 'all':           full benchmark suite
 
 param(
-    [int]$GridSize = 64,
+    [int]$GridSize = 5000,
     [string]$Mode = "far",
+    [int]$Spacing = 1,
     [string]$JavaHome = "C:/JAVA/jdk-23"
 )
 
@@ -31,6 +32,7 @@ Write-Host "Java detected successfully" -ForegroundColor Green
 
 Write-Host "Grid Size: ${GridSize}x${GridSize} = $($GridSize * $GridSize) samples" -ForegroundColor Green
 Write-Host "Mode:      $Mode" -ForegroundColor Green
+Write-Host "Spacing:   $Spacing world units/sample  (covers $($GridSize * $Spacing)x$($GridSize * $Spacing) world units)" -ForegroundColor Green
 Write-Host ""
 Write-Host "Building project..." -ForegroundColor Yellow
 
@@ -45,8 +47,8 @@ Write-Host ""
 Write-Host "Running benchmarks..." -ForegroundColor Yellow
 Write-Host ""
 
-# Run the benchmark (grid size and mode passed as Gradle project properties)
-& .\gradlew.bat benchmark "-PbenchmarkGrid=$GridSize" "-PbenchmarkMode=$Mode" --console=plain
+# Run the benchmark (passed as Gradle project properties)
+& .\gradlew.bat benchmark "-PbenchmarkGrid=$GridSize" "-PbenchmarkMode=$Mode" "-PbenchmarkSpacing=$Spacing" --console=plain
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
