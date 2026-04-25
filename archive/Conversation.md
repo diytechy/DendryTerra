@@ -1780,7 +1780,8 @@ Is there just an issue in the way the benchmark is assessed?  The latest benchma
 
 Why is the memory consumption for PIXEL_RIVER and for PIXEL_RIVER_FAR the same?  (Both shown in benchmark.txt as mem=638KB)?  The segment cache will consume the same amount of memory, but the lower resolution far cache should consume significantly less memory than the standard resolution cache for PIXEl_RIVER.  Or is it just storage resolution / object overhead that coincidentally causes them to consume exactly the same amount of memory?
 
+######################################
 
-3. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements noted earlier:
+3. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements noted earlier, and I will see how it affects the benchmark.  An updated version of the Terra addon pack may be needed for compatability, but I assume reflection takes care of that.  Notes from earlier:
 
 Math.sqrt with AVX-512 — JDK 25 (via JVMCI/Graal improvements) better exploits SIMD for Math.sqrt calls in tight loops like computeFarCache. Worth benchmarking with -XX:+UseAVX=3
