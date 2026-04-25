@@ -10,8 +10,9 @@ param(
     [string]$Mode = "far",
     [int]$Spacing = 4,
     [int]$AVX = 3,
-    # Gradle daemon JDK — keep at 23 to avoid daemon issues with JDK 25.
-    # The benchmark process itself runs on JDK 25 via the Gradle toolchain launcher.
+    # Gradle daemon must use JDK 23. JDK 25 triggers a Kotlin plugin version-parsing
+    # bug (IllegalArgumentException: 25.0.1) when used as the daemon JVM in Gradle 8.14.2.
+    # The benchmark process runs on JDK 25 via the Gradle toolchain launcher.
     [string]$JavaHome = "C:/JAVA/jdk-23"
 )
 
@@ -21,11 +22,10 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 
 $env:JAVA_HOME = $JavaHome
-Write-Host "Gradle JDK:    $env:JAVA_HOME" -ForegroundColor Yellow
-Write-Host "Benchmark JDK: C:/JAVA/jdk-25.0.1  (via toolchain)" -ForegroundColor Yellow
+Write-Host "Gradle daemon: $env:JAVA_HOME" -ForegroundColor Yellow
+Write-Host "Benchmark JVM: C:/JAVA/jdk-25.0.1  (via Gradle toolchain)" -ForegroundColor Yellow
 Write-Host ""
 
-# Verify the Gradle daemon JDK is present
 $null = & "$env:JAVA_HOME/bin/java.exe" -version 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Java not found at $env:JAVA_HOME" -ForegroundColor Red

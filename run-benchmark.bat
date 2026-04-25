@@ -10,13 +10,14 @@ REM Set defaults
 set GRID_SIZE=500
 set MODE=far
 set SPACING=4
-set AVX=3
+set AVX=2
 if not "%1"=="" set GRID_SIZE=%1
 if not "%2"=="" set MODE=%2
 if not "%3"=="" set SPACING=%3
 if not "%4"=="" set AVX=%4
 
-REM Gradle daemon JDK — keep at 23 to avoid Gradle daemon issues with JDK 25.
+REM Gradle daemon must run on JDK 23. JDK 25 has a Kotlin plugin version-parsing
+REM bug (IllegalArgumentException: 25.0.1) when used as the daemon JVM in Gradle 8.14.2.
 REM The benchmark process itself runs on JDK 25 via the Gradle toolchain launcher.
 set JAVA_HOME=C:\JAVA\jdk-23
 
@@ -24,8 +25,8 @@ echo ============================================================
 echo DendryTerra Benchmark Runner
 echo ============================================================
 echo.
-echo Gradle JDK:  %JAVA_HOME%
-echo Benchmark JDK: C:\JAVA\jdk-25.0.1  (via toolchain)
+echo Gradle daemon: %JAVA_HOME%
+echo Benchmark JVM: C:\JAVA\jdk-25.0.1  (via Gradle toolchain)
 echo Grid Size:   %GRID_SIZE%x%GRID_SIZE%
 echo Mode:        %MODE%
 echo Spacing:     %SPACING% world units/sample

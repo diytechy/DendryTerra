@@ -87,7 +87,7 @@ tasks.register<JavaExec>("benchmark") {
     // Enable SIMD vectorization. UseAVX=2 = AVX2 (256-bit, safe default).
     // UseAVX=3 = AVX-512 (512-bit) — only effective on CPUs that support it;
     // the JVM silently falls back if the ISA is unavailable.
-    jvmArgs("-XX:+UseAVX=$avxLevel")
+    jvmArgs("-XX:UseAVX=$avxLevel")
 }
 
 tasks.jar {
