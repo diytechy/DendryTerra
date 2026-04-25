@@ -9,7 +9,7 @@ param(
     [int]$GridSize = 500,
     [string]$Mode = "far",
     [int]$Spacing = 4,
-    [int]$AVX = 2,
+    [int]$AVX = 3,
     # Gradle daemon JDK — keep at 23 to avoid daemon issues with JDK 25.
     # The benchmark process itself runs on JDK 25 via the Gradle toolchain launcher.
     [string]$JavaHome = "C:/JAVA/jdk-23"

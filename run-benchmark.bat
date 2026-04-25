@@ -10,7 +10,7 @@ REM Set defaults
 set GRID_SIZE=500
 set MODE=far
 set SPACING=4
-set AVX=2
+set AVX=3
 if not "%1"=="" set GRID_SIZE=%1
 if not "%2"=="" set MODE=%2
 if not "%3"=="" set SPACING=%3
