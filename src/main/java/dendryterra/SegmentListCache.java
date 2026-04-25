@@ -2,6 +2,7 @@ package dendryterra;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * LRU cache for SegmentList instances from generateAllSegments.
@@ -26,6 +27,11 @@ public class SegmentListCache {
     /** LRU counter for cache eviction */
     private int lruCounter;
 
+    // Hit/miss counters for diagnosing unexpected recomputation
+    private final AtomicLong hits     = new AtomicLong(0);
+    private final AtomicLong misses   = new AtomicLong(0);
+    private final AtomicLong evictions = new AtomicLong(0);
+
     public SegmentListCache() {
         this.cache = new ConcurrentHashMap<>();
         this.currentMemory = 0;
@@ -44,9 +50,11 @@ public class SegmentListCache {
 
         if (cached != null) {
             cached.lruCounter = lruCounter; // Approximate LRU, exact ordering not critical
+            hits.incrementAndGet();
             return cached.segmentList;
         }
 
+        misses.incrementAndGet();
         return null;
     }
 
@@ -112,8 +120,29 @@ public class SegmentListCache {
             CachedSegmentList removed = cache.remove(oldestKey);
             if (removed != null) {
                 currentMemory -= removed.memorySize;
+                evictions.incrementAndGet();
             }
         }
+    }
+
+    /**
+     * Return a summary of cache activity (hits, misses, evictions, current size).
+     * A high miss count relative to hits indicates unexpected recomputation —
+     * either from eviction pressure or a cache key mismatch.
+     */
+    public String getStats() {
+        long h = hits.get(), m = misses.get(), e = evictions.get();
+        long total = h + m;
+        double hitRate = total > 0 ? 100.0 * h / total : 0;
+        return String.format("hits=%d, misses=%d (%.1f%% hit rate), evictions=%d, entries=%d, mem=%dKB",
+            h, m, hitRate, e, cache.size(), currentMemory / 1024);
+    }
+
+    /** Reset all counters (useful between benchmark runs). */
+    public void resetStats() {
+        hits.set(0);
+        misses.set(0);
+        evictions.set(0);
     }
 
     /**

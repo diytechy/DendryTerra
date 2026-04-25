@@ -174,6 +174,14 @@ public class DendrySampler implements Sampler {
     private final AtomicLong pixelCacheHits = new AtomicLong(0);
     private final AtomicLong pixelCacheMisses = new AtomicLong(0);
 
+    // Chunk build phase timing — always collected for BigChunk types, reported via getChunkBuildReport()
+    private final AtomicLong chunkFarSegCollectNs  = new AtomicLong(0); // collectSegments in far phase
+    private final AtomicLong chunkFarCacheFillNs   = new AtomicLong(0); // computeFarCache grid fill
+    private final AtomicLong chunkMainSegCollectNs = new AtomicLong(0); // collectSegments in main phase
+    private final AtomicLong chunkMainRasterNs     = new AtomicLong(0); // prune+sort+sampleSegment
+    private final AtomicLong chunksFarBuilt        = new AtomicLong(0);
+    private final AtomicLong chunksMainBuilt       = new AtomicLong(0);
+
     /**
      * Pixel data for a single cached point along a segment.
      * Stores position (as offset from cell origin), elevation, and resolution level.
@@ -2872,6 +2880,59 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Return a breakdown of chunk build time across the two cache layers.
+     * segCollect = time in collectSegmentsForBigChunkFar (reads segment lists from cache,
+     *              or calls computeAllSegmentsForCell on a cache miss — the expensive path).
+     * farFill    = time in computeFarCache (64x64 far grid distance scan).
+     * raster     = time in prune + sort + sampleSegmentAlongSpline (block rasterization).
+     */
+    public String getChunkBuildReport() {
+        long farChunks  = chunksFarBuilt.get();
+        long mainChunks = chunksMainBuilt.get();
+        if (farChunks == 0 && mainChunks == 0) return "No chunks built";
+
+        long segFar  = chunkFarSegCollectNs.get()  / 1_000_000;
+        long fill    = chunkFarCacheFillNs.get()   / 1_000_000;
+        long segMain = chunkMainSegCollectNs.get()  / 1_000_000;
+        long raster  = chunkMainRasterNs.get()     / 1_000_000;
+
+        if (farChunks > 0 && mainChunks == 0) {
+            return String.format(
+                "FAR chunks=%d | segCollect=%dms (avg %dms) | farFill=%dms (avg %dms)",
+                farChunks,
+                segFar,  segFar  / farChunks,
+                fill,    fill    / farChunks);
+        } else if (mainChunks > 0 && farChunks == 0) {
+            return String.format(
+                "MAIN chunks=%d | segCollect=%dms (avg %dms) | raster=%dms (avg %dms)",
+                mainChunks,
+                segMain, segMain / mainChunks,
+                raster,  raster  / mainChunks);
+        } else {
+            return String.format(
+                "FAR chunks=%d segCollect=%dms farFill=%dms | MAIN chunks=%d segCollect=%dms raster=%dms",
+                farChunks,  segFar,  fill,
+                mainChunks, segMain, raster);
+        }
+    }
+
+    /** Reset chunk build phase timing (useful between benchmark runs). */
+    public void resetChunkBuildStats() {
+        chunkFarSegCollectNs.set(0);
+        chunkFarCacheFillNs.set(0);
+        chunkMainSegCollectNs.set(0);
+        chunkMainRasterNs.set(0);
+        chunksFarBuilt.set(0);
+        chunksMainBuilt.set(0);
+        if (segmentListCache != null) segmentListCache.resetStats();
+    }
+
+    /** Return segment list cache stats (hit/miss rates reveal unexpected recomputation). */
+    public String getSegmentCacheStats() {
+        return segmentListCache != null ? segmentListCache.getStats() : "n/a (no segment cache)";
+    }
+
+    /**
      * Reset pixel cache statistics (useful between benchmark runs).
      */
     public void resetPixelCacheStats() {
@@ -3535,10 +3596,16 @@ public class DendrySampler implements Sampler {
         List<Integer> farEndConns = new ArrayList<>();
         List<Integer> farEndFlowLevels = new ArrayList<>();
 
+        long t0 = System.nanoTime();
         collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
                 farStartConns, farEndConns, farEndFlowLevels);
-
+        long t1 = System.nanoTime();
         computeFarCache(chunk, chunkSizeGrid, farSegments);
+        long t2 = System.nanoTime();
+
+        chunkFarSegCollectNs.addAndGet(t1 - t0);
+        chunkFarCacheFillNs.addAndGet(t2 - t1);
+        chunksFarBuilt.incrementAndGet();
     }
 
     /**
@@ -3550,15 +3617,17 @@ public class DendrySampler implements Sampler {
     private void computeMainBlockPhases(BigChunk chunk) {
         double chunkSizeGrid = getBigChunkSizeGrid();
 
-        // Re-collect segments (cheap: reads from segmentListCache)
         List<Segment3D> farSegments = new ArrayList<>();
         List<Integer> farLevels = new ArrayList<>();
         List<Integer> farStartConns = new ArrayList<>();
         List<Integer> farEndConns = new ArrayList<>();
         List<Integer> farEndFlowLevels = new ArrayList<>();
 
+        long t0 = System.nanoTime();
         collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
                 farStartConns, farEndConns, farEndFlowLevels);
+        long tSegDone = System.nanoTime();
+        chunkMainSegCollectNs.addAndGet(tSegDone - t0);
 
         // Phase 3: Narrow prune — filter far segments down to maxDistPrune for detailed rendering
         List<Segment3D> segments = new ArrayList<>();
@@ -3579,11 +3648,14 @@ public class DendrySampler implements Sampler {
         java.util.Arrays.sort(sortedIndices, (a, b) -> Integer.compare(levels.get(b), levels.get(a)));
 
         // Phase 5: Render each segment into the 256x256 block grid
+        long tRasterStart = System.nanoTime();
         for (int idx : sortedIndices) {
             sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
                 startConns.get(idx), endConns.get(idx), endFlowLevels.get(idx),
                 chunk, chunkSizeGrid);
         }
+        chunkMainRasterNs.addAndGet(System.nanoTime() - tRasterStart);
+        chunksMainBuilt.incrementAndGet();
     }
 
     /**

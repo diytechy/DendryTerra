@@ -413,15 +413,24 @@ public class DendryBenchmarkRunner {
             System.out.printf("TEST %d: %s (%s)%n", i + 1, testCase.name, testCase.description);
             System.out.println("-".repeat(60));
 
-            // Reset cache stats before each test
+            // Reset stats before each test
             testCase.sampler.resetPixelCacheStats();
+            testCase.sampler.resetChunkBuildStats();
 
             DendryBenchmark.BenchmarkResult result = DendryBenchmark.benchmark(testCase.sampler, gridSize, worldScale, warmupIterations);
             results.put(testCase.name, result);
 
             printResult(result);
 
-            // Print pixel cache stats if this test uses pixel caching
+            // Always print chunk build breakdown (segment collection vs fill/raster)
+            String chunkReport = testCase.sampler.getChunkBuildReport();
+            if (!chunkReport.startsWith("No chunks")) {
+                System.out.printf("  Chunk build:  %s%n", chunkReport);
+                System.out.printf("  Seg cache:    %s%n", testCase.sampler.getSegmentCacheStats());
+                System.out.println();
+            }
+
+            // Print pixel cache stats if relevant
             String cacheStats = testCase.sampler.getPixelCacheStats();
             if (cacheStats.contains("hits=") && !cacheStats.startsWith("hits=0, misses=0")) {
                 System.out.printf("  Pixel cache:  %s%n", cacheStats);
