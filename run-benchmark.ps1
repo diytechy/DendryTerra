@@ -1,14 +1,17 @@
 # DendryTerra Benchmark Runner Script
 # Executes benchmark tests comparing different DendrySampler configurations
 #
-# Usage: .\run-benchmark.ps1 [-GridSize 128] [-Mode far|all]
-#   Mode 'far' (default): PIXEL_RIVER vs PIXEL_RIVER_FAR/FAR2 comparison
-#   Mode 'all':           full benchmark suite
+# Usage: .\run-benchmark.ps1 [-GridSize 500] [-Mode far|all] [-Spacing 4] [-AVX 2|3]
+#   AVX 2 (default): AVX2 256-bit SIMD
+#   AVX 3:           AVX-512 512-bit SIMD (only on supported CPUs)
 
 param(
-    [int]$GridSize = 5000,
+    [int]$GridSize = 500,
     [string]$Mode = "far",
-    [int]$Spacing = 1,
+    [int]$Spacing = 4,
+    [int]$AVX = 2,
+    # Gradle daemon JDK — keep at 23 to avoid daemon issues with JDK 25.
+    # The benchmark process itself runs on JDK 25 via the Gradle toolchain launcher.
     [string]$JavaHome = "C:/JAVA/jdk-23"
 )
 
@@ -17,22 +20,22 @@ Write-Host "DendryTerra Benchmark Runner" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Set Java home
 $env:JAVA_HOME = $JavaHome
-Write-Host "Using JAVA_HOME: $env:JAVA_HOME" -ForegroundColor Yellow
+Write-Host "Gradle JDK:    $env:JAVA_HOME" -ForegroundColor Yellow
+Write-Host "Benchmark JDK: C:/JAVA/jdk-25.0.1  (via toolchain)" -ForegroundColor Yellow
 Write-Host ""
 
-# Check if Java is available
+# Verify the Gradle daemon JDK is present
 $null = & "$env:JAVA_HOME/bin/java.exe" -version 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Java not found at $env:JAVA_HOME" -ForegroundColor Red
     exit 1
 }
-Write-Host "Java detected successfully" -ForegroundColor Green
 
 Write-Host "Grid Size: ${GridSize}x${GridSize} = $($GridSize * $GridSize) samples" -ForegroundColor Green
 Write-Host "Mode:      $Mode" -ForegroundColor Green
 Write-Host "Spacing:   $Spacing world units/sample  (covers $($GridSize * $Spacing)x$($GridSize * $Spacing) world units)" -ForegroundColor Green
+Write-Host "AVX level: $AVX" -ForegroundColor Green
 Write-Host ""
 Write-Host "Building project..." -ForegroundColor Yellow
 
@@ -48,7 +51,7 @@ Write-Host "Running benchmarks..." -ForegroundColor Yellow
 Write-Host ""
 
 # Run the benchmark (passed as Gradle project properties)
-& .\gradlew.bat benchmark "-PbenchmarkGrid=$GridSize" "-PbenchmarkMode=$Mode" "-PbenchmarkSpacing=$Spacing" --console=plain
+& .\gradlew.bat benchmark "-PbenchmarkGrid=$GridSize" "-PbenchmarkMode=$Mode" "-PbenchmarkSpacing=$Spacing" "-PbenchmarkAVX=$AVX" --console=plain
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""

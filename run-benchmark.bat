@@ -1,32 +1,35 @@
 @echo off
 REM DendryTerra Benchmark Runner (Batch File)
-REM Usage: run-benchmark.bat [gridSize] [mode]
-REM   mode: far (default) - PIXEL_RIVER vs FAR cache comparison
-REM         all            - full benchmark suite
-REM Example: run-benchmark.bat 128 far
-REM Example: run-benchmark.bat 64 all
+REM Usage: run-benchmark.bat [gridSize] [mode] [spacing] [avx]
+REM   avx: 2 (default, AVX2) or 3 (AVX-512, only on supported CPUs)
+REM Example: run-benchmark.bat 500 far 4 3
 
 setlocal
 
-REM Set default grid size, mode, and sample spacing
+REM Set defaults
 set GRID_SIZE=500
 set MODE=far
 set SPACING=4
+set AVX=2
 if not "%1"=="" set GRID_SIZE=%1
 if not "%2"=="" set MODE=%2
 if not "%3"=="" set SPACING=%3
+if not "%4"=="" set AVX=%4
 
-REM Set Java home
+REM Gradle daemon JDK — keep at 23 to avoid Gradle daemon issues with JDK 25.
+REM The benchmark process itself runs on JDK 25 via the Gradle toolchain launcher.
 set JAVA_HOME=C:\JAVA\jdk-23
 
 echo ============================================================
 echo DendryTerra Benchmark Runner
 echo ============================================================
 echo.
-echo Using JAVA_HOME: %JAVA_HOME%
-echo Grid Size: %GRID_SIZE%x%GRID_SIZE%
-echo Mode:      %MODE%
-echo Spacing:   %SPACING% world units/sample
+echo Gradle JDK:  %JAVA_HOME%
+echo Benchmark JDK: C:\JAVA\jdk-25.0.1  (via toolchain)
+echo Grid Size:   %GRID_SIZE%x%GRID_SIZE%
+echo Mode:        %MODE%
+echo Spacing:     %SPACING% world units/sample
+echo AVX level:   %AVX%
 echo.
 
 REM Build the project
@@ -42,7 +45,7 @@ echo Running benchmarks...
 echo.
 
 REM Run the benchmark (passed as Gradle project properties, no quoting issues)
-call gradlew.bat benchmark -PbenchmarkGrid=%GRID_SIZE% -PbenchmarkMode=%MODE% -PbenchmarkSpacing=%SPACING% --console=plain
+call gradlew.bat benchmark -PbenchmarkGrid=%GRID_SIZE% -PbenchmarkMode=%MODE% -PbenchmarkSpacing=%SPACING% -PbenchmarkAVX=%AVX% --console=plain
 
 if errorlevel 1 (
     echo.
