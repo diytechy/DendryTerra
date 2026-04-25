@@ -2933,6 +2933,15 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Return BigChunk cache stats: chunk count, blocks-vs-far breakdown, estimated heap.
+     * Distinguishes PIXEL_RIVER chunks (blocks allocated, ~1 MB each) from PIXEL_RIVER_FAR
+     * chunks (blocks null, ~64 KB each) so the memory difference is visible.
+     */
+    public String getBigChunkCacheStats() {
+        return bigChunkCache != null ? bigChunkCache.getStats() : "n/a (no BigChunk cache)";
+    }
+
+    /**
      * Reset pixel cache statistics (useful between benchmark runs).
      */
     public void resetPixelCacheStats() {
@@ -3573,7 +3582,10 @@ public class DendrySampler implements Sampler {
         if (needBlocks && !chunk.blocksComputed) {
             synchronized (chunk) {
                 if (!chunk.blocksComputed) {
-                    if (chunk.blocks == null) chunk.allocateBlocks();
+                    if (chunk.blocks == null) {
+                        chunk.allocateBlocks();
+                        bigChunkCache.notifyBlocksAllocated();
+                    }
                     computeMainBlockPhases(chunk);
                     chunk.blocksComputed = true;
                 }

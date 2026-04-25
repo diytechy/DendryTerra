@@ -443,6 +443,7 @@ public class DendryBenchmarkRunner {
             String chunkReport = testCase.sampler.getChunkBuildReport();
             if (!chunkReport.startsWith("No chunks")) {
                 System.out.printf("  Chunk build:  %s%n", chunkReport);
+                System.out.printf("  BigChunk mem: %s%n", testCase.sampler.getBigChunkCacheStats());
                 System.out.printf("  Seg cache:    %s%n", testCase.sampler.getSegmentCacheStats());
                 System.out.println();
             }
