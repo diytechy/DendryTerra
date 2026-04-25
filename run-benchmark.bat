@@ -38,8 +38,8 @@ echo.
 echo Running benchmarks...
 echo.
 
-REM Run the benchmark
-call gradlew.bat benchmark --args="%GRID_SIZE% %MODE%" --console=plain
+REM Run the benchmark (grid size and mode passed as Gradle project properties, no quoting issues)
+call gradlew.bat benchmark -PbenchmarkGrid=%GRID_SIZE% -PbenchmarkMode=%MODE% --console=plain
 
 if errorlevel 1 (
     echo.

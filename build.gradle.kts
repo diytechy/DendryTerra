@@ -51,16 +51,19 @@ application {
     mainClass.set("dendryterra.DendryBenchmarkRunner")
 }
 
-// Custom benchmark task that includes runtime dependencies
+// Custom benchmark task that includes runtime dependencies.
+// Override via Gradle project properties (use -P flag on the command line):
+//   benchmarkGrid  — grid size (default 64)
+//   benchmarkMode  — "far" (PIXEL_RIVER vs FAR comparison, default) or "all" (full suite)
 tasks.register<JavaExec>("benchmark") {
     group = "verification"
     description = "Run DendrySampler performance benchmarks"
     classpath = sourceSets.main.get().output + configurations["benchmarkRuntimeOnly"]
     mainClass.set("dendryterra.DendryBenchmarkRunner")
 
-    // Pass command line args: ./gradlew benchmark --args="128"
-    // Default grid size
-    args = listOf("64")
+    val benchGrid = project.findProperty("benchmarkGrid") as String? ?: "64"
+    val benchMode = project.findProperty("benchmarkMode") as String? ?: "far"
+    args = listOf(benchGrid, benchMode)
 }
 
 tasks.jar {

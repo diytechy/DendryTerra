@@ -45,8 +45,8 @@ Write-Host ""
 Write-Host "Running benchmarks..." -ForegroundColor Yellow
 Write-Host ""
 
-# Run the benchmark using the dedicated benchmark task
-& .\gradlew.bat benchmark --args="$GridSize $Mode" --console=plain
+# Run the benchmark (grid size and mode passed as Gradle project properties)
+& .\gradlew.bat benchmark "-PbenchmarkGrid=$GridSize" "-PbenchmarkMode=$Mode" --console=plain
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
