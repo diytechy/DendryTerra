@@ -5,9 +5,9 @@ package dendryterra;
  * Each block represents a pixel-cache sized square and stores normalized
  * elevation and distance values as UInt8 (0-255).
  *
- * Also contains an 8x8 far-distance cache for coarse directional distance queries.
+ * Also contains a 4x4 far-distance cache for coarse directional distance queries.
  *
- * Memory usage: 256*256*3 bytes + 8*8*4 bytes + overhead ≈ 196 KB per chunk.
+ * Memory usage: 256*256*3 bytes + 4*4*4 bytes + overhead ≈ 196 KB per chunk.
  */
 public class BigChunk {
     /** Grid X coordinate of this chunk's origin (in normalized grid space) */
@@ -19,7 +19,7 @@ public class BigChunk {
     /** 256x256 grid of blocks */
     public final BigChunkBlock[][] blocks;
 
-    /** 8x8 far-distance cache for coarse directional distance queries */
+    /** 4x4 far-distance cache for coarse directional distance queries */
     public final FarCacheCell[][] farCache;
 
     /** Whether this chunk has been fully computed (volatile for thread-safe double-check) */
@@ -46,10 +46,10 @@ public class BigChunk {
             }
         }
 
-        // Initialize 8x8 far cache
-        this.farCache = new FarCacheCell[8][8];
-        for (int i = 0; i < 8; i++) {
-            for (int j = 0; j < 8; j++) {
+        // Initialize 4x4 far cache
+        this.farCache = new FarCacheCell[4][4];
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
                 farCache[i][j] = new FarCacheCell();
             }
         }

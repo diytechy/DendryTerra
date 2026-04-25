@@ -1729,7 +1729,7 @@ Can you confirm when the "branches" sampler is evaluated, are higher values incr
 
 ######################
 
-I want to perform a few actions carefully, perform the following to the best of your ability and make assumptions later, I will review after:
+I want to perform a few actions carefully, perform the following to the best of your ability and make assumptions as I will not be present to make clarifications.  When finished present notes of any key assumptions you made and their potential impact, and I will review after:
 
 1. Confirm if the return type is PIXEL_RIVER_FAR, or if the 3d sampler is requesting with a y value of -1 (which should give the same result) that only the big cache is updated if a cache miss occurs, and that the main high resolution cache with elevation based on cache-pixels is not updated.  If it does not work that way, please update functionality.
 
@@ -1743,3 +1743,10 @@ I want to perform a few actions carefully, perform the following to the best of 
 3. Verify compilation and iterate if required.  Clean up workspace files (move old investigation documents / pictures to archive)
 
 4. Check for any potential advantages to switching to Java 25, if there are any performance gains to take advantage of, note them for future reference.
+
+#######################
+
+Commit the latest changes before additional changes are made.
+
+Additional changes:
+

@@ -355,7 +355,8 @@ public class DendrySampler implements Sampler {
         // Initialize PIXEL_RIVER caches only when using BigChunk-based return types
         if (returnType == DendryReturnType.PIXEL_RIVER || returnType == DendryReturnType.PIXEL_RIVER_CTRL
                 || returnType == DendryReturnType.PIXEL_RIVER_FAR
-                || returnType == DendryReturnType.PIXEL_RIVER_FAR2) {
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR2
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM) {
             this.segmentListCache = new SegmentListCache();
             this.bigChunkCache = new BigChunkCache();
         } else {
@@ -375,7 +376,8 @@ public class DendrySampler implements Sampler {
         boolean usesBigChunk = (returnType == DendryReturnType.PIXEL_RIVER
                 || returnType == DendryReturnType.PIXEL_RIVER_CTRL
                 || returnType == DendryReturnType.PIXEL_RIVER_FAR
-                || returnType == DendryReturnType.PIXEL_RIVER_FAR2);
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR2
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM);
         boolean usesPixelCache = (returnType == DendryReturnType.PIXEL_ELEVATION
                 || returnType == DendryReturnType.PIXEL_LEVEL
                 || returnType == DendryReturnType.PIXEL_DEBUG
@@ -430,6 +432,8 @@ public class DendrySampler implements Sampler {
             result = evaluateWithBigChunkFarDistance(normalizedX, normalizedZ);
         } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR2) {
             result = evaluateWithBigChunkFarDistance2(normalizedX, normalizedZ);
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM) {
+            result = evaluateWithBigChunkFarDistNorm(normalizedX, normalizedZ);
         }
         // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
         else if (usesPixelCache()) {
@@ -476,6 +480,8 @@ public class DendrySampler implements Sampler {
             } else if (y > 0.0) {
                 // 0<y<2: elevation (existing behavior)
                 return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
+            } else if (y <= -3.0) {
+                return evaluateWithBigChunkFarDistNorm(x / gridsize, z / gridsize);
             } else if (y <= -2.0) {
                 return evaluateWithBigChunkFarDistance2(x / gridsize, z / gridsize);
             } else if (y < 0.0) {
@@ -3508,7 +3514,10 @@ public class DendrySampler implements Sampler {
 
     /**
      * Compute all block values for a BigChunk.
-     * This is the main PIXEL_RIVER computation method.
+     * For PIXEL_RIVER_FAR / PIXEL_RIVER_FAR2 / PIXEL_RIVER_FAR_NORM return types, only
+     * phases 1-2 (segment collection + 4x4 far cache) are run. Phases 3-5 (narrow prune,
+     * sort, and 256x256 block rasterization) are skipped because those return types only
+     * query the far cache, not the main block data.
      * All coordinates are in grid coordinate space.
      */
     private void computeBigChunk(BigChunk chunk) {
@@ -3524,8 +3533,14 @@ public class DendrySampler implements Sampler {
         collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
                 farStartConns, farEndConns, farEndFlowLevels);
 
-        // Phase 2: Fill 8x8 far-distance cache from wide segments
+        // Phase 2: Fill 4x4 far-distance cache from wide segments
         computeFarCache(chunk, chunkSizeGrid, farSegments);
+
+        // FAR-only return types only need the far cache — skip expensive main-block phases.
+        boolean farOnlyMode = (returnType == DendryReturnType.PIXEL_RIVER_FAR
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR2
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM);
+        if (farOnlyMode) return;
 
         // Phase 3: Narrow prune — filter far segments down to maxDistPrune for detailed rendering
         List<Segment3D> segments = new ArrayList<>();
@@ -3726,58 +3741,93 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Compute the 8x8 far-distance cache for the given BigChunk.
-     * Walks along each segment at coarse steps (one per far-cache cell size),
-     * determining directional distances from each far-cache cell border to the nearest segment point.
+     * Compute the 4x4 far-distance cache for the given BigChunk.
+     * Walks along each segment at half-cell steps (farCellSize/2) for accuracy.
+     * For each step point, cells are evaluated in ascending distance order (spiral from
+     * the step point) with early exit once no remaining cell can be improved.
      */
     private void computeFarCache(BigChunk chunk, double chunkSizeGrid, List<Segment3D> farSegments) {
-        double farCellSize = chunkSizeGrid / 8.0;
+        final int FAR_GRID = 4;
+        double farCellSize = chunkSizeGrid / FAR_GRID;
 
         // Track closest segment point position, segment, and t per cell for normal computation
-        double[][] closestPointX = new double[8][8];
-        double[][] closestPointY = new double[8][8];
-        Segment3D[][] closestSeg = new Segment3D[8][8];
-        double[][] closestT = new double[8][8];
+        double[][] closestPointX = new double[FAR_GRID][FAR_GRID];
+        double[][] closestPointY = new double[FAR_GRID][FAR_GRID];
+        Segment3D[][] closestSeg = new Segment3D[FAR_GRID][FAR_GRID];
+        double[][] closestT = new double[FAR_GRID][FAR_GRID];
 
-        // Phase A: Find closest Euclidean distance per cell
+        final int NUM_CELLS = FAR_GRID * FAR_GRID; // 16
+        // Reusable scratch arrays for spiral sort (allocated once, reused per step)
+        int[] sortOrder = new int[NUM_CELLS];
+        double[] cellDistSq = new double[NUM_CELLS]; // squared grid distances (per cell) to sort key
+        int[] suffixMax = new int[NUM_CELLS + 1];
+
+        // Phase A: Find closest Euclidean distance per cell using spiral evaluation with early exit
         for (Segment3D seg : farSegments) {
             double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
             if (segLen < MathUtils.EPSILON) continue;
 
-            // Walk along segment with step size approximately one far-cache cell
-            int numSteps = Math.max(1, (int) Math.ceil(segLen / farCellSize));
+            // Step at half the far-cell size for better accuracy
+            int numSteps = Math.max(1, (int) Math.ceil(segLen / (farCellSize * 0.5)));
             for (int step = 0; step <= numSteps; step++) {
                 double t = (double) step / numSteps;
                 Point3D pt = evaluateHermiteSpline(seg, t);
 
-                // Check each far-cache cell
-                for (int ci = 0; ci < 8; ci++) {
-                    double cellCenterY = chunk.gridOriginY + (ci + 0.5) * farCellSize;
-                    double dy = pt.y - cellCenterY;
+                // Build sorted cell order by ascending squared distance from pt
+                for (int ci = 0; ci < FAR_GRID; ci++) {
+                    double dy = pt.y - (chunk.gridOriginY + (ci + 0.5) * farCellSize);
+                    for (int cj = 0; cj < FAR_GRID; cj++) {
+                        int k = ci * FAR_GRID + cj;
+                        sortOrder[k] = k;
+                        double dx = pt.x - (chunk.gridOriginX + (cj + 0.5) * farCellSize);
+                        cellDistSq[k] = dx * dx + dy * dy;
+                    }
+                }
+                // Insertion sort on 16 elements (fast in practice)
+                for (int i = 1; i < NUM_CELLS; i++) {
+                    int key = sortOrder[i];
+                    double keyDistSq = cellDistSq[key];
+                    int j = i - 1;
+                    while (j >= 0 && cellDistSq[sortOrder[j]] > keyDistSq) {
+                        sortOrder[j + 1] = sortOrder[j];
+                        j--;
+                    }
+                    sortOrder[j + 1] = key;
+                }
 
-                    for (int cj = 0; cj < 8; cj++) {
-                        double cellCenterX = chunk.gridOriginX + (cj + 0.5) * farCellSize;
-                        double dx = pt.x - cellCenterX;
+                // Compute suffix-max of stored cell distances (in sorted order) for early-exit check.
+                // suffixMax[i] = max stored distance for cells i..NUM_CELLS-1 in sorted order.
+                // If the quantized distance from pt to sorted cell i exceeds suffixMax[i],
+                // no remaining cell can be improved by this step point — break.
+                suffixMax[NUM_CELLS] = 0;
+                for (int i = NUM_CELLS - 1; i >= 0; i--) {
+                    int ci = sortOrder[i] / FAR_GRID;
+                    int cj = sortOrder[i] % FAR_GRID;
+                    suffixMax[i] = Math.max(suffixMax[i + 1], chunk.farCache[ci][cj].getDistanceUnsigned());
+                }
 
-                        double euclideanDist = Math.sqrt(dx * dx + dy * dy);
-                        int quantized = (int) Math.min(255, Math.max(0, euclideanDist * gridsize / cachepixels));
-
-                        BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
-                        if (quantized < cell.getDistanceUnsigned()) {
-                            cell.setDistanceUnsigned(quantized);
-                            closestPointX[ci][cj] = pt.x;
-                            closestPointY[ci][cj] = pt.y;
-                            closestSeg[ci][cj] = seg;
-                            closestT[ci][cj] = t;
-                        }
+                // Evaluate cells in ascending-distance spiral; break when no remaining cell can benefit
+                for (int i = 0; i < NUM_CELLS; i++) {
+                    double euclideanDist = Math.sqrt(cellDistSq[sortOrder[i]]);
+                    int quantized = (int) Math.min(255, Math.max(0, euclideanDist * gridsize / cachepixels));
+                    if (quantized >= suffixMax[i]) break;  // no remaining cell has stored > quantized
+                    int ci = sortOrder[i] / FAR_GRID;
+                    int cj = sortOrder[i] % FAR_GRID;
+                    BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
+                    if (quantized < cell.getDistanceUnsigned()) {
+                        cell.setDistanceUnsigned(quantized);
+                        closestPointX[ci][cj] = pt.x;
+                        closestPointY[ci][cj] = pt.y;
+                        closestSeg[ci][cj] = seg;
+                        closestT[ci][cj] = t;
                     }
                 }
             }
         }
 
         // Phase B: Compute normals from segment tangent perpendicular
-        for (int ci = 0; ci < 8; ci++) {
-            for (int cj = 0; cj < 8; cj++) {
+        for (int ci = 0; ci < FAR_GRID; ci++) {
+            for (int cj = 0; cj < FAR_GRID; cj++) {
                 BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
                 if (cell.getDistanceUnsigned() >= 255 || closestSeg[ci][cj] == null) continue;
 
@@ -3809,37 +3859,37 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Evaluate far distance at a query point using the 8x8 far-distance cache.
+     * Evaluate far distance at a query point using the 4x4 far-distance cache.
      * Returns raw cell center distance in world units (no offset compensation).
      */
     private double evaluateWithBigChunkFarDistance(double gridX, double gridY) {
         BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
         double chunkSizeGrid = getBigChunkSizeGrid();
-        double farCellSize = chunkSizeGrid / 8.0;
+        double farCellSize = chunkSizeGrid / 4.0;
 
-        int cellJ = Math.max(0, Math.min(7, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
-        int cellI = Math.max(0, Math.min(7, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        int cellJ = Math.max(0, Math.min(3, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(3, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
         BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
         int distU8 = cell.getDistanceUnsigned();
         double MaxRepDist = maxDistGrid * gridsize;
         if (distU8 >= 255) return MaxRepDist;
 
-        return Math.min(distU8 * cachepixels,MaxRepDist);
+        return Math.min(distU8 * cachepixels, MaxRepDist);
     }
 
     /**
-     * Evaluate far distance with normal-based offset compensation.
+     * Evaluate far distance with normal-based offset compensation using the 4x4 far-distance cache.
      * Projects the query's offset from cell center onto the normal direction
      * to adjust the base distance for sub-cell accuracy.
      */
     private double evaluateWithBigChunkFarDistance2(double gridX, double gridY) {
         BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
         double chunkSizeGrid = getBigChunkSizeGrid();
-        double farCellSize = chunkSizeGrid / 8.0;
+        double farCellSize = chunkSizeGrid / 4.0;
 
-        int cellJ = Math.max(0, Math.min(7, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
-        int cellI = Math.max(0, Math.min(7, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        int cellJ = Math.max(0, Math.min(3, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(3, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
         BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
         int distU8 = cell.getDistanceUnsigned();
@@ -3862,6 +3912,51 @@ public class DendrySampler implements Sampler {
         double dotProduct = offsetX * normalX + offsetY * normalY;
 
         return Math.max(0, Math.min(baseDist + dotProduct, maxDistGrid * gridsize));
+    }
+
+    /**
+     * Evaluate far distance normalized to the same [-1, 1] scale used by PIXEL_RIVER.
+     * Uses the 4x4 far cache distance (in world units) and approximates river width by
+     * sampling the river-width sampler at the query location (level 0, no falloff).
+     * Normalization mirrors the PIXEL_RIVER quantization:
+     *   -1 = estimated river center (dist == 0)
+     *    0 = estimated flow edge   (dist == riverWidth)
+     *   +1 = estimated border edge (dist == riverWidth + borderWidth)
+     *   >1 = farther beyond the border (not clamped, so callers can distinguish far distances)
+     */
+    private double evaluateWithBigChunkFarDistNorm(double gridX, double gridY) {
+        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        double farCellSize = chunkSizeGrid / 4.0;
+
+        int cellJ = Math.max(0, Math.min(3, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(3, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
+
+        int distU8 = cell.getDistanceUnsigned();
+        if (distU8 >= 255) return maxDistGrid * gridsize;  // no river in range, return max
+
+        double worldDist = distU8 * cachepixels;  // distance to nearest segment center in world units
+
+        // Approximate river half-width at the query location (level 0, no per-level falloff).
+        // The actual level is unknown without a full block lookup, so level-0 width is used.
+        double samplerX = gridX * gridsize;
+        double samplerZ = gridY * gridsize;
+        double W = (riverwidthSampler != null)
+                ? Math.min(defaultRiverwidth, riverwidthSampler.getSample(salt, samplerX, 0, samplerZ))
+                : defaultRiverwidth;
+        double B = (borderwidthSampler != null)
+                ? borderwidthSampler.getSample(salt, samplerX, 0, samplerZ)
+                : defaultBorderwidth;
+
+        // Apply the same normalization as PIXEL_RIVER (see evaluateWithBigChunkDistance):
+        //   inside river  (worldDist <= W): normalize to [-1, 0]
+        //   outside river (worldDist >  W): normalize to [0, +inf], where +1 = border edge
+        if (worldDist <= W) {
+            return (W > 0) ? (worldDist / W) - 1.0 : -1.0;
+        } else {
+            return (B > 0) ? (worldDist - W) / B : 1.0;
+        }
     }
 
     /**

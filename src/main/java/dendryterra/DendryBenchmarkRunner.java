@@ -58,6 +58,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -80,6 +81,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -102,6 +104,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -124,6 +127,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -145,6 +149,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -167,6 +172,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -189,6 +195,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -211,6 +218,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
@@ -233,6 +241,7 @@ public class DendryBenchmarkRunner {
             0,          // debug
             null, 16.0, // riverwidthSampler, defaultRiverwidth
             null, 20.0, // borderwidthSampler, defaultBorderwidth
+            0.7,        // riverWidthFalloff (default)
             max, maxDist, // max, maxDist
             500, // maxSegmentsPerLevel
             15.0 // heightChangeMaxDist
