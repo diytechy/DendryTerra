@@ -1726,3 +1726,20 @@ The "branches" parameter is intended to define how segments proliferate.  It is 
 #################
 
 Can you confirm when the "branches" sampler is evaluated, are higher values increasing the probability of point removal?  Or are higher values increasing the probability of a point staying and getting used in segment branching?
+
+######################
+
+I want to perform a few actions carefully, perform the following to the best of your ability and make assumptions later, I will review after:
+
+1. Confirm if the return type is PIXEL_RIVER_FAR, or if the 3d sampler is requesting with a y value of -1 (which should give the same result) that only the big cache is updated if a cache miss occurs, and that the main high resolution cache with elevation based on cache-pixels is not updated.  If it does not work that way, please update functionality.
+
+1A. Remove the return value restriction to a multiple of cachepixels if it is unnecessary ==> "return Math.min(distU8 * cachepixels,MaxRepDist);"
+1B. Reduce the big cache size from 8x to 4x so this return type has slightly better fidelity.
+1C. If the distance is based on walking the segment and computing point distances to cache centers, investigate and implement methods that might further reduce computation time and overhead (like evaluating in a spiral pattern from the segment point, other alternatives are welcome).  The step distance along the segment should also be half of the big cache size for general accuracy.  Again, only do this if the distance is currently computed by walking the segment, or if it appears that would be faster than the current implementation.
+1D. Create a variant return type "PIXEL_RIVER_FAR_NORM", or y value -3.0, which normalizes the big-cache value into the same same normalized distance reported from PIXEL_RIVER.  The river width (which will not be known and is normally sampled at the river center) can be approximated by calling the width sampler AT the location of the x/z query, and used to estimate the distance to the width of the river, the distance from the center to the bank / flow edge, and the distance from the bank / edge, to back-calculate an approximate normalized distance (from -1 to 1, with 0 on the flow edge).
+
+2. Update relevant comments especially around the ReturnType.java file, and make sure it's content is updated in the ReadMe.  Some content may be quite old, please update as needed.
+
+3. Verify compilation and iterate if required.  Clean up workspace files (move old investigation documents / pictures to archive)
+
+4. Check for any potential advantages to switching to Java 25, if there are any performance gains to take advantage of, note them for future reference.

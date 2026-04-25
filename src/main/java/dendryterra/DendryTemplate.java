@@ -193,7 +193,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("river-width-falloff")
     @Default
-    private @Meta double riverWidthFalloff = 0.6;
+    private @Meta double riverWidthFalloff = 0.7;
 
     /**
      * Sampler for river width at a given point.
