@@ -1785,3 +1785,15 @@ Why is the memory consumption for PIXEL_RIVER and for PIXEL_RIVER_FAR the same? 
 3. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements noted earlier, and I will see how it affects the benchmark.  An updated version of the Terra addon pack may be needed for compatability, but I assume reflection takes care of that.  Notes from earlier:
 
 Math.sqrt with AVX-512 — JDK 25 (via JVMCI/Graal improvements) better exploits SIMD for Math.sqrt calls in tight loops like computeFarCache. Worth benchmarking with -XX:+UseAVX=3
+
+#######################################
+
+Ideally queries within the cell are more accurate, but the accuracy at every 4th world interval is most important because of how the biome pipeline is sampled. (0,0; 4,0; 8,0; 4,4... etc)
+
+I see two alternatives here:
+
+1. The BigCache is actually queried at the coordinate offsets from it's origin instead of the cell centers.
+
+2. Interpolation could be performed using surrounding points, but care would need to be taken at query points where actual distance is less than 2 to estimate distances that are less than all the surrounding points.  This would give more general accuracy for other points, but realistically this method will only be used on biome pipeline queries at the intervals noted above.
+
+What would you recommend.

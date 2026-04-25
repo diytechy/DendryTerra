@@ -44,19 +44,19 @@ TEST 1: PIXEL_RIVER (full 256x256 block cache, cachepixels=1.0)
 [main] INFO dendryterra.DendryBenchmark - Warm pass (250000 samples)...
   -- Cold pass (chunk build + queries) --
   Samples:      250,000
-  Total time:   30629.78 ms
-  Avg/sample:   0.1225 ms (122519 ns)
-  Throughput:   8,162 samples/sec
+  Total time:   32067.29 ms
+  Avg/sample:   0.1283 ms (128269 ns)
+  Throughput:   7,796 samples/sec
   Value range:  [-1.0000, 1.0000]
 
   -- Warm pass (cached, lookup only) --
   Samples:      250,000
-  Total time:   20.55 ms
-  Avg/sample:   0.0001 ms (82 ns)
-  Throughput:   12,166,457 samples/sec
+  Total time:   22.38 ms
+  Avg/sample:   0.0001 ms (90 ns)
+  Throughput:   11,171,387 samples/sec
   Value range:  [-1.0000, 1.0000]
 
-  Chunk build:  MAIN chunks=64 | segCollect=3991ms (avg 62ms) | raster=26548ms (avg 414ms)
+  Chunk build:  MAIN chunks=64 | segCollect=4226ms (avg 66ms) | raster=27746ms (avg 433ms)
   BigChunk mem: chunks=64 (64 w/blocks ~12MB, 0 far-only ~0MB), est.total=12800KB / 20480KB limit, evictions=0
   Seg cache:    hits=1148, misses=1156 (49.8% hit rate), evictions=0, entries=1156, mem=823KB
 
@@ -67,25 +67,25 @@ TEST 2: PIXEL_RIVER_FAR (far cache only (no block raster), cachepixels=1.0)
 [main] INFO dendryterra.DendryBenchmark - Warm pass (250000 samples)...
   -- Cold pass (chunk build + queries) --
   Samples:      250,000
-  Total time:   5454.52 ms
-  Avg/sample:   0.0218 ms (21818 ns)
-  Throughput:   45,834 samples/sec
+  Total time:   4250.82 ms
+  Avg/sample:   0.0170 ms (17003 ns)
+  Throughput:   58,812 samples/sec
   Value range:  [0.0000, 50.0000]
 
   -- Warm pass (cached, lookup only) --
   Samples:      250,000
-  Total time:   19.76 ms
-  Avg/sample:   0.0001 ms (79 ns)
-  Throughput:   12,652,974 samples/sec
+  Total time:   21.73 ms
+  Avg/sample:   0.0001 ms (87 ns)
+  Throughput:   11,503,138 samples/sec
   Value range:  [0.0000, 50.0000]
 
-  Chunk build:  FAR chunks=64 | segCollect=2787ms (avg 43ms) | farFill=2637ms (avg 41ms)
+  Chunk build:  FAR chunks=64 | segCollect=2867ms (avg 44ms) | farFill=1356ms (avg 21ms)
   BigChunk mem: chunks=64 (0 w/blocks ~0MB, 64 far-only ~0MB), est.total=512KB / 20480KB limit, evictions=0
   Seg cache:    hits=1148, misses=1156 (49.8% hit rate), evictions=0, entries=1156, mem=823KB
 
-  vs PIXEL_RIVER (warm): 4.0% FASTER
+  vs PIXEL_RIVER (warm): 3.0% FASTER
 
-  vs PIXEL_RIVER (cold): 461.5% FASTER
+  vs PIXEL_RIVER (cold): 654.4% FASTER
 
 ------------------------------------------------------------
 TEST 3: PIXEL_RIVER_FAR2 (far cache + normal compensation, cachepixels=1.0)
@@ -94,25 +94,25 @@ TEST 3: PIXEL_RIVER_FAR2 (far cache + normal compensation, cachepixels=1.0)
 [main] INFO dendryterra.DendryBenchmark - Warm pass (250000 samples)...
   -- Cold pass (chunk build + queries) --
   Samples:      250,000
-  Total time:   5101.70 ms
-  Avg/sample:   0.0204 ms (20407 ns)
-  Throughput:   49,003 samples/sec
+  Total time:   4460.35 ms
+  Avg/sample:   0.0178 ms (17841 ns)
+  Throughput:   56,049 samples/sec
   Value range:  [0.0000, 50.0000]
 
   -- Warm pass (cached, lookup only) --
   Samples:      250,000
-  Total time:   43.59 ms
+  Total time:   43.48 ms
   Avg/sample:   0.0002 ms (174 ns)
-  Throughput:   5,735,721 samples/sec
+  Throughput:   5,749,492 samples/sec
   Value range:  [0.0000, 50.0000]
 
-  Chunk build:  FAR chunks=64 | segCollect=2637ms (avg 41ms) | farFill=2417ms (avg 37ms)
+  Chunk build:  FAR chunks=64 | segCollect=3093ms (avg 48ms) | farFill=1313ms (avg 20ms)
   BigChunk mem: chunks=64 (0 w/blocks ~0MB, 64 far-only ~0MB), est.total=512KB / 20480KB limit, evictions=0
   Seg cache:    hits=1148, misses=1156 (49.8% hit rate), evictions=0, entries=1156, mem=823KB
 
-  vs PIXEL_RIVER (warm): 52.9% SLOWER
+  vs PIXEL_RIVER (warm): 48.5% SLOWER
 
-  vs PIXEL_RIVER (cold): 500.4% FASTER
+  vs PIXEL_RIVER (cold): 618.9% FASTER
 
 
 ================================================================================
@@ -120,18 +120,18 @@ SUMMARY
 ================================================================================
   Test Case                   Samples     Samples/sec     vs Baseline
   ----------------------------------------------------------------------------
-  PIXEL_RIVER_FAR             250,000      12,652,974       see below
-  PIXEL_RIVER_FAR2            250,000       5,735,721       see below
+  PIXEL_RIVER_FAR             250,000      11,503,138       see below
+  PIXEL_RIVER_FAR2            250,000       5,749,492       see below
 
   Special Comparisons:
   ----------------------------------------------------------------------------
-  PIXEL_RIVER_FAR        vs PIXEL_RIVER           : +4.0% FASTER
-    PIXEL_RIVER_FAR:      12,652,974 samples/sec (250,000 samples)
-    PIXEL_RIVER:      12,166,457 samples/sec (250,000 samples)
+  PIXEL_RIVER_FAR        vs PIXEL_RIVER           : +3.0% FASTER
+    PIXEL_RIVER_FAR:      11,503,138 samples/sec (250,000 samples)
+    PIXEL_RIVER:      11,171,387 samples/sec (250,000 samples)
 
-  PIXEL_RIVER_FAR2       vs PIXEL_RIVER           : -52.9% SLOWER
-    PIXEL_RIVER_FAR2:       5,735,721 samples/sec (250,000 samples)
-    PIXEL_RIVER:      12,166,457 samples/sec (250,000 samples)
+  PIXEL_RIVER_FAR2       vs PIXEL_RIVER           : -48.5% SLOWER
+    PIXEL_RIVER_FAR2:       5,749,492 samples/sec (250,000 samples)
+    PIXEL_RIVER:      11,171,387 samples/sec (250,000 samples)
 
 ================================================================================
 Benchmark complete.
@@ -144,7 +144,7 @@ You can use '--warning-mode all' to show the individual deprecation warnings and
 
 For more on this, please refer to https://docs.gradle.org/8.14.2/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
 
-BUILD SUCCESSFUL in 44s
+BUILD SUCCESSFUL in 46s
 3 actionable tasks: 1 executed, 2 up-to-date
 
 ============================================================
