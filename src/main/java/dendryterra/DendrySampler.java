@@ -3410,7 +3410,7 @@ public class DendrySampler implements Sampler {
      * Look up the BigChunk block at the given grid coordinates.
      */
     private BigChunk.BigChunkBlock getBigChunkBlock(double gridX, double gridY) {
-        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
         double cachepixelsGrid = cachepixels / gridsize;
         int blockX = Math.max(0, Math.min(255, gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid)));
         int blockY = Math.max(0, Math.min(255, gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid)));
@@ -3482,48 +3482,53 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Get or create a BigChunk for the specified grid coordinates.
-     * @param gridX Grid X coordinate (sampler X / gridsize)
-     * @param gridY Grid Y coordinate (sampler Y / gridsize)
-     * @return BigChunk containing the specified grid position
+     * Get or create a BigChunk for the specified grid coordinates, ensuring the requested
+     * cache layers are computed before returning.
+     *
+     * The two cache layers are computed independently and lazily:
+     *   needFar   — 64x64 far-distance cache (segments collected + far grid filled)
+     *   needBlocks — 256x256 block rasterization (blocks allocated + segments rasterized)
+     *
+     * Each layer is guarded by a double-checked synchronized block on the chunk object.
+     * They serialize on the same lock, which is acceptable since far-cache computation is
+     * typically much faster than block rasterization.
      */
-    private BigChunk getOrCreateBigChunk(double gridX, double gridY) {
-        // Convert grid coordinates to chunk coordinates
+    private BigChunk getOrEnsureBigChunk(double gridX, double gridY,
+                                          boolean needFar, boolean needBlocks) {
         int chunkX = gridToChunkCoord(gridX);
         int chunkY = gridToChunkCoord(gridY);
 
-        // Get grid origin of this chunk
-        double gridOriginX = chunkToGridCoord(chunkX);
-        double gridOriginY = chunkToGridCoord(chunkY);
+        BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY,
+                chunkToGridCoord(chunkX), chunkToGridCoord(chunkY));
 
-        // Get or create chunk from cache
-        BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY, gridOriginX, gridOriginY);
-
-        // Compute if not already done (synchronized to prevent duplicate computation)
-        if (!chunk.computed) {
+        if (needFar && !chunk.farCacheComputed) {
             synchronized (chunk) {
-                if (!chunk.computed) {
-                    computeBigChunk(chunk);
-                    chunk.computed = true;
+                if (!chunk.farCacheComputed) {
+                    computeFarCachePhases(chunk);
+                    chunk.farCacheComputed = true;
                 }
             }
         }
-
+        if (needBlocks && !chunk.blocksComputed) {
+            synchronized (chunk) {
+                if (!chunk.blocksComputed) {
+                    if (chunk.blocks == null) chunk.allocateBlocks();
+                    computeMainBlockPhases(chunk);
+                    chunk.blocksComputed = true;
+                }
+            }
+        }
         return chunk;
     }
 
     /**
-     * Compute all block values for a BigChunk.
-     * For PIXEL_RIVER_FAR / PIXEL_RIVER_FAR2 / PIXEL_RIVER_FAR_NORM return types, only
-     * phases 1-2 (segment collection + 4x4 far cache) are run. Phases 3-5 (narrow prune,
-     * sort, and 256x256 block rasterization) are skipped because those return types only
-     * query the far cache, not the main block data.
-     * All coordinates are in grid coordinate space.
+     * Compute the 64x64 far-distance cache for this chunk (phases 1 + 2).
+     * Collects segments within maxDistGrid and fills the far cache grid.
+     * The 256x256 block rasterization is NOT performed here.
      */
-    private void computeBigChunk(BigChunk chunk) {
+    private void computeFarCachePhases(BigChunk chunk) {
         double chunkSizeGrid = getBigChunkSizeGrid();
 
-        // Phase 1: Wide collection — all segments within maxDistGrid (for far cache)
         List<Segment3D> farSegments = new ArrayList<>();
         List<Integer> farLevels = new ArrayList<>();
         List<Integer> farStartConns = new ArrayList<>();
@@ -3533,14 +3538,27 @@ public class DendrySampler implements Sampler {
         collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
                 farStartConns, farEndConns, farEndFlowLevels);
 
-        // Phase 2: Fill 4x4 far-distance cache from wide segments
         computeFarCache(chunk, chunkSizeGrid, farSegments);
+    }
 
-        // FAR-only return types only need the far cache — skip expensive main-block phases.
-        boolean farOnlyMode = (returnType == DendryReturnType.PIXEL_RIVER_FAR
-                || returnType == DendryReturnType.PIXEL_RIVER_FAR2
-                || returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM);
-        if (farOnlyMode) return;
+    /**
+     * Compute the 256x256 block rasterization for this chunk (phases 1 + 3-5).
+     * Collects and prunes segments, then rasterizes each segment into the block grid.
+     * chunk.blocks must be allocated before calling this method.
+     * The far cache is NOT computed here; it may be null/unset on return.
+     */
+    private void computeMainBlockPhases(BigChunk chunk) {
+        double chunkSizeGrid = getBigChunkSizeGrid();
+
+        // Re-collect segments (cheap: reads from segmentListCache)
+        List<Segment3D> farSegments = new ArrayList<>();
+        List<Integer> farLevels = new ArrayList<>();
+        List<Integer> farStartConns = new ArrayList<>();
+        List<Integer> farEndConns = new ArrayList<>();
+        List<Integer> farEndFlowLevels = new ArrayList<>();
+
+        collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
+                farStartConns, farEndConns, farEndFlowLevels);
 
         // Phase 3: Narrow prune — filter far segments down to maxDistPrune for detailed rendering
         List<Segment3D> segments = new ArrayList<>();
@@ -3553,7 +3571,6 @@ public class DendrySampler implements Sampler {
                 farSegments, farLevels, farStartConns, farEndConns, farEndFlowLevels,
                 segments, levels, startConns, endConns, endFlowLevels);
 
-        // Validation: ensure all segment endpoints at the same (x,y) position have the same elevation
         validateSegmentEndpointElevations(segments, levels, chunk);
 
         // Phase 4: Sort by level descending (highest level segments processed first)
@@ -3561,9 +3578,7 @@ public class DendrySampler implements Sampler {
         for (int i = 0; i < sortedIndices.length; i++) sortedIndices[i] = i;
         java.util.Arrays.sort(sortedIndices, (a, b) -> Integer.compare(levels.get(b), levels.get(a)));
 
-        // Phase 5: Process each segment in sorted order
-        // The box's own distance value serves as the overwrite authority —
-        // no separate elevDistTracker needed.
+        // Phase 5: Render each segment into the 256x256 block grid
         for (int idx : sortedIndices) {
             sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
                 startConns.get(idx), endConns.get(idx), endFlowLevels.get(idx),
@@ -3741,88 +3756,76 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Compute the 4x4 far-distance cache for the given BigChunk.
-     * Walks along each segment at half-cell steps (farCellSize/2) for accuracy.
-     * For each step point, cells are evaluated in ascending distance order (spiral from
-     * the step point) with early exit once no remaining cell can be improved.
+     * Compute the 64x64 far-distance cache for the given BigChunk.
+     *
+     * Grid: 64x64 cells, each covering 4x4 cachepixel blocks (4 cachepixels per axis).
+     * Step size: farCellSize / 2 (2 cachepixels per step) for accurate coverage.
+     *
+     * Optimization: tracks the maximum stored distance across all cells (maxStoredDist).
+     * For each step point, the outer row loop is skipped when the minimum possible distance
+     * to any cell in that row (|dy| in quantized units) already exceeds maxStoredDist —
+     * since no cell in the row can have a stored distance larger than maxStoredDist,
+     * no update is possible. maxStoredDist is recomputed after each segment, shrinking
+     * the active search area as the cache fills in.
      */
     private void computeFarCache(BigChunk chunk, double chunkSizeGrid, List<Segment3D> farSegments) {
-        final int FAR_GRID = 4;
+        final int FAR_GRID = 64;
         double farCellSize = chunkSizeGrid / FAR_GRID;
+        double invCachepixelsPerGrid = gridsize / cachepixels; // converts grid dist to quantized units
 
-        // Track closest segment point position, segment, and t per cell for normal computation
+        // Track closest segment point per cell for normal computation (Phase B)
         double[][] closestPointX = new double[FAR_GRID][FAR_GRID];
         double[][] closestPointY = new double[FAR_GRID][FAR_GRID];
         Segment3D[][] closestSeg = new Segment3D[FAR_GRID][FAR_GRID];
         double[][] closestT = new double[FAR_GRID][FAR_GRID];
 
-        final int NUM_CELLS = FAR_GRID * FAR_GRID; // 16
-        // Reusable scratch arrays for spiral sort (allocated once, reused per step)
-        int[] sortOrder = new int[NUM_CELLS];
-        double[] cellDistSq = new double[NUM_CELLS]; // squared grid distances (per cell) to sort key
-        int[] suffixMax = new int[NUM_CELLS + 1];
+        // Global max stored distance across all cells. A row can be skipped entirely when
+        // |dy| (quantized) >= maxStoredDist, because no cell in that row can have a
+        // higher stored value — so no update is possible for any cell in the row.
+        int maxStoredDist = 255;
 
-        // Phase A: Find closest Euclidean distance per cell using spiral evaluation with early exit
+        // Phase A: Find closest Euclidean distance per cell
         for (Segment3D seg : farSegments) {
             double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
             if (segLen < MathUtils.EPSILON) continue;
 
-            // Step at half the far-cell size for better accuracy
+            // Step at half the far-cell size for 2-cachepixel accuracy
             int numSteps = Math.max(1, (int) Math.ceil(segLen / (farCellSize * 0.5)));
             for (int step = 0; step <= numSteps; step++) {
                 double t = (double) step / numSteps;
                 Point3D pt = evaluateHermiteSpline(seg, t);
 
-                // Build sorted cell order by ascending squared distance from pt
                 for (int ci = 0; ci < FAR_GRID; ci++) {
                     double dy = pt.y - (chunk.gridOriginY + (ci + 0.5) * farCellSize);
+                    // Row-skip: if |dy| alone already exceeds maxStoredDist in quantized units,
+                    // no cell in this row can be improved (dist >= |dy| >= maxStoredDist >= cell.stored)
+                    double dyQ = Math.abs(dy) * invCachepixelsPerGrid;
+                    if (dyQ >= maxStoredDist) continue;
+
+                    double dySq = dy * dy;
                     for (int cj = 0; cj < FAR_GRID; cj++) {
-                        int k = ci * FAR_GRID + cj;
-                        sortOrder[k] = k;
                         double dx = pt.x - (chunk.gridOriginX + (cj + 0.5) * farCellSize);
-                        cellDistSq[k] = dx * dx + dy * dy;
-                    }
-                }
-                // Insertion sort on 16 elements (fast in practice)
-                for (int i = 1; i < NUM_CELLS; i++) {
-                    int key = sortOrder[i];
-                    double keyDistSq = cellDistSq[key];
-                    int j = i - 1;
-                    while (j >= 0 && cellDistSq[sortOrder[j]] > keyDistSq) {
-                        sortOrder[j + 1] = sortOrder[j];
-                        j--;
-                    }
-                    sortOrder[j + 1] = key;
-                }
-
-                // Compute suffix-max of stored cell distances (in sorted order) for early-exit check.
-                // suffixMax[i] = max stored distance for cells i..NUM_CELLS-1 in sorted order.
-                // If the quantized distance from pt to sorted cell i exceeds suffixMax[i],
-                // no remaining cell can be improved by this step point — break.
-                suffixMax[NUM_CELLS] = 0;
-                for (int i = NUM_CELLS - 1; i >= 0; i--) {
-                    int ci = sortOrder[i] / FAR_GRID;
-                    int cj = sortOrder[i] % FAR_GRID;
-                    suffixMax[i] = Math.max(suffixMax[i + 1], chunk.farCache[ci][cj].getDistanceUnsigned());
-                }
-
-                // Evaluate cells in ascending-distance spiral; break when no remaining cell can benefit
-                for (int i = 0; i < NUM_CELLS; i++) {
-                    double euclideanDist = Math.sqrt(cellDistSq[sortOrder[i]]);
-                    int quantized = (int) Math.min(255, Math.max(0, euclideanDist * gridsize / cachepixels));
-                    if (quantized >= suffixMax[i]) break;  // no remaining cell has stored > quantized
-                    int ci = sortOrder[i] / FAR_GRID;
-                    int cj = sortOrder[i] % FAR_GRID;
-                    BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
-                    if (quantized < cell.getDistanceUnsigned()) {
-                        cell.setDistanceUnsigned(quantized);
-                        closestPointX[ci][cj] = pt.x;
-                        closestPointY[ci][cj] = pt.y;
-                        closestSeg[ci][cj] = seg;
-                        closestT[ci][cj] = t;
+                        double euclideanDist = Math.sqrt(dx * dx + dySq);
+                        int quantized = (int) Math.min(255, euclideanDist * invCachepixelsPerGrid);
+                        BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
+                        if (quantized < cell.getDistanceUnsigned()) {
+                            cell.setDistanceUnsigned(quantized);
+                            closestPointX[ci][cj] = pt.x;
+                            closestPointY[ci][cj] = pt.y;
+                            closestSeg[ci][cj] = seg;
+                            closestT[ci][cj] = t;
+                        }
                     }
                 }
             }
+
+            // Recompute maxStoredDist after each segment so subsequent segments
+            // benefit from the narrowed search area
+            maxStoredDist = 0;
+            for (int ci = 0; ci < FAR_GRID; ci++)
+                for (int cj = 0; cj < FAR_GRID; cj++)
+                    if (chunk.farCache[ci][cj].getDistanceUnsigned() > maxStoredDist)
+                        maxStoredDist = chunk.farCache[ci][cj].getDistanceUnsigned();
         }
 
         // Phase B: Compute normals from segment tangent perpendicular
@@ -3831,7 +3834,6 @@ public class DendrySampler implements Sampler {
                 BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
                 if (cell.getDistanceUnsigned() >= 255 || closestSeg[ci][cj] == null) continue;
 
-                // Get tangent at the closest point on the segment
                 dendryterra.math.Vec2D tangent = interpolateTangent(closestSeg[ci][cj], closestT[ci][cj]);
 
                 // Perpendicular: rotate tangent 90° CCW → (-ty, tx)
@@ -3852,23 +3854,22 @@ public class DendrySampler implements Sampler {
                 double angle = Math.atan2(perpY, perpX);
                 if (angle < 0) angle += 2.0 * Math.PI;
 
-                int normalQuantized = (int) Math.min(255, Math.max(0, angle / (2.0 * Math.PI) * 255));
-                cell.setNormalUnsigned(normalQuantized);
+                cell.setNormalUnsigned((int) Math.min(255, Math.max(0, angle / (2.0 * Math.PI) * 255)));
             }
         }
     }
 
     /**
-     * Evaluate far distance at a query point using the 4x4 far-distance cache.
+     * Evaluate far distance at a query point using the 64x64 far-distance cache.
      * Returns raw cell center distance in world units (no offset compensation).
      */
     private double evaluateWithBigChunkFarDistance(double gridX, double gridY) {
-        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, true, false);
         double chunkSizeGrid = getBigChunkSizeGrid();
-        double farCellSize = chunkSizeGrid / 4.0;
+        double farCellSize = chunkSizeGrid / 64.0;
 
-        int cellJ = Math.max(0, Math.min(3, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
-        int cellI = Math.max(0, Math.min(3, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
         BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
         int distU8 = cell.getDistanceUnsigned();
@@ -3879,17 +3880,17 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Evaluate far distance with normal-based offset compensation using the 4x4 far-distance cache.
+     * Evaluate far distance with normal-based offset compensation using the 64x64 far-distance cache.
      * Projects the query's offset from cell center onto the normal direction
      * to adjust the base distance for sub-cell accuracy.
      */
     private double evaluateWithBigChunkFarDistance2(double gridX, double gridY) {
-        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, true, false);
         double chunkSizeGrid = getBigChunkSizeGrid();
-        double farCellSize = chunkSizeGrid / 4.0;
+        double farCellSize = chunkSizeGrid / 64.0;
 
-        int cellJ = Math.max(0, Math.min(3, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
-        int cellI = Math.max(0, Math.min(3, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
         BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
         int distU8 = cell.getDistanceUnsigned();
@@ -3925,12 +3926,12 @@ public class DendrySampler implements Sampler {
      *   >1 = farther beyond the border (not clamped, so callers can distinguish far distances)
      */
     private double evaluateWithBigChunkFarDistNorm(double gridX, double gridY) {
-        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, true, false);
         double chunkSizeGrid = getBigChunkSizeGrid();
-        double farCellSize = chunkSizeGrid / 4.0;
+        double farCellSize = chunkSizeGrid / 64.0;
 
-        int cellJ = Math.max(0, Math.min(3, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
-        int cellI = Math.max(0, Math.min(3, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+        int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
         BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
         int distU8 = cell.getDistanceUnsigned();

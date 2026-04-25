@@ -1,13 +1,18 @@
 package dendryterra;
 
 /**
- * A 256x256 grid of blocks for optimized river distance/elevation caching.
- * Each block represents a pixel-cache sized square and stores normalized
- * elevation and distance values as UInt8 (0-255).
+ * A 256x256 grid of blocks for optimized river distance/elevation caching,
+ * combined with a 64x64 far-distance cache for coarse distance queries.
  *
- * Also contains a 4x4 far-distance cache for coarse directional distance queries.
+ * The two caches are computed and allocated lazily and independently:
+ *   - farCache  (64x64, 8 KB):   allocated at construction; computed on first far-type query.
+ *   - blocks (256x256, 196 KB): allocated and computed on first main-block query.
  *
- * Memory usage: 256*256*3 bytes + 4*4*4 bytes + overhead ≈ 196 KB per chunk.
+ * This allows PIXEL_RIVER_FAR* queries to avoid the expensive 256x256 rasterization,
+ * and PIXEL_RIVER queries to avoid filling the far cache when y > 0.
+ *
+ * Thread safety: both farCacheComputed and blocksComputed are volatile; each computation
+ * is guarded by a double-checked synchronized block on the BigChunk instance.
  */
 public class BigChunk {
     /** Grid X coordinate of this chunk's origin (in normalized grid space) */
@@ -16,53 +21,72 @@ public class BigChunk {
     /** Grid Y coordinate of this chunk's origin (in normalized grid space) */
     public final double gridOriginY;
 
-    /** 256x256 grid of blocks */
-    public final BigChunkBlock[][] blocks;
+    /**
+     * 256x256 grid of high-resolution blocks.
+     * Null until the first main-block query triggers lazy allocation and computation.
+     * Each block covers cachepixels × cachepixels world units.
+     */
+    public BigChunkBlock[][] blocks;
 
-    /** 4x4 far-distance cache for coarse directional distance queries */
+    /**
+     * 64x64 coarse far-distance cache.
+     * Each cell covers 4 × 4 cachepixel blocks (4 cachepixels per side).
+     * Array size = 256 / 4 = 64 per dimension.
+     * Allocated at construction; computed lazily on first far-type query.
+     */
     public final FarCacheCell[][] farCache;
 
-    /** Whether this chunk has been fully computed (volatile for thread-safe double-check) */
-    public volatile boolean computed;
+    /** Set to true once the 64x64 far cache has been fully computed. */
+    public volatile boolean farCacheComputed;
+
+    /** Set to true once the 256x256 block grid has been fully computed. */
+    public volatile boolean blocksComputed;
 
     /** LRU counter for cache eviction */
     public int lruCounter;
 
     /**
      * Create a new BigChunk at the specified grid coordinates.
-     * Grid coordinates are in normalized space (sampler coordinates / gridsize).
-     * All blocks are initialized with elevation=255, distance=255.
-     * All far cache cells are initialized with distances=255 (max/unset).
+     * The 64x64 farCache is allocated immediately (8 KB, all cells at max/unset distance).
+     * The 256x256 blocks grid is NOT allocated here; it is allocated lazily when first needed.
      */
     public BigChunk(double gridOriginX, double gridOriginY) {
         this.gridOriginX = gridOriginX;
         this.gridOriginY = gridOriginY;
-        this.blocks = new BigChunkBlock[256][256];
+        this.blocks = null;  // allocated lazily
 
-        // Initialize all blocks
-        for (int i = 0; i < 256; i++) {
-            for (int j = 0; j < 256; j++) {
-                blocks[i][j] = new BigChunkBlock();
-            }
-        }
-
-        // Initialize 4x4 far cache
-        this.farCache = new FarCacheCell[4][4];
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < 4; j++) {
+        // Initialize 64x64 far cache (4-pixel cell size → 256/4 = 64 cells per axis)
+        this.farCache = new FarCacheCell[64][64];
+        for (int i = 0; i < 64; i++) {
+            for (int j = 0; j < 64; j++) {
                 farCache[i][j] = new FarCacheCell();
             }
         }
 
-        this.computed = false;
+        this.farCacheComputed = false;
+        this.blocksComputed = false;
         this.lruCounter = 0;
     }
 
     /**
-     * Get the block at the specified grid coordinates within this chunk.
-     * @param gridX X coordinate within chunk (0-255)
-     * @param gridY Y coordinate within chunk (0-255)
-     * @return The block at that position
+     * Allocate the 256x256 blocks grid, initializing every block to default (unset) values.
+     * Must be called inside a synchronized block before computeMainBlockPhases is invoked.
+     */
+    public void allocateBlocks() {
+        BigChunkBlock[][] b = new BigChunkBlock[256][256];
+        for (int i = 0; i < 256; i++) {
+            for (int j = 0; j < 256; j++) {
+                b[i][j] = new BigChunkBlock();
+            }
+        }
+        this.blocks = b;
+    }
+
+    /**
+     * Get the block at the specified coordinates within this chunk.
+     * Requires that blocksComputed == true (blocks must have been allocated and computed).
+     * @param gridX X index within chunk (0-255)
+     * @param gridY Y index within chunk (0-255)
      */
     public BigChunkBlock getBlock(int gridX, int gridY) {
         return blocks[gridX][gridY];
@@ -97,30 +121,22 @@ public class BigChunk {
             this.levelAndDistChange = (byte) 0xFF;  // Both nibbles = 15 (unset)
         }
 
-        /**
-         * Get elevation as unsigned value (0-255).
-         */
+        /** Get elevation as unsigned value (0-255). */
         public int getElevationUnsigned() {
             return Byte.toUnsignedInt(elevation);
         }
 
-        /**
-         * Get distance as unsigned value (0-255).
-         */
+        /** Get distance as unsigned value (0-255). */
         public int getDistanceUnsigned() {
             return Byte.toUnsignedInt(distance);
         }
 
-        /**
-         * Set elevation from unsigned value (0-255).
-         */
+        /** Set elevation from unsigned value (0-255). */
         public void setElevationUnsigned(int value) {
             this.elevation = (byte) Math.min(255, Math.max(0, value));
         }
 
-        /**
-         * Set distance from unsigned value (0-255).
-         */
+        /** Set distance from unsigned value (0-255). */
         public void setDistanceUnsigned(int value) {
             this.distance = (byte) Math.min(255, Math.max(0, value));
         }
@@ -149,10 +165,11 @@ public class BigChunk {
     }
 
     /**
-     * A cell in the 8x8 far-distance cache.
-     * Stores the closest Euclidean distance to any segment (UInt8, quantized)
-     * and a normal angle (UInt8, 0-255 maps to 0-2π) pointing away from the nearest river.
-     * 255 distance = maxDist (no segment found), 0 = segment at cell center.
+     * A cell in the 64x64 far-distance cache.
+     * Each cell covers 4x4 cachepixel blocks (4 cachepixels per axis).
+     * Stores the closest Euclidean distance to any segment (UInt8, quantized in units of
+     * cachepixels) and a normal angle (UInt8, 0-255 → 0-2π) pointing away from the river.
+     * distance=255 means no segment found within range; distance=0 means segment at cell center.
      */
     public static class FarCacheCell {
         public byte distance;  // Quantized closest distance to any segment
