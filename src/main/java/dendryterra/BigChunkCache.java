@@ -19,9 +19,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class BigChunkCache {
     private static final long MAX_MEMORY = 20L * 1024 * 1024; // 20 MB hard limit
 
-    // Estimated JVM heap bytes per chunk layer (object arrays of N items × ~16 bytes/item)
-    static final long FAR_CACHE_BYTES = 64L  * 1024; // 4,096 FarCacheCell objects
-    static final long BLOCKS_BYTES    = 1024L * 1024; // 65,536 BigChunkBlock objects
+    // Actual heap bytes per chunk layer (flat byte arrays, no per-item object overhead)
+    static final long FAR_CACHE_BYTES = 2L * BigChunk.FAR_GRID   * BigChunk.FAR_GRID;   //  8 KB
+    static final long BLOCKS_BYTES    = 3L * BigChunk.BLOCK_GRID * BigChunk.BLOCK_GRID; // 192 KB
 
     /** Map from chunk coordinates to BigChunk instances */
     private final ConcurrentHashMap<ChunkKey, BigChunk> cache;
@@ -40,9 +40,9 @@ public class BigChunkCache {
         this.lruCounter = new AtomicInteger(0);
     }
 
-    /** Estimated heap bytes for one BigChunk based on what is currently allocated. */
+    /** Actual heap bytes for one BigChunk based on which arrays are allocated. */
     private static long estimateChunkBytes(BigChunk chunk) {
-        return FAR_CACHE_BYTES + (chunk.blocks != null ? BLOCKS_BYTES : 0);
+        return FAR_CACHE_BYTES + (chunk.blockDistance != null ? BLOCKS_BYTES : 0);
     }
 
     /**
@@ -157,7 +157,7 @@ public class BigChunkCache {
      */
     public synchronized String getStats() {
         int withBlocks = 0;
-        for (BigChunk c : cache.values()) if (c.blocks != null) withBlocks++;
+        for (BigChunk c : cache.values()) if (c.blockDistance != null) withBlocks++;
         int total = cache.size();
         return String.format(
                 "chunks=%d (%d w/blocks ~%dMB, %d far-only ~%dMB), est.total=%dKB / %dKB limit, evictions=%d",

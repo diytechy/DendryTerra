@@ -3476,20 +3476,15 @@ public class DendrySampler implements Sampler {
      * @param gridY Grid Y coordinate (normalized)
      * @return Distance value in sampler coordinates
      */
-    /**
-     * Look up the BigChunk block at the given grid coordinates.
-     */
-    private BigChunk.BigChunkBlock getBigChunkBlock(double gridX, double gridY) {
-        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
-        double cachepixelsGrid = cachepixels / gridsize;
-        int blockX = Math.max(0, Math.min(255, gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid)));
-        int blockY = Math.max(0, Math.min(255, gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid)));
-        return chunk.getBlock(blockX, blockY);
-    }
+    /** Clamp a block index to [0, 255]. */
+    private static int clampBlock(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
     private double evaluateWithBigChunkDistance(double gridX, double gridY) {
-        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
-        int distU8 = block.getDistanceUnsigned();
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        int distU8 = chunk.getBlockDistance(bx, by);
         if (distU8 <= 127) {
             return (distU8 / 127.0) - 1.0;   // inside river: [0→-1, 127→≈0]
         } else {
@@ -3498,27 +3493,29 @@ public class DendrySampler implements Sampler {
     }
 
     private double evaluateWithBigChunkElevation(double gridX, double gridY) {
-        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
-        double elevQuantizeRes = 255.0 / max;
-        return block.getElevationUnsigned() / elevQuantizeRes;
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        return chunk.getBlockElevation(bx, by) / (255.0 / max);
     }
 
-    /**
-     * Query segment level from BigChunk block (high nibble).
-     * @return Raw level value 0-15 (15 = not available)
-     */
+    /** Query segment level (high nibble). Returns 0-15, 15 = not available. */
     private double evaluateWithBigChunkLevel(double gridX, double gridY) {
-        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
-        return block.getLevelNibble();
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        return chunk.getBlockLevelNibble(bx, by);
     }
 
-    /**
-     * Query distance-to-elevation-change from BigChunk block (low nibble).
-     * @return Dequantized distance in world units (0 to heightChangeMaxDist)
-     */
+    /** Query distance-to-elevation-change (low nibble). Returns world units. */
     private double evaluateWithBigChunkDistChange(double gridX, double gridY) {
-        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
-        return block.getDistChangeNibble() / 15.0 * heightChangeMaxDist;
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        return chunk.getBlockDistChangeNibble(bx, by) / 15.0 * heightChangeMaxDist;
     }
 
     /**
@@ -3582,7 +3579,7 @@ public class DendrySampler implements Sampler {
         if (needBlocks && !chunk.blocksComputed) {
             synchronized (chunk) {
                 if (!chunk.blocksComputed) {
-                    if (chunk.blocks == null) {
+                    if (chunk.blockDistance == null) {
                         chunk.allocateBlocks();
                         bigChunkCache.notifyBlocksAllocated(chunk);
                     }
@@ -3891,9 +3888,8 @@ public class DendrySampler implements Sampler {
                         double dx = pt.x - (chunk.gridOriginX + (cj + 0.5) * farCellSize);
                         double euclideanDist = Math.sqrt(dx * dx + dySq);
                         int quantized = (int) Math.min(255, euclideanDist * invCachepixelsPerGrid);
-                        BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
-                        if (quantized < cell.getDistanceUnsigned()) {
-                            cell.setDistanceUnsigned(quantized);
+                        if (quantized < chunk.getFarDistance(ci, cj)) {
+                            chunk.setFarDistance(ci, cj, quantized);
                             closestPointX[ci][cj] = pt.x;
                             closestPointY[ci][cj] = pt.y;
                             closestSeg[ci][cj] = seg;
@@ -3907,16 +3903,16 @@ public class DendrySampler implements Sampler {
             // benefit from the narrowed search area
             maxStoredDist = 0;
             for (int ci = 0; ci < FAR_GRID; ci++)
-                for (int cj = 0; cj < FAR_GRID; cj++)
-                    if (chunk.farCache[ci][cj].getDistanceUnsigned() > maxStoredDist)
-                        maxStoredDist = chunk.farCache[ci][cj].getDistanceUnsigned();
+                for (int cj = 0; cj < FAR_GRID; cj++) {
+                    int d = chunk.getFarDistance(ci, cj);
+                    if (d > maxStoredDist) maxStoredDist = d;
+                }
         }
 
         // Phase B: Compute normals from segment tangent perpendicular
         for (int ci = 0; ci < FAR_GRID; ci++) {
             for (int cj = 0; cj < FAR_GRID; cj++) {
-                BigChunk.FarCacheCell cell = chunk.farCache[ci][cj];
-                if (cell.getDistanceUnsigned() >= 255 || closestSeg[ci][cj] == null) continue;
+                if (chunk.getFarDistance(ci, cj) >= 255 || closestSeg[ci][cj] == null) continue;
 
                 dendryterra.math.Vec2D tangent = interpolateTangent(closestSeg[ci][cj], closestT[ci][cj]);
 
@@ -3938,7 +3934,7 @@ public class DendrySampler implements Sampler {
                 double angle = Math.atan2(perpY, perpX);
                 if (angle < 0) angle += 2.0 * Math.PI;
 
-                cell.setNormalUnsigned((int) Math.min(255, Math.max(0, angle / (2.0 * Math.PI) * 255)));
+                chunk.setFarNormal(ci, cj, (int) Math.min(255, Math.max(0, angle / (2.0 * Math.PI) * 255)));
             }
         }
     }
@@ -3954,9 +3950,8 @@ public class DendrySampler implements Sampler {
 
         int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
         int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
-        BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
-        int distU8 = cell.getDistanceUnsigned();
+        int distU8 = chunk.getFarDistance(cellI, cellJ);
         double MaxRepDist = maxDistGrid * gridsize;
         if (distU8 >= 255) return MaxRepDist;
 
@@ -3975,15 +3970,14 @@ public class DendrySampler implements Sampler {
 
         int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
         int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
-        BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
-        int distU8 = cell.getDistanceUnsigned();
+        int distU8 = chunk.getFarDistance(cellI, cellJ);
         if (distU8 >= 255) return maxDistGrid * gridsize;
 
         double baseDist = distU8 * cachepixels;
 
         // Normal: unit vector pointing away from nearest river
-        double normalRad = cell.getNormalRadians();
+        double normalRad = chunk.getFarNormalRadians(cellI, cellJ);
         double normalX = Math.cos(normalRad);
         double normalY = Math.sin(normalRad);
 
@@ -4016,9 +4010,8 @@ public class DendrySampler implements Sampler {
 
         int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
         int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
-        BigChunk.FarCacheCell cell = chunk.farCache[cellI][cellJ];
 
-        int distU8 = cell.getDistanceUnsigned();
+        int distU8 = chunk.getFarDistance(cellI, cellJ);
         if (distU8 >= 255) return maxDistGrid * gridsize;  // no river in range, return max
 
         double worldDist = distU8 * cachepixels;  // distance to nearest segment center in world units
@@ -4497,8 +4490,8 @@ public class DendrySampler implements Sampler {
                 int bx = gridToBlockIndex(samplePoint.x, chunk.gridOriginX, cachepixelsGrid);
                 int by = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
                 if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
-                    updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid, borderWidthGrid,
-                             false, bx, by, chunk, step, level, levelNibble, distChangeNibble);
+                    updateBox(chunk, bx, by, 0.0, selectedElev, riverWidthGrid, borderWidthGrid,
+                             false, step, level, levelNibble, distChangeNibble);
                 }
             } else {
                 // Arc samples at this radius - active side, and optionally the opposite side
@@ -4539,9 +4532,9 @@ public class DendrySampler implements Sampler {
                         int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
 
                         if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
-                            updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
-                                     riverWidthGrid, borderWidthGrid, blotAdjacentBoxes, bx, by, chunk, step, level,
-                                     levelNibble, distChangeNibble);
+                            updateBox(chunk, bx, by, distanceGrid, selectedElev,
+                                     riverWidthGrid, borderWidthGrid, blotAdjacentBoxes,
+                                     step, level, levelNibble, distChangeNibble);
                         }
                     }
                 }
@@ -4613,10 +4606,11 @@ public class DendrySampler implements Sampler {
      * @param chunk BigChunk for adjacent box access
      * @param outwardStep The outward step index (0 = center, 1 = first ring, etc.)
      */
-    private void updateBox(BigChunk.BigChunkBlock box, double distanceGrid,
+    private void updateBox(BigChunk chunk, int blockX, int blockY,
+                          double distanceGrid,
                           int elevationU8, double riverWidthGrid, double borderWidthGrid,
-                          boolean blotAdjacentBoxes, int blockX, int blockY,
-                          BigChunk chunk, int outwardStep, int level,
+                          boolean blotAdjacentBoxes,
+                          int outwardStep, int level,
                           int levelNibble, int distChangeNibble) {
         // Quantize normalized distance to uint8 in range [0, 255]:
         //   [0, 127]   = inside river:  0 (center, output -1) → 127 (edge, output ≈ 0)
@@ -4631,16 +4625,10 @@ public class DendrySampler implements Sampler {
             distU8 = (int)(128 + Math.min(127, ratio * 127));
         }
 
-        // Make sure l1 rivers get a height boost — allows E=0 to filter distance
-        // for L0 segments to filter certain terrain artifacts.
         int finalElevU8 = Math.max(elevationU8, Math.min(1, level));
 
-        // Update this box (applyBoxUpdate uses unified rules for all parameters)
-        applyBoxUpdate(box, distU8, finalElevU8, levelNibble, distChangeNibble);
+        applyBoxUpdate(chunk, blockX, blockY, distU8, finalElevU8, levelNibble, distChangeNibble);
 
-        // Blot: fill adjacent boxes with same values (pin-hole filling)
-        // Outside river (distU8 > 127), blotted neighbors use distU8 + 1 so they
-        // don't aggressively claim territory at equal priority to the source block.
         if (ENABLE_BLOT_FILLING > 0 && blotAdjacentBoxes) {
             int blotDistU8 = (distU8 > 127) ? Math.min(255, distU8 + 1) : distU8;
             int[][] neighbors;
@@ -4652,48 +4640,35 @@ public class DendrySampler implements Sampler {
             for (int[] d : neighbors) {
                 int nx = blockX + d[0], ny = blockY + d[1];
                 if (nx >= 0 && nx < 256 && ny >= 0 && ny < 256) {
-                    applyBoxUpdate(chunk.getBlock(nx, ny), blotDistU8, finalElevU8, levelNibble, distChangeNibble);
+                    applyBoxUpdate(chunk, nx, ny, blotDistU8, finalElevU8, levelNibble, distChangeNibble);
                 }
             }
         }
     }
 
     /**
-     * Apply distance, elevation, level, and distChange updates to a single box.
-     * All parameters follow unified rules:
+     * Apply distance, elevation, level, and distChange updates to a single block.
      *   Inside river  (distU8 <= 127): lower wins independently for each parameter.
      *   Outside river (distU8 >  127): overwrite ALL parameters atomically only if
      *       the new distance is strictly closer than the existing distance.
-     *       The box's own distance serves as the overwrite authority (no external tracker).
      */
-    private void applyBoxUpdate(BigChunk.BigChunkBlock box, int distU8, int elevU8,
+    private void applyBoxUpdate(BigChunk chunk, int bx, int by,
+                                int distU8, int elevU8,
                                 int levelNibble, int distChangeNibble) {
-        int existingDist = box.getDistanceUnsigned();
+        int existingDist = chunk.getBlockDistance(bx, by);
 
         if (distU8 <= 127) {
-            // INSIDE RIVER: lower wins for each parameter independently
-            if (distU8 < existingDist) {
-                box.setDistanceUnsigned(distU8);
-            }
-            if (elevU8 < box.getElevationUnsigned()) {
-                box.setElevationUnsigned(elevU8);
-            }
-            if (levelNibble < box.getLevelNibble()) {
-                box.setLevelNibble(levelNibble);
-            }
-            if (distChangeNibble < box.getDistChangeNibble()) {
-                box.setDistChangeNibble(distChangeNibble);
-            }
+            if (distU8 < existingDist)                             chunk.setBlockDistance(bx, by, distU8);
+            if (elevU8 < chunk.getBlockElevation(bx, by))         chunk.setBlockElevation(bx, by, elevU8);
+            if (levelNibble < chunk.getBlockLevelNibble(bx, by))  chunk.setBlockLevelNibble(bx, by, levelNibble);
+            if (distChangeNibble < chunk.getBlockDistChangeNibble(bx, by))
+                chunk.setBlockDistChangeNibble(bx, by, distChangeNibble);
         } else {
-            // OUTSIDE RIVER: overwrite ALL parameters only if this distance is
-            // strictly closer than what's already stored. This prevents
-            // non-intersecting rivers from corrupting each other's values.
-            // Blotted writes use distU8+1, making them naturally weaker.
             if (distU8 < existingDist) {
-                box.setDistanceUnsigned(distU8);
-                box.setElevationUnsigned(elevU8);
-                box.setLevelNibble(levelNibble);
-                box.setDistChangeNibble(distChangeNibble);
+                chunk.setBlockDistance(bx, by, distU8);
+                chunk.setBlockElevation(bx, by, elevU8);
+                chunk.setBlockLevelNibble(bx, by, levelNibble);
+                chunk.setBlockDistChangeNibble(bx, by, distChangeNibble);
             }
         }
     }
