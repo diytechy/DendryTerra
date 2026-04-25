@@ -9,7 +9,7 @@ REM Example: run-benchmark.bat 64 all
 setlocal
 
 REM Set default grid size, mode, and sample spacing
-set GRID_SIZE=400
+set GRID_SIZE=500
 set MODE=far
 set SPACING=4
 if not "%1"=="" set GRID_SIZE=%1
