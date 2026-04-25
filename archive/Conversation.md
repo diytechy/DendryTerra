@@ -1748,5 +1748,28 @@ I want to perform a few actions carefully, perform the following to the best of 
 
 Commit the latest changes before additional changes are made.
 
+##########################
+
 Additional changes:
 
+In principal I want to implement the functionality you describe, but it may take some more careful planning.  Let's break this into 2 parts:
+
+1. Update the benchmark bat file to just run the pixel river distance and the far distance to get an idea of their current performance.
+
+2. Make a plan to make some more substantial updates to be implemented after I run the updated benchmarK:
+
+For the 3d sampler on PIXEL_RIVER, only the cache that is required for the corresponding y coordinate / return key should be computed, as a query at one y / return type in the 3d sampler doesn't necessarily mean the other return types will be needed for the same coordinates.
+
+If the far cache should be on a separate object or the higher resolution cache should remain null to not consume memory, either method is fine, as long as the higher resolution cache is only updated when needed.
+
+For the far distance there is some misunderstanding, the size was intended to move to a block / pixel cache size of 4x4, which would actually bring the array size to 256/4 = 64x64, which is much bigger than the original, but that is why I want to update the benchmark.
+
+##########################
+
+1. Implement plan "Plan: Far cache resize to 64×64 + lazy per-mode computation"
+
+If benchmark shows about the same or better performance:
+
+2. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements:
+
+Math.sqrt with AVX-512 — JDK 25 (via JVMCI/Graal improvements) better exploits SIMD for Math.sqrt calls in tight loops like computeFarCache. Worth benchmarking with -XX:+UseAVX=3
