@@ -51,7 +51,7 @@ public class DendrySampler implements Sampler {
 
     // Branch and curvature parameters
     private final Sampler branchesSampler;
-    private final int defaultBranches;
+    private final double defaultBranches;
     private final double curvature;
 
     // Performance flags
@@ -86,6 +86,10 @@ public class DendrySampler implements Sampler {
         }
     }
 
+    // Maximum number of connections a single point can have when connecting segments to neighbors.
+    // Points that already have this many connections are skipped as candidates.
+    private static final int MAX_CONNECTIONS_PER_POINT = 3;
+
     // Slope calculation parameters for neighbor selection
     // DistanceFalloffPower: Use dist^power in denominator to prefer tighter connections
     private static final double DISTANCE_FALLOFF_POWER = 3.0;
@@ -112,6 +116,15 @@ public class DendrySampler implements Sampler {
      */
     private static final boolean ENABLE_SEGMENT_FILL_ALL = true;
 
+    /** Maximum number of elevation transition layers tracked per segment walk. */
+    private static final int MAX_ELEV_LAYERS = 8;
+
+    /**
+     * When true, the opposite-side cone sweep is computed in projectConeToBoxes (inside curve).
+     * When false, only the active tangent side is projected — sufficient when blot filling is enabled.
+     */
+    private static final boolean ENABLE_OPPOSITE_CONE = false;
+
     // Star sampling grid size (currently 3x3 grid per cell)
     private static final int STAR_SAMPLE_GRID_SIZE = 3;
     // Star sample boundary margin (fraction of cell size)
@@ -119,7 +132,6 @@ public class DendrySampler implements Sampler {
 
     // Spline tangent parameters
     private final double tangentAngle;    // Max angle deviation (radians)
-    private final double tangentStrength; // Tangent length as fraction of segment length
 
     // Slope-based tangent alignment parameters
     private final double slopeWhenStraight; // Slope threshold for full tangent alignment (0-1)
@@ -134,11 +146,16 @@ public class DendrySampler implements Sampler {
     private final double defaultRiverwidth;      // Default river width when no sampler
     private final Sampler borderwidthSampler;   // Sampler for border width around rivers
     private final double defaultBorderwidth;    // Default border width when no sampler
-    private static final double RIVER_WIDTH_FALLOFF = 0.6;  // River width reduction per level
+    private final double riverWidthFalloff;  // River width reduction per level
+    private volatile boolean warnedRiverwidth = false;
+    private volatile boolean warnedBorderwidth = false;
 
     // PIXEL_RIVER parameters
     private final double max;         // Maximum expected elevation for normalization
     private final double maxDistGrid; // Maximum distance in grid coordinates (maxDist / gridsize)
+    private final double maxDistPrune; // Maximum distance in grid coordinates (maxDist / gridsize)
+    private final double heightChangeMaxDist;     // Max world-unit distance for distance-to-change nibble
+    private final double heightChangeMaxDistGrid; // heightChangeMaxDist / gridsize
 
     // Cache configuration
     private static final int MAX_PIXEL_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB max for pixel cache
@@ -156,6 +173,14 @@ public class DendrySampler implements Sampler {
     // Pixel cache statistics (for debugging cache performance)
     private final AtomicLong pixelCacheHits = new AtomicLong(0);
     private final AtomicLong pixelCacheMisses = new AtomicLong(0);
+
+    // Chunk build phase timing — always collected for BigChunk types, reported via getChunkBuildReport()
+    private final AtomicLong chunkFarSegCollectNs  = new AtomicLong(0); // collectSegments in far phase
+    private final AtomicLong chunkFarCacheFillNs   = new AtomicLong(0); // computeFarCache grid fill
+    private final AtomicLong chunkMainSegCollectNs = new AtomicLong(0); // collectSegments in main phase
+    private final AtomicLong chunkMainRasterNs     = new AtomicLong(0); // prune+sort+sampleSegment
+    private final AtomicLong chunksFarBuilt        = new AtomicLong(0);
+    private final AtomicLong chunksMainBuilt       = new AtomicLong(0);
 
     /**
      * Pixel data for a single cached point along a segment.
@@ -272,19 +297,21 @@ public class DendrySampler implements Sampler {
                          double slope, double gridsize,
                          DendryReturnType returnType,
                          Sampler controlSampler, long salt,
-                         Sampler branchesSampler, int defaultBranches,
+                         Sampler branchesSampler, double defaultBranches,
                          double curvature,
                          boolean useParallel,
                          boolean debugTiming, int parallelThreshold,
                          int ConstellationScale, ConstellationShape constellationShape,
-                         double tangentAngle, double tangentStrength,
+                         double tangentAngle,
                          double cachepixels,
                          double slopeWhenStraight, double lowestSlopeCutoff,
                          int debug,
                          Sampler riverwidthSampler, double defaultRiverwidth,
                          Sampler borderwidthSampler, double defaultBorderwidth,
+                         double riverWidthFalloff,
                          double max, double maxDist,
-                         int maxSegmentsPerLevel) {
+                         int maxSegmentsPerLevel,
+                         double heightChangeMaxDist) {
         this.resolution = resolution;
         this.epsilon = epsilon;
         this.slope = slope;
@@ -302,7 +329,6 @@ public class DendrySampler implements Sampler {
         this.ConstellationScale = ConstellationScale;
         this.constellationShape = constellationShape;
         this.tangentAngle = tangentAngle;
-        this.tangentStrength = tangentStrength;
         this.cachepixels = cachepixels;
         this.slopeWhenStraight = slopeWhenStraight;
         this.lowestSlopeCutoff = lowestSlopeCutoff;
@@ -311,9 +337,13 @@ public class DendrySampler implements Sampler {
         this.defaultRiverwidth = defaultRiverwidth;
         this.borderwidthSampler = borderwidthSampler;
         this.defaultBorderwidth = defaultBorderwidth;
+        this.riverWidthFalloff = riverWidthFalloff;
         this.max = max;
         this.maxSegmentsPerLevel = maxSegmentsPerLevel;
         this.maxDistGrid = maxDist / gridsize;  // Convert from sampler to grid coordinates
+        this.maxDistPrune = (defaultBorderwidth+defaultRiverwidth) / gridsize;  // Convert from sampler to grid coordinates
+        this.heightChangeMaxDist = heightChangeMaxDist;
+        this.heightChangeMaxDistGrid = heightChangeMaxDist / gridsize;
 
         // Calculate pixel grid size
         if (cachepixels > 0) {
@@ -331,7 +361,10 @@ public class DendrySampler implements Sampler {
         }
 
         // Initialize PIXEL_RIVER caches only when using BigChunk-based return types
-        if (returnType == DendryReturnType.PIXEL_RIVER || returnType == DendryReturnType.PIXEL_RIVER_CTRL) {
+        if (returnType == DendryReturnType.PIXEL_RIVER || returnType == DendryReturnType.PIXEL_RIVER_CTRL
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR2
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM) {
             this.segmentListCache = new SegmentListCache();
             this.bigChunkCache = new BigChunkCache();
         } else {
@@ -343,20 +376,51 @@ public class DendrySampler implements Sampler {
             LOGGER.info("DendrySampler initialized with: resolution={}, gridsize={}, useParallel={}, useSplines={}, parallelThreshold={}, cachepixels={}, pixelGridSize={}",
                 resolution, gridsize, useParallel, useSplines, parallelThreshold, cachepixels, pixelGridSize);
         }
+
+        warnUnusedParams(returnType);
+    }
+
+    private void warnUnusedParams(DendryReturnType returnType) {
+        boolean usesBigChunk = (returnType == DendryReturnType.PIXEL_RIVER
+                || returnType == DendryReturnType.PIXEL_RIVER_CTRL
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR2
+                || returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM);
+        boolean usesPixelCache = (returnType == DendryReturnType.PIXEL_ELEVATION
+                || returnType == DendryReturnType.PIXEL_LEVEL
+                || returnType == DendryReturnType.PIXEL_DEBUG
+                || returnType == DendryReturnType.PIXEL_RIVER_LEGACY);
+        boolean usesRiverWidth = usesBigChunk || returnType == DendryReturnType.PIXEL_RIVER_LEGACY;
+
+        if (!usesBigChunk && !usesPixelCache && cachepixels > 0) {
+            LOGGER.warn("Parameter 'cachepixels' is set ({}) but not used by return type {}", cachepixels, returnType);
+        }
+        if (!usesRiverWidth) {
+            if (riverwidthSampler != null) {
+                LOGGER.warn("Parameter 'riverwidth' sampler is set but not used by return type {}", returnType);
+            }
+            if (defaultRiverwidth != 16.0) {
+                LOGGER.warn("Parameter 'default-riverwidth' is set ({}) but not used by return type {}", defaultRiverwidth, returnType);
+            }
+            if (borderwidthSampler != null) {
+                LOGGER.warn("Parameter 'borderwidth' sampler is set but not used by return type {}", returnType);
+            }
+            if (defaultBorderwidth != 20.0) {
+                LOGGER.warn("Parameter 'default-borderwidth' is set ({}) but not used by return type {}", defaultBorderwidth, returnType);
+            }
+        }
+        if (!usesBigChunk) {
+            if (max != 2.0) {
+                LOGGER.warn("Parameter 'max' is set ({}) but not used by return type {}", max, returnType);
+            }
+            if (Math.abs(maxDistGrid * gridsize - 150.0) > 0.01) {
+                LOGGER.warn("Parameter 'max-dist' is set ({}) but not used by return type {}", maxDistGrid * gridsize, returnType);
+            }
+        }
     }
 
     private static long packKey(int x, int y) {
         return ((long) x << 32) | (y & 0xFFFFFFFFL);
-    }
-
-    private int computeBranchCount(int cellX, int cellY) {
-        if (branchesSampler == null) {
-            return defaultBranches;
-        }
-        double centerX = (cellX + 0.5) * gridsize;
-        double centerY = (cellY + 0.5) * gridsize;
-        int branches = (int) Math.round(branchesSampler.getSample(salt, centerX, centerY));
-        return Math.max(1, Math.min(8, branches));
     }
 
     @Override
@@ -372,6 +436,12 @@ public class DendrySampler implements Sampler {
             result = evaluateWithBigChunkDistance(normalizedX, normalizedZ);
         } else if (returnType == DendryReturnType.PIXEL_RIVER_CTRL) {
             result = evaluateWithBigChunkElevation(normalizedX, normalizedZ);
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR) {
+            result = evaluateWithBigChunkFarDistance(normalizedX, normalizedZ);
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR2) {
+            result = evaluateWithBigChunkFarDistance2(normalizedX, normalizedZ);
+        } else if (returnType == DendryReturnType.PIXEL_RIVER_FAR_NORM) {
+            result = evaluateWithBigChunkFarDistNorm(normalizedX, normalizedZ);
         }
         // Use pixel cache for PIXEL_ELEVATION and PIXEL_LEVEL return types
         else if (usesPixelCache()) {
@@ -403,9 +473,28 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double y, double z) {
-        // When returnType is PIXEL_RIVER and y == 1.0, return elevation instead of distance
-        if (returnType == DendryReturnType.PIXEL_RIVER && y == 1.0) {
-            return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
+        // NaN trigger: if x or z is NaN, interpret y as a level and return the
+        // river width falloff factor for that level
+        if (Double.isNaN(x) || Double.isNaN(z)) {
+            return Math.pow(riverWidthFalloff, y);
+        }
+        if (returnType == DendryReturnType.PIXEL_RIVER) {
+            if (y >= 3.0) {
+                // 3<=y<4: quantized distance to next elevation change (world units)
+                return evaluateWithBigChunkDistChange(x / gridsize, z / gridsize);
+            } else if (y >= 2.0) {
+                // 2<=y<3: segment level (0-15)
+                return evaluateWithBigChunkLevel(x / gridsize, z / gridsize);
+            } else if (y > 0.0) {
+                // 0<y<2: elevation (existing behavior)
+                return evaluateWithBigChunkElevation(x / gridsize, z / gridsize);
+            } else if (y <= -3.0) {
+                return evaluateWithBigChunkFarDistNorm(x / gridsize, z / gridsize);
+            } else if (y <= -2.0) {
+                return evaluateWithBigChunkFarDistance2(x / gridsize, z / gridsize);
+            } else if (y < 0.0) {
+                return evaluateWithBigChunkFarDistance(x / gridsize, z / gridsize);
+            }
         }
         return getSample(seed, x, z);
     }
@@ -431,7 +520,8 @@ public class DendrySampler implements Sampler {
         SegmentList asterismBase = generateAsterism(cell1);
         // Prune asterism to query cell - clips segments at cell boundary with EDGE points
         SegmentList asterismPruned = pruneSegmentsToCell(asterismBase, cell1);
-
+        // Force all point elevations down to 0 value
+        asterismPruned.forceAllPointElevations(0);
         if (resolution == 0) {
             return asterismPruned;
         }
@@ -935,6 +1025,7 @@ public class DendrySampler implements Sampler {
                     for (int pj = 0; pj < probeGrid; pj++) {
                         double px = probeMinX+(pi/(probeGrid-1))*probeRatio*gridSpacing;
                         double py = probeMinY+(pj/(probeGrid-1))*probeRatio*gridSpacing;
+                        //double elev = Math.max(evaluateControlFunction(px, py), (1/254.0 * max));
                         double elev = evaluateControlFunction(px, py);
                         if (elev < lowestElev) {
                             lowestElev = elev;
@@ -1895,7 +1986,6 @@ public class DendrySampler implements Sampler {
         SegmentListConfig config = new SegmentListConfig(salt)
             .withSplines(useSplines)
             .withCurvature(curvature)
-            .withTangentStrength(tangentStrength)
             .withMaxTwistAngle(tangentAngle)
             .withSlopeWithoutTwist(slopeWhenStraight);
         SegmentList result = new SegmentList(config);
@@ -1903,13 +1993,20 @@ public class DendrySampler implements Sampler {
 
         // Function setup: determine cell-specific distances
         double gridSpacing = getGridSpacingForLevel(level);
-        double mergeDistance = MERGE_POINT_SPACING * getGridSpacingForLevel(level+1);
+        double mergeDistance = Double.MAX_VALUE;
+        if(level==0){
+            mergeDistance = MERGE_POINT_SPACING * getGridSpacingForLevel(level+1);
+        }
+        else {
+        //else if (level<3){
+            mergeDistance = MERGE_POINT_SPACING * gridSpacing;
+        }
         double maxSegmentDistance = Double.MAX_VALUE;
         if(level >0){
             maxSegmentDistance = MAX_POINT_SEGMENT_DISTANCE * gridSpacing;
         }
         else{
-            mergeDistance = mergeDistance/2;
+            //mergeDistance = mergeDistance;
         }
 
         // DEBUG 40: Track point counts at each stage for the highest level
@@ -1941,7 +2038,18 @@ public class DendrySampler implements Sampler {
         }
         afterProbabilisticCount = cleanedPoints.size();
 
-        if (cleanedPoints.isEmpty()) return result;
+        // Step 3.5: Hard-remove surviving points where branchesSampler returns <= 0
+        if (level > 0 && branchesSampler != null) {
+            cleanedPoints = removeZeroProbabilityPoints(cleanedPoints);
+        }
+
+        if (cleanedPoints.isEmpty()) {
+            // No points at this level — preserve previous level segments
+            if (level > 0 && previousLevelSegments != null) {
+                return previousLevelSegments.copy();
+            }
+            return result;
+        }
 
         // Step 4: Create UnconnectedPoints from cleaned points
         UnconnectedPoints unconnected = UnconnectedPoints.fromPoints(cleanedPoints, PointType.ORIGINAL, level);
@@ -2084,21 +2192,99 @@ public class DendrySampler implements Sampler {
                 segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
             }
 
-            // Check for crossings between newly added segments and pre-existing ones
+            // Check for crossings and proximity between newly added segments and pre-existing ones.
+            // Uses spline-sampled points for both new and existing segments to catch curved overlaps.
             boolean hasCrossing = false;
             List<SegmentIdx> allSegs = segList.getSegments();
+            SegmentListConfig segCfg = segList.getConfig();
+            boolean splineProximity = segCfg.useSplines && segCfg.curvature > 0;
+            // Min separation: 2x the river width at this level (in grid coordinates)
+            double minSeparation = defaultRiverwidth / gridsize * Math.pow(riverWidthFalloff, level) * 2;
+            double minSeparationSq = minSeparation * minSeparation;
+            // Sample spacing for proximity: 1/3 of min separation (same principle as point removal)
+            double proxySampleSpacing = minSeparation / 3.0;
+
             for (int i = segsBefore; i < segList.getSegmentCount() && !hasCrossing; i++) {
                 SegmentIdx newSeg = allSegs.get(i);
-                Point2D newA = newSeg.getSrt(segList).projectZ();
-                Point2D newB = newSeg.getEnd(segList).projectZ();
+                Point3D newSrt = newSeg.getSrt(segList);
+                Point3D newEnd = newSeg.getEnd(segList);
+                Point2D newA = newSrt.projectZ();
+                Point2D newB = newEnd.projectZ();
+                double newLen = newA.distanceTo(newB);
+                int newSamples = Math.max(1, (int) Math.ceil(newLen / proxySampleSpacing));
+                Point2D[] newSamplePts = new Point2D[newSamples + 1];
+                newSamplePts[0] = newA;
+                newSamplePts[newSamples] = newB;
+                if (splineProximity && newSeg.tangentSrt != null && newSeg.tangentEnd != null) {
+                    double ts = newLen * segCfg.curvature;
+                    for (int s = 1; s < newSamples; s++) {
+                        double t = (double) s / newSamples;
+                        double t2 = t * t, t3 = t2 * t;
+                        newSamplePts[s] = new Point2D(
+                            (2*t3-3*t2+1)*newSrt.x + (t3-2*t2+t)*newSeg.tangentSrt.x*ts
+                            + (-2*t3+3*t2)*newEnd.x + (t3-t2)*newSeg.tangentEnd.x*ts,
+                            (2*t3-3*t2+1)*newSrt.y + (t3-2*t2+t)*newSeg.tangentSrt.y*ts
+                            + (-2*t3+3*t2)*newEnd.y + (t3-t2)*newSeg.tangentEnd.y*ts);
+                    }
+                } else {
+                    for (int s = 1; s < newSamples; s++) {
+                        double t = (double) s / newSamples;
+                        newSamplePts[s] = new Point2D(
+                            MathUtils.lerp(newA.x, newB.x, t), MathUtils.lerp(newA.y, newB.y, t));
+                    }
+                }
+
                 for (int j = 0; j < segsBefore; j++) {
                     SegmentIdx existing = allSegs.get(j);
                     Point2D exA = existing.getSrt(segList).projectZ();
                     Point2D exB = existing.getEnd(segList).projectZ();
+                    // Crossing check (linear — sufficient for intersection detection)
                     if (segmentsIntersect(newA, newB, exA, exB)) {
                         hasCrossing = true;
                         break;
                     }
+                    // Proximity check: skip segments sharing an endpoint
+                    if (newSeg.srtIdx == existing.srtIdx || newSeg.srtIdx == existing.endIdx ||
+                        newSeg.endIdx == existing.srtIdx || newSeg.endIdx == existing.endIdx) {
+                        continue;
+                    }
+                    // Sample existing segment spline
+                    Point3D exSrt = existing.getSrt(segList);
+                    Point3D exEnd = existing.getEnd(segList);
+                    double exLen = exA.distanceTo(exB);
+                    int exSamples = Math.max(1, (int) Math.ceil(exLen / proxySampleSpacing));
+                    Point2D[] exSamplePts = new Point2D[exSamples + 1];
+                    exSamplePts[0] = exA;
+                    exSamplePts[exSamples] = exB;
+                    if (splineProximity && existing.tangentSrt != null && existing.tangentEnd != null) {
+                        double ts = exLen * segCfg.curvature;
+                        for (int s = 1; s < exSamples; s++) {
+                            double t = (double) s / exSamples;
+                            double t2 = t * t, t3 = t2 * t;
+                            exSamplePts[s] = new Point2D(
+                                (2*t3-3*t2+1)*exSrt.x + (t3-2*t2+t)*existing.tangentSrt.x*ts
+                                + (-2*t3+3*t2)*exEnd.x + (t3-t2)*existing.tangentEnd.x*ts,
+                                (2*t3-3*t2+1)*exSrt.y + (t3-2*t2+t)*existing.tangentSrt.y*ts
+                                + (-2*t3+3*t2)*exEnd.y + (t3-t2)*existing.tangentEnd.y*ts);
+                        }
+                    } else {
+                        for (int s = 1; s < exSamples; s++) {
+                            double t = (double) s / exSamples;
+                            exSamplePts[s] = new Point2D(
+                                MathUtils.lerp(exA.x, exB.x, t), MathUtils.lerp(exA.y, exB.y, t));
+                        }
+                    }
+                    // Check each new sample point against each existing polyline segment
+                    for (Point2D np : newSamplePts) {
+                        for (int es = 0; es < exSamplePts.length - 1; es++) {
+                            if (pointToSegmentDistanceSquared(np, exSamplePts[es], exSamplePts[es+1]) < minSeparationSq) {
+                                hasCrossing = true;
+                                break;
+                            }
+                        }
+                        if (hasCrossing) break;
+                    }
+                    if (hasCrossing) break;
                 }
             }
             if (hasCrossing) {
@@ -2271,7 +2457,7 @@ public class DendrySampler implements Sampler {
         for (int i = 0; i < segList.getPointCount(); i++) {
             NetworkPoint candidate = segList.getPoint(i);
             if (candidate.pointType == PointType.EDGE) continue;
-            if (candidate.connections >= 5) continue;
+            if (candidate.connections >= MAX_CONNECTIONS_PER_POINT) continue;
 
             Point2D candidatePos = candidate.position.projectZ();
             double dist = sourcePos.distanceTo(candidatePos);
@@ -2314,28 +2500,76 @@ public class DendrySampler implements Sampler {
 
 
     /**
-     * Remove points that are within merge distance of any lower-level segment.
+     * Remove points that are within merge distance of any lower-level segment spline.
+     * Uses Hermite spline evaluation (when curvature is enabled) to accurately account
+     * for curved segments, rather than linear approximation.
      */
     private List<Point3D> removePointsNearSegments(List<Point3D> points, SegmentList segmentList, double mergeDistance) {
         List<Point3D> result = new ArrayList<>();
         double mergeDistSq = mergeDistance * mergeDistance;
 
+        // Pre-sample spline positions for all segments to avoid re-evaluating per point.
+        // Sample spacing must be <= mergeDistance/3 so no point on the spline can be
+        // further than mergeDistance from the nearest polyline segment.
+        SegmentListConfig segConfig = segmentList.getConfig();
+        boolean useSplines = segConfig.useSplines && segConfig.curvature > 0;
+        double maxSampleSpacing = mergeDistance / 3.0;
+
+        List<Point2D[]> segmentSamples = new ArrayList<>();
+        for (SegmentIdx seg : segmentList.getSegments()) {
+            Point3D srtPos = seg.getSrt(segmentList);
+            Point3D endPos = seg.getEnd(segmentList);
+            double segLength = srtPos.projectZ().distanceTo(endPos.projectZ());
+
+            // Compute number of interior samples based on segment length vs rejection distance
+            int samplesPerSegment = Math.max(1, (int) Math.ceil(segLength / maxSampleSpacing) - 1);
+            Point2D[] samples = new Point2D[samplesPerSegment + 2]; // include endpoints
+            samples[0] = srtPos.projectZ();
+            samples[samplesPerSegment + 1] = endPos.projectZ();
+
+            if (useSplines && seg.tangentSrt != null && seg.tangentEnd != null) {
+                double tangentScale = segLength * segConfig.curvature;
+                for (int s = 1; s <= samplesPerSegment; s++) {
+                    double t = (double) s / (samplesPerSegment + 1);
+                    double t2 = t * t;
+                    double t3 = t2 * t;
+                    double h00 = 2 * t3 - 3 * t2 + 1;
+                    double h10 = t3 - 2 * t2 + t;
+                    double h01 = -2 * t3 + 3 * t2;
+                    double h11 = t3 - t2;
+                    double x = h00 * srtPos.x + h10 * seg.tangentSrt.x * tangentScale
+                             + h01 * endPos.x + h11 * seg.tangentEnd.x * tangentScale;
+                    double y = h00 * srtPos.y + h10 * seg.tangentSrt.y * tangentScale
+                             + h01 * endPos.y + h11 * seg.tangentEnd.y * tangentScale;
+                    samples[s] = new Point2D(x, y);
+                }
+            } else {
+                // Linear fallback
+                for (int s = 1; s <= samplesPerSegment; s++) {
+                    double t = (double) s / (samplesPerSegment + 1);
+                    samples[s] = new Point2D(
+                        MathUtils.lerp(srtPos.x, endPos.x, t),
+                        MathUtils.lerp(srtPos.y, endPos.y, t));
+                }
+            }
+            segmentSamples.add(samples);
+        }
+
+        // Check each candidate point against all sampled spline positions
         for (Point3D point : points) {
             boolean tooClose = false;
             Point2D p2d = point.projectZ();
 
-            for (SegmentIdx seg : segmentList.getSegments()) {
-                // Find closest point on segment using linear interpolation
-                Point3D srtPos = seg.getSrt(segmentList);
-                Point3D endPos = seg.getEnd(segmentList);
-                Point2D segA = srtPos.projectZ();
-                Point2D segB = endPos.projectZ();
-                double distSq = pointToSegmentDistanceSquared(p2d, segA, segB);
-
-                if (distSq < mergeDistSq) {
-                    tooClose = true;
-                    break;
+            for (Point2D[] samples : segmentSamples) {
+                // Check distance to each polyline segment between consecutive samples
+                for (int s = 0; s < samples.length - 1; s++) {
+                    double distSq = pointToSegmentDistanceSquared(p2d, samples[s], samples[s + 1]);
+                    if (distSq < mergeDistSq) {
+                        tooClose = true;
+                        break;
+                    }
                 }
+                if (tooClose) break;
             }
 
             if (!tooClose) {
@@ -2415,8 +2649,10 @@ public class DendrySampler implements Sampler {
             double baseRemovalProbability = 0.0;
             if (branchesSampler != null) {
                 double branchProbability = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
-                branchProbability = Math.max(0, Math.min(1, branchProbability / 8.0));  // Normalize to [0,1]
                 baseRemovalProbability = 1.0 - branchProbability;
+            }
+            else{
+                baseRemovalProbability = 1.0 - defaultBranches;
             }
 
             // Distance-based removal probability
@@ -2454,11 +2690,20 @@ public class DendrySampler implements Sampler {
         return result;
     }
 
-
+    private List<Point3D> removeZeroProbabilityPoints(List<Point3D> points) {
+        List<Point3D> result = new ArrayList<>();
+        for (Point3D point : points) {
+            double sample = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
+            if (sample > 0.0) {
+                result.add(point);
+            }
+        }
+        return result;
+    }
 
     /**
      * Calculate river width for a given level.
-     * River width decreases by RIVER_WIDTH_FALLOFF (0.6) per level.
+     * River width decreases by riverWidthFalloff per level.
      * @param level The segment level (0-5)
      * @param x World X coordinate for sampling
      * @param y World Y coordinate for sampling
@@ -2480,10 +2725,18 @@ public class DendrySampler implements Sampler {
         double baseWidthSampler = (riverwidthSampler != null)
             ? riverwidthSampler.getSample(salt, samplerX, 0, samplerY)
             : defaultRiverwidth;
+        if (riverwidthSampler != null && baseWidthSampler > defaultRiverwidth) {
+            if (!warnedRiverwidth) {
+                warnedRiverwidth = true;
+                LOGGER.warn("riverwidthSampler returned {} which exceeds default-riverwidth {}; clamping",
+                            baseWidthSampler, defaultRiverwidth);
+            }
+            baseWidthSampler = defaultRiverwidth;
+        }
 
         // Convert to grid coordinates and apply level falloff
         double baseWidthGrid = baseWidthSampler / gridsize;
-        return baseWidthGrid * Math.pow(RIVER_WIDTH_FALLOFF, level);
+        return baseWidthGrid * Math.pow(riverWidthFalloff, level);
     }
 
 
@@ -2624,6 +2877,68 @@ public class DendrySampler implements Sampler {
         int cacheSize = pixelCache != null ? pixelCache.size() : 0;
         return String.format("hits=%d, misses=%d, hitRate=%.1f%%, cachedCells=%d",
             hits, misses, hitRate, cacheSize);
+    }
+
+    /**
+     * Return a breakdown of chunk build time across the two cache layers.
+     * segCollect = time in collectSegmentsForBigChunkFar (reads segment lists from cache,
+     *              or calls computeAllSegmentsForCell on a cache miss — the expensive path).
+     * farFill    = time in computeFarCache (64x64 far grid distance scan).
+     * raster     = time in prune + sort + sampleSegmentAlongSpline (block rasterization).
+     */
+    public String getChunkBuildReport() {
+        long farChunks  = chunksFarBuilt.get();
+        long mainChunks = chunksMainBuilt.get();
+        if (farChunks == 0 && mainChunks == 0) return "No chunks built";
+
+        long segFar  = chunkFarSegCollectNs.get()  / 1_000_000;
+        long fill    = chunkFarCacheFillNs.get()   / 1_000_000;
+        long segMain = chunkMainSegCollectNs.get()  / 1_000_000;
+        long raster  = chunkMainRasterNs.get()     / 1_000_000;
+
+        if (farChunks > 0 && mainChunks == 0) {
+            return String.format(
+                "FAR chunks=%d | segCollect=%dms (avg %dms) | farFill=%dms (avg %dms)",
+                farChunks,
+                segFar,  segFar  / farChunks,
+                fill,    fill    / farChunks);
+        } else if (mainChunks > 0 && farChunks == 0) {
+            return String.format(
+                "MAIN chunks=%d | segCollect=%dms (avg %dms) | raster=%dms (avg %dms)",
+                mainChunks,
+                segMain, segMain / mainChunks,
+                raster,  raster  / mainChunks);
+        } else {
+            return String.format(
+                "FAR chunks=%d segCollect=%dms farFill=%dms | MAIN chunks=%d segCollect=%dms raster=%dms",
+                farChunks,  segFar,  fill,
+                mainChunks, segMain, raster);
+        }
+    }
+
+    /** Reset chunk build phase timing (useful between benchmark runs). */
+    public void resetChunkBuildStats() {
+        chunkFarSegCollectNs.set(0);
+        chunkFarCacheFillNs.set(0);
+        chunkMainSegCollectNs.set(0);
+        chunkMainRasterNs.set(0);
+        chunksFarBuilt.set(0);
+        chunksMainBuilt.set(0);
+        if (segmentListCache != null) segmentListCache.resetStats();
+    }
+
+    /** Return segment list cache stats (hit/miss rates reveal unexpected recomputation). */
+    public String getSegmentCacheStats() {
+        return segmentListCache != null ? segmentListCache.getStats() : "n/a (no segment cache)";
+    }
+
+    /**
+     * Return BigChunk cache stats: chunk count, blocks-vs-far breakdown, estimated heap.
+     * Distinguishes PIXEL_RIVER chunks (blocks allocated, ~1 MB each) from PIXEL_RIVER_FAR
+     * chunks (blocks null, ~64 KB each) so the memory difference is visible.
+     */
+    public String getBigChunkCacheStats() {
+        return bigChunkCache != null ? bigChunkCache.getStats() : "n/a (no BigChunk cache)";
     }
 
     /**
@@ -2783,7 +3098,7 @@ public class DendrySampler implements Sampler {
             boolean useSpline = USE_BSPLINE_PIXEL_SAMPLING && seg.hasTangents();
 
             // Precompute tangent scale for Hermite interpolation
-            double tangentScale = useSpline ? segLength * tangentStrength : 0;
+            double tangentScale = useSpline ? segLength * curvature : 0;
 
             for (int i = 0; i <= numSamples; i++) {
                 double t = (double) i / numSamples;
@@ -2918,11 +3233,19 @@ public class DendrySampler implements Sampler {
         double baseWidth;
         if (riverwidthSampler != null) {
             baseWidth = riverwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+            if (baseWidth > defaultRiverwidth) {
+                if (!warnedRiverwidth) {
+                    warnedRiverwidth = true;
+                    LOGGER.warn("riverwidthSampler returned {} which exceeds default-riverwidth {}; clamping",
+                                baseWidth, defaultRiverwidth);
+                }
+                baseWidth = defaultRiverwidth;
+            }
         } else {
             baseWidth = defaultRiverwidth;
         }
         // Apply level-based falloff: width * (0.6^level)
-        double levelWidth = baseWidth * Math.pow(RIVER_WIDTH_FALLOFF, level);
+        double levelWidth = baseWidth * Math.pow(riverWidthFalloff, level);
         // Minimum width is 2x pixel resolution
         double minWidth = 2.0 * cachepixels;
         return Math.max(levelWidth, minWidth) / gridsize;  // Normalize to cell units
@@ -2938,6 +3261,14 @@ public class DendrySampler implements Sampler {
         double width;
         if (borderwidthSampler != null) {
             width = borderwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+            if (width > defaultBorderwidth) {
+                if (!warnedBorderwidth) {
+                    warnedBorderwidth = true;
+                    LOGGER.warn("borderwidthSampler returned {} which exceeds default-borderwidth {}; clamping",
+                                width, defaultBorderwidth);
+                }
+                width = defaultBorderwidth;
+            }
         } else {
             width = defaultBorderwidth;
         }
@@ -3145,27 +3476,46 @@ public class DendrySampler implements Sampler {
      * @param gridY Grid Y coordinate (normalized)
      * @return Distance value in sampler coordinates
      */
-    /**
-     * Look up the BigChunk block at the given grid coordinates.
-     */
-    private BigChunk.BigChunkBlock getBigChunkBlock(double gridX, double gridY) {
-        BigChunk chunk = getOrCreateBigChunk(gridX, gridY);
-        double cachepixelsGrid = cachepixels / gridsize;
-        int blockX = Math.max(0, Math.min(255, gridToBlockIndex(gridX, chunk.gridOriginX, cachepixelsGrid)));
-        int blockY = Math.max(0, Math.min(255, gridToBlockIndex(gridY, chunk.gridOriginY, cachepixelsGrid)));
-        return chunk.getBlock(blockX, blockY);
-    }
+    /** Clamp a block index to [0, 255]. */
+    private static int clampBlock(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
     private double evaluateWithBigChunkDistance(double gridX, double gridY) {
-        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
-        double distQuantizeRes = 255.0 / maxDistGrid;
-        return (block.getDistanceUnsigned() / distQuantizeRes) * gridsize;
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        int distU8 = chunk.getBlockDistance(bx, by);
+        if (distU8 <= 127) {
+            return (distU8 / 127.0) - 1.0;   // inside river: [0→-1, 127→≈0]
+        } else {
+            return (distU8 - 128) / 127.0;   // outside: [128→0, 255→1]
+        }
     }
 
     private double evaluateWithBigChunkElevation(double gridX, double gridY) {
-        BigChunk.BigChunkBlock block = getBigChunkBlock(gridX, gridY);
-        double elevQuantizeRes = 255.0 / max;
-        return block.getElevationUnsigned() / elevQuantizeRes;
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        return chunk.getBlockElevation(bx, by) / (255.0 / max);
+    }
+
+    /** Query segment level (high nibble). Returns 0-15, 15 = not available. */
+    private double evaluateWithBigChunkLevel(double gridX, double gridY) {
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        return chunk.getBlockLevelNibble(bx, by);
+    }
+
+    /** Query distance-to-elevation-change (low nibble). Returns world units. */
+    private double evaluateWithBigChunkDistChange(double gridX, double gridY) {
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, false, true);
+        double cpg = cachepixels / gridsize;
+        int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
+        int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
+        return chunk.getBlockDistChangeNibble(bx, by) / 15.0 * heightChangeMaxDist;
     }
 
     /**
@@ -3199,78 +3549,133 @@ public class DendrySampler implements Sampler {
     }
 
     /**
-     * Get or create a BigChunk for the specified grid coordinates.
-     * @param gridX Grid X coordinate (sampler X / gridsize)
-     * @param gridY Grid Y coordinate (sampler Y / gridsize)
-     * @return BigChunk containing the specified grid position
+     * Get or create a BigChunk for the specified grid coordinates, ensuring the requested
+     * cache layers are computed before returning.
+     *
+     * The two cache layers are computed independently and lazily:
+     *   needFar   — 64x64 far-distance cache (segments collected + far grid filled)
+     *   needBlocks — 256x256 block rasterization (blocks allocated + segments rasterized)
+     *
+     * Each layer is guarded by a double-checked synchronized block on the chunk object.
+     * They serialize on the same lock, which is acceptable since far-cache computation is
+     * typically much faster than block rasterization.
      */
-    private BigChunk getOrCreateBigChunk(double gridX, double gridY) {
-        // Convert grid coordinates to chunk coordinates
+    private BigChunk getOrEnsureBigChunk(double gridX, double gridY,
+                                          boolean needFar, boolean needBlocks) {
         int chunkX = gridToChunkCoord(gridX);
         int chunkY = gridToChunkCoord(gridY);
 
-        // Get grid origin of this chunk
-        double gridOriginX = chunkToGridCoord(chunkX);
-        double gridOriginY = chunkToGridCoord(chunkY);
+        BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY,
+                chunkToGridCoord(chunkX), chunkToGridCoord(chunkY));
 
-        // Get or create chunk from cache
-        BigChunk chunk = bigChunkCache.getOrCreate(chunkX, chunkY, gridOriginX, gridOriginY);
-
-        // Compute if not already done
-        if (!chunk.computed) {
-            computeBigChunk(chunk);
-            chunk.computed = true;
+        if (needFar && !chunk.farCacheComputed) {
+            synchronized (chunk) {
+                if (!chunk.farCacheComputed) {
+                    computeFarCachePhases(chunk);
+                    chunk.farCacheComputed = true;
+                }
+            }
         }
-
+        if (needBlocks && !chunk.blocksComputed) {
+            synchronized (chunk) {
+                if (!chunk.blocksComputed) {
+                    if (chunk.blockDistance == null) {
+                        chunk.allocateBlocks();
+                        bigChunkCache.notifyBlocksAllocated(chunk);
+                    }
+                    computeMainBlockPhases(chunk);
+                    chunk.blocksComputed = true;
+                }
+            }
+        }
         return chunk;
     }
 
     /**
-     * Compute all block values for a BigChunk.
-     * This is the main PIXEL_RIVER computation method.
-     * All coordinates are in grid coordinate space.
+     * Compute the 64x64 far-distance cache for this chunk (phases 1 + 2).
+     * Collects segments within maxDistGrid and fills the far cache grid.
+     * The 256x256 block rasterization is NOT performed here.
      */
-    private void computeBigChunk(BigChunk chunk) {
+    private void computeFarCachePhases(BigChunk chunk) {
         double chunkSizeGrid = getBigChunkSizeGrid();
 
-        // A. Collect all segments from nearby cells that could influence this chunk
+        List<Segment3D> farSegments = new ArrayList<>();
+        List<Integer> farLevels = new ArrayList<>();
+        List<Integer> farStartConns = new ArrayList<>();
+        List<Integer> farEndConns = new ArrayList<>();
+        List<Integer> farEndFlowLevels = new ArrayList<>();
+
+        long t0 = System.nanoTime();
+        collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
+                farStartConns, farEndConns, farEndFlowLevels);
+        long t1 = System.nanoTime();
+        computeFarCache(chunk, chunkSizeGrid, farSegments);
+        long t2 = System.nanoTime();
+
+        chunkFarSegCollectNs.addAndGet(t1 - t0);
+        chunkFarCacheFillNs.addAndGet(t2 - t1);
+        chunksFarBuilt.incrementAndGet();
+    }
+
+    /**
+     * Compute the 256x256 block rasterization for this chunk (phases 1 + 3-5).
+     * Collects and prunes segments, then rasterizes each segment into the block grid.
+     * chunk.blocks must be allocated before calling this method.
+     * The far cache is NOT computed here; it may be null/unset on return.
+     */
+    private void computeMainBlockPhases(BigChunk chunk) {
+        double chunkSizeGrid = getBigChunkSizeGrid();
+
+        List<Segment3D> farSegments = new ArrayList<>();
+        List<Integer> farLevels = new ArrayList<>();
+        List<Integer> farStartConns = new ArrayList<>();
+        List<Integer> farEndConns = new ArrayList<>();
+        List<Integer> farEndFlowLevels = new ArrayList<>();
+
+        long t0 = System.nanoTime();
+        collectSegmentsForBigChunkFar(chunk, chunkSizeGrid, farSegments, farLevels,
+                farStartConns, farEndConns, farEndFlowLevels);
+        long tSegDone = System.nanoTime();
+        chunkMainSegCollectNs.addAndGet(tSegDone - t0);
+
+        // Phase 3: Narrow prune — filter far segments down to maxDistPrune for detailed rendering
         List<Segment3D> segments = new ArrayList<>();
         List<Integer> levels = new ArrayList<>();
         List<Integer> startConns = new ArrayList<>();
         List<Integer> endConns = new ArrayList<>();
         List<Integer> endFlowLevels = new ArrayList<>();
 
-        collectSegmentsForBigChunk(chunk, chunkSizeGrid, segments, levels, startConns, endConns, endFlowLevels);
+        pruneSegmentsForBigChunk(chunk, chunkSizeGrid,
+                farSegments, farLevels, farStartConns, farEndConns, farEndFlowLevels,
+                segments, levels, startConns, endConns, endFlowLevels);
 
-        // B. Sort by level descending (highest level segments processed first)
+        validateSegmentEndpointElevations(segments, levels, chunk);
+
+        // Phase 4: Sort by level descending (highest level segments processed first)
         Integer[] sortedIndices = new Integer[segments.size()];
         for (int i = 0; i < sortedIndices.length; i++) sortedIndices[i] = i;
         java.util.Arrays.sort(sortedIndices, (a, b) -> Integer.compare(levels.get(b), levels.get(a)));
 
-        // C. Process each segment in sorted order
+        // Phase 5: Render each segment into the 256x256 block grid
+        long tRasterStart = System.nanoTime();
         for (int idx : sortedIndices) {
             sampleSegmentAlongSpline(segments.get(idx), levels.get(idx),
                 startConns.get(idx), endConns.get(idx), endFlowLevels.get(idx),
                 chunk, chunkSizeGrid);
         }
+        chunkMainRasterNs.addAndGet(System.nanoTime() - tRasterStart);
+        chunksMainBuilt.incrementAndGet();
     }
 
     /**
-     * Collect all segments from nearby cells that could influence the bigchunk.
-     * Segments are filtered to only include those within maxDistGrid of the chunk boundary.
+     * Collect all segments from nearby cells within maxDistGrid of the bigchunk (wide collection).
+     * Used for both far-distance cache computation and as input for the narrower prune step.
      * All coordinates are in grid coordinate space.
-     * @param chunk The BigChunk to collect segments for (chunk.gridOriginX/Y are in grid coordinates)
-     * @param chunkSizeGrid Size of chunk in grid coordinates
-     * @param outSegments Output list for segments
-     * @param outLevels Output list for segment levels (parallel to outSegments)
-     * @param outStartConns Output list for start endpoint connection counts
-     * @param outEndConns Output list for end endpoint connection counts
-     * @param outEndFlowLevel Output list: minimum level of a lower-level segment connected at end point, or -1 if none
      */
-    private void collectSegmentsForBigChunk(BigChunk chunk, double chunkSizeGrid,
-                                           List<Segment3D> outSegments, List<Integer> outLevels,
-                                           List<Integer> outStartConns, List<Integer> outEndConns,
-                                           List<Integer> outEndFlowLevel) {
+    private void collectSegmentsForBigChunkFar(BigChunk chunk, double chunkSizeGrid,
+                                               List<Segment3D> outSegments, List<Integer> outLevels,
+                                               List<Integer> outStartConns, List<Integer> outEndConns,
+                                               List<Integer> outEndFlowLevel) {
         // Determine the range of cells that could contain relevant segments
         // Grid coordinates are already normalized (sampler / gridsize), so cell boundaries are at integer values
         double minGridX = chunk.gridOriginX - maxDistGrid;
@@ -3348,6 +3753,310 @@ public class DendrySampler implements Sampler {
     }
 
     /**
+     * Prune the wide-collected far segments down to those within maxDistPrune of the chunk.
+     * Avoids redundant cell scanning by filtering from the already-collected far segment list.
+     */
+    private void pruneSegmentsForBigChunk(BigChunk chunk, double chunkSizeGrid,
+                                          List<Segment3D> farSegments, List<Integer> farLevels,
+                                          List<Integer> farStartConns, List<Integer> farEndConns,
+                                          List<Integer> farEndFlowLevels,
+                                          List<Segment3D> outSegments, List<Integer> outLevels,
+                                          List<Integer> outStartConns, List<Integer> outEndConns,
+                                          List<Integer> outEndFlowLevels) {
+        for (int i = 0; i < farSegments.size(); i++) {
+            Segment3D seg = farSegments.get(i);
+            boolean srtNear = isPointNearChunk(seg.srt, chunk, chunkSizeGrid, maxDistPrune);
+            boolean endNear = isPointNearChunk(seg.end, chunk, chunkSizeGrid, maxDistPrune);
+
+            if (!srtNear && !endNear) {
+                Point3D mid = new Point3D(
+                    (seg.srt.x + seg.end.x) * 0.5,
+                    (seg.srt.y + seg.end.y) * 0.5,
+                    (seg.srt.z + seg.end.z) * 0.5);
+                if (isPointNearChunk(mid, chunk, chunkSizeGrid, maxDistPrune)) {
+                    srtNear = true;
+                }
+            }
+
+            if (srtNear || endNear) {
+                outSegments.add(seg);
+                outLevels.add(farLevels.get(i));
+                outStartConns.add(farStartConns.get(i));
+                outEndConns.add(farEndConns.get(i));
+                outEndFlowLevels.add(farEndFlowLevels.get(i));
+            }
+        }
+    }
+
+    /**
+     * Validate that all segment endpoints sharing the same (x,y) position have the same elevation (z).
+     * Connected segments must agree on elevation at their shared junction point; a mismatch indicates
+     * a bug in segment generation that would produce visible discontinuities.
+     */
+    private void validateSegmentEndpointElevations(List<Segment3D> segments, List<Integer> levels, BigChunk chunk) {
+        // Map from (x,y) position key to (first seen elevation, segment index, endpoint label)
+        Map<Long, double[]> positionElevations = new HashMap<>();
+
+        for (int i = 0; i < segments.size(); i++) {
+            Segment3D seg = segments.get(i);
+            int level = levels.get(i);
+
+            // Check both endpoints
+            for (int ep = 0; ep < 2; ep++) {
+                Point3D pt = (ep == 0) ? seg.srt : seg.end;
+                String label = (ep == 0) ? "srt" : "end";
+
+                // Quantize position to detect co-located points (using grid-scale tolerance)
+                // Use a resolution fine enough to catch true co-located points but not false positives
+                long keyX = Math.round(pt.x * 1e6);
+                long keyY = Math.round(pt.y * 1e6);
+                long key = keyX * 1_000_000_007L + keyY;
+
+                double[] existing = positionElevations.get(key);
+                if (existing == null) {
+                    // First time seeing this position: store [elevation, segIndex, endpoint]
+                    positionElevations.put(key, new double[]{pt.z, i, ep});
+                } else {
+                    double existingZ = existing[0];
+                    int existingSegIdx = (int) existing[1];
+                    String existingLabel = (existing[2] == 0) ? "srt" : "end";
+
+                    if (Math.abs(pt.z - existingZ) > MathUtils.EPSILON) {
+                        LOGGER.error("ELEVATION MISMATCH at shared position ({}, {}): " +
+                                "segment[{}].{} z={} (level={}) vs segment[{}].{} z={} (level={}) " +
+                                "delta={} | bigchunk origin=({}, {})",
+                            pt.x, pt.y,
+                            i, label, pt.z, level,
+                            existingSegIdx, existingLabel, existingZ, levels.get(existingSegIdx),
+                            Math.abs(pt.z - existingZ),
+                            chunk.gridOriginX, chunk.gridOriginY);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Compute the 64x64 far-distance cache for the given BigChunk.
+     *
+     * Grid: 64x64 cells, each covering 4x4 cachepixel blocks (4 cachepixels per axis).
+     * Step size: farCellSize / 2 (2 cachepixels per step) for accurate coverage.
+     *
+     * Performance optimizations:
+     * (1) Float arithmetic throughout Phase A. At AVX2 (UseAVX=2, the JVM default), float
+     *     SIMD registers hold 8 values vs 4 for double, giving the JIT twice the vectorization
+     *     width for the inner cj loop without requiring any global JVM flag changes.
+     * (2) Cell centers pre-computed as float[] arrays (256 bytes total), kept in L1 cache
+     *     across all step-point iterations for the same chunk.
+     * (3) Squared-distance early-exit: distSq * invCpgSq is compared against storedDist^2
+     *     before calling Math.sqrt. After the first segment fills the cache, most cells
+     *     already have a stored distance smaller than the current step point's distance,
+     *     so sqrt is skipped for the majority of inner-loop iterations.
+     * (4) Row-skip: entire rows where |dy|*invCpg >= maxStoredDist are skipped.
+     *     maxStoredDist is refreshed after each segment as the cache tightens.
+     */
+    private void computeFarCache(BigChunk chunk, double chunkSizeGrid, List<Segment3D> farSegments) {
+        final int FAR_GRID = 64;
+        double farCellSize = chunkSizeGrid / FAR_GRID;
+
+        // Pre-compute cell reference points (corners) as float arrays — constant for this
+        // chunk, fits in L1 cache. Corners align with the biome pipeline's 4-unit query
+        // grid so queries at (0,4,8,...) are exact rather than offset by half a cell.
+        float[] cellRefX = new float[FAR_GRID];
+        float[] cellRefY = new float[FAR_GRID];
+        for (int i = 0; i < FAR_GRID; i++) {
+            cellRefX[i] = (float)(chunk.gridOriginX + i * farCellSize);
+            cellRefY[i] = (float)(chunk.gridOriginY + i * farCellSize);
+        }
+
+        // Float conversion of the quantization scale factor (grid dist → quantized units).
+        float invCpgF   = (float)(gridsize / cachepixels);
+        float invCpgSqF = invCpgF * invCpgF; // used for squared-distance comparison
+
+        // Track closest segment point per cell for normal computation in Phase B.
+        // float precision is sufficient for the dot-product sign test used there.
+        float[][] closestPointX = new float[FAR_GRID][FAR_GRID];
+        float[][] closestPointY = new float[FAR_GRID][FAR_GRID];
+        Segment3D[][] closestSeg = new Segment3D[FAR_GRID][FAR_GRID];
+        double[][] closestT = new double[FAR_GRID][FAR_GRID];
+
+        // maxStoredDist: global max stored quantized distance across all cells.
+        // Rows where |dy|*invCpg >= maxStoredDist cannot improve any cell and are skipped.
+        int maxStoredDist = 255;
+
+        // Phase A: Find closest Euclidean distance per cell
+        for (Segment3D seg : farSegments) {
+            double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
+            if (segLen < MathUtils.EPSILON) continue;
+
+            int numSteps = Math.max(1, (int) Math.ceil(segLen / (farCellSize * 0.5)));
+            for (int step = 0; step <= numSteps; step++) {
+                Point3D pt = evaluateHermiteSpline(seg, (double) step / numSteps);
+                float ptXf = (float) pt.x;
+                float ptYf = (float) pt.y;
+
+                for (int ci = 0; ci < FAR_GRID; ci++) {
+                    float dy = ptYf - cellRefY[ci];
+                    // Row-skip (float): |dy| * invCpg >= maxStoredDist means no cell in
+                    // this row has a stored distance high enough to be improved.
+                    if (Math.abs(dy) * invCpgF >= maxStoredDist) continue;
+
+                    float dySq = dy * dy;
+                    for (int cj = 0; cj < FAR_GRID; cj++) {
+                        float dx   = ptXf - cellRefX[cj];
+                        float distSq = dx * dx + dySq;
+                        int stored = chunk.getFarDistance(ci, cj);
+                        // Squared-distance early-exit: distSq * invCpgSq >= stored^2 means
+                        // sqrt(distSq)*invCpg >= stored, so quantized >= stored — no update.
+                        if (distSq * invCpgSqF >= (float)(stored * stored)) continue;
+                        int quantized = (int) Math.min(255, (float) Math.sqrt(distSq) * invCpgF);
+                        if (quantized < stored) {
+                            chunk.setFarDistance(ci, cj, quantized);
+                            closestPointX[ci][cj] = ptXf;
+                            closestPointY[ci][cj] = ptYf;
+                            closestSeg[ci][cj]    = seg;
+                            closestT[ci][cj]      = (double) step / numSteps;
+                        }
+                    }
+                }
+            }
+
+            // Refresh maxStoredDist after each segment so the row-skip tightens
+            maxStoredDist = 0;
+            for (int ci = 0; ci < FAR_GRID; ci++)
+                for (int cj = 0; cj < FAR_GRID; cj++) {
+                    int d = chunk.getFarDistance(ci, cj);
+                    if (d > maxStoredDist) maxStoredDist = d;
+                }
+        }
+
+        // Phase B: Compute normals from segment tangent perpendicular.
+        // Cell centers and closest-point coordinates are re-derived in double for accuracy.
+        for (int ci = 0; ci < FAR_GRID; ci++) {
+            for (int cj = 0; cj < FAR_GRID; cj++) {
+                if (chunk.getFarDistance(ci, cj) >= 255 || closestSeg[ci][cj] == null) continue;
+
+                dendryterra.math.Vec2D tangent = interpolateTangent(closestSeg[ci][cj], closestT[ci][cj]);
+
+                double perpX = -tangent.y;
+                double perpY = tangent.x;
+
+                // toCellX/Y only needs to give the correct sign for the dot product
+                double toCellX = cellRefX[cj] - closestPointX[ci][cj];
+                double toCellY = cellRefY[ci] - closestPointY[ci][cj];
+
+                if (perpX * toCellX + perpY * toCellY < 0) {
+                    perpX = -perpX;
+                    perpY = -perpY;
+                }
+
+                double angle = Math.atan2(perpY, perpX);
+                if (angle < 0) angle += 2.0 * Math.PI;
+
+                chunk.setFarNormal(ci, cj, (int) Math.min(255, Math.max(0, angle / (2.0 * Math.PI) * 255)));
+            }
+        }
+    }
+
+    /**
+     * Evaluate far distance at a query point using the 64x64 far-distance cache.
+     * Returns raw cell center distance in world units (no offset compensation).
+     */
+    private double evaluateWithBigChunkFarDistance(double gridX, double gridY) {
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, true, false);
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        double farCellSize = chunkSizeGrid / 64.0;
+
+        int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+
+        int distU8 = chunk.getFarDistance(cellI, cellJ);
+        double MaxRepDist = maxDistGrid * gridsize;
+        if (distU8 >= 255) return MaxRepDist;
+
+        return Math.min(distU8 * cachepixels, MaxRepDist);
+    }
+
+    /**
+     * Evaluate far distance with normal-based offset compensation using the 64x64 far-distance cache.
+     * Projects the query's offset from the cell corner (the reference point where the distance
+     * was measured) onto the normal direction to adjust the base distance for sub-cell accuracy.
+     */
+    private double evaluateWithBigChunkFarDistance2(double gridX, double gridY) {
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, true, false);
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        double farCellSize = chunkSizeGrid / 64.0;
+
+        int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+
+        int distU8 = chunk.getFarDistance(cellI, cellJ);
+        if (distU8 >= 255) return maxDistGrid * gridsize;
+
+        double baseDist = distU8 * cachepixels;
+
+        // Normal: unit vector pointing away from nearest river
+        double normalRad = chunk.getFarNormalRadians(cellI, cellJ);
+        double normalX = Math.cos(normalRad);
+        double normalY = Math.sin(normalRad);
+
+        // Query offset from the cell corner (the reference point used during cache fill) in world units
+        double cellRefX = chunk.gridOriginX + cellJ * farCellSize;
+        double cellRefY = chunk.gridOriginY + cellI * farCellSize;
+        double offsetX = (gridX - cellRefX) * gridsize;
+        double offsetY = (gridY - cellRefY) * gridsize;
+
+        // Project offset onto normal: positive = further from river, negative = closer
+        double dotProduct = offsetX * normalX + offsetY * normalY;
+
+        return Math.max(0, Math.min(baseDist + dotProduct, maxDistGrid * gridsize));
+    }
+
+    /**
+     * Evaluate far distance normalized to the same [-1, 1] scale used by PIXEL_RIVER.
+     * Uses the 4x4 far cache distance (in world units) and approximates river width by
+     * sampling the river-width sampler at the query location (level 0, no falloff).
+     * Normalization mirrors the PIXEL_RIVER quantization:
+     *   -1 = estimated river center (dist == 0)
+     *    0 = estimated flow edge   (dist == riverWidth)
+     *   +1 = estimated border edge (dist == riverWidth + borderWidth)
+     *   >1 = farther beyond the border (not clamped, so callers can distinguish far distances)
+     */
+    private double evaluateWithBigChunkFarDistNorm(double gridX, double gridY) {
+        BigChunk chunk = getOrEnsureBigChunk(gridX, gridY, true, false);
+        double chunkSizeGrid = getBigChunkSizeGrid();
+        double farCellSize = chunkSizeGrid / 64.0;
+
+        int cellJ = Math.max(0, Math.min(63, (int) Math.floor((gridX - chunk.gridOriginX) / farCellSize)));
+        int cellI = Math.max(0, Math.min(63, (int) Math.floor((gridY - chunk.gridOriginY) / farCellSize)));
+
+        int distU8 = chunk.getFarDistance(cellI, cellJ);
+        if (distU8 >= 255) return maxDistGrid * gridsize;  // no river in range, return max
+
+        double worldDist = distU8 * cachepixels;  // distance to nearest segment center in world units
+
+        // Approximate river half-width at the query location (level 0, no per-level falloff).
+        // The actual level is unknown without a full block lookup, so level-0 width is used.
+        double samplerX = gridX * gridsize;
+        double samplerZ = gridY * gridsize;
+        double W = (riverwidthSampler != null)
+                ? Math.min(defaultRiverwidth, riverwidthSampler.getSample(salt, samplerX, 0, samplerZ))
+                : defaultRiverwidth;
+        double B = (borderwidthSampler != null)
+                ? borderwidthSampler.getSample(salt, samplerX, 0, samplerZ)
+                : defaultBorderwidth;
+
+        // Apply the same normalization as PIXEL_RIVER (see evaluateWithBigChunkDistance):
+        //   inside river  (worldDist <= W): normalize to [-1, 0]
+        //   outside river (worldDist >  W): normalize to [0, +inf], where +1 = border edge
+        if (worldDist <= W) {
+            return (W > 0) ? (worldDist / W) - 1.0 : -1.0;
+        } else {
+            return (B > 0) ? (worldDist - W) / B : 1.0;
+        }
+    }
+
+    /**
      * Check if a point is within maxDistGrid of a chunk boundary.
      * Uses the minimum of the per-axis distances to the chunk border,
      * so a point only needs to be close on ONE axis to be retained.
@@ -3357,6 +4066,10 @@ public class DendrySampler implements Sampler {
      * @param chunkSizeGrid Size of chunk in grid coordinates
      */
     private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSizeGrid) {
+        return isPointNearChunk(point, chunk, chunkSizeGrid, maxDistGrid);
+    }
+
+    private boolean isPointNearChunk(Point3D point, BigChunk chunk, double chunkSizeGrid, double maxDist) {
         double chunkMaxX = chunk.gridOriginX + chunkSizeGrid;
         double chunkMaxY = chunk.gridOriginY + chunkSizeGrid;
 
@@ -3368,8 +4081,8 @@ public class DendrySampler implements Sampler {
                      : (point.y > chunkMaxY) ? point.y - chunkMaxY
                      : 0;
 
-        // Keep the point if the minimum axis distance is within maxDistGrid
-        return Math.min(distX, distY) <= maxDistGrid;
+        // Keep the point if the minimum axis distance is within maxDist
+        return Math.min(distX, distY) <= maxDist;
     }
 
     /**
@@ -3403,9 +4116,11 @@ public class DendrySampler implements Sampler {
         // Evaluation distance threshold: 70% of cachepixels in grid coordinates
         double evalDistThreshold = 0.7 * cachepixelsGrid;
 
-        // === Elevation tracking state (3 layers) ===
-        int outerElev = 0, innerElev = 0, centralElev = 0;
-        double outerRadius = 0, innerRadius = 0, centralRadius = 0;
+        // === Elevation tracking state (dynamic layers, index 0 = newest) ===
+        int[] layerElev = new int[MAX_ELEV_LAYERS];
+        double[] layerRadius = new double[MAX_ELEV_LAYERS];
+        double[] layerLastElevChangeArc = new double[MAX_ELEV_LAYERS];
+        int layerCount = 0;
 
         // === Stream tracking state ===
         boolean isNewStream = true;
@@ -3413,6 +4128,13 @@ public class DendrySampler implements Sampler {
         dendryterra.math.Vec2D prevEvalTangent = null;
         Point3D prevEvalPos = null;
         dendryterra.math.Vec2D prevLoopTangent = null;
+
+        // === Level & distance-to-change tracking ===
+        int levelNibble = Math.min(14, level);  // Clamp to 0-14 (15 = unset)
+        double accumulatedArcLength = 0.0;
+        // lastElevChangeArcLength is now tracked per-layer in layerLastElevChangeArc[]
+        int prevQuantizedElev = -1;
+        Point3D prevSamplePoint = null;
 
         // Sample along the segment
         for (int i = 0; i < numSamples; i++) {
@@ -3422,15 +4144,34 @@ public class DendrySampler implements Sampler {
             Point3D samplePoint = evaluateHermiteSpline(seg, t);
             dendryterra.math.Vec2D currentTangent = interpolateTangent(seg, t);
 
+            // === Arc length accumulation for distance-to-change tracking ===
+            if (prevSamplePoint != null) {
+                double dx = samplePoint.x - prevSamplePoint.x;
+                double dy = samplePoint.y - prevSamplePoint.y;
+                accumulatedArcLength += Math.sqrt(dx * dx + dy * dy);
+            }
+
+            // Track quantized elevation for decrease detection (used in cascade below)
+            int currentQuantizedElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
+            prevSamplePoint = samplePoint;
+
             // === Step A: New stream initialization ===
             if (i == 0 || wasOutOfBounds) {
                 int quantizedElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
-                outerElev = innerElev = centralElev = quantizedElev;
-                outerRadius = innerRadius = centralRadius = 0;
+                layerElev[0] = quantizedElev;
+                layerRadius[0] = 0;
+                layerLastElevChangeArc[0] = Double.NEGATIVE_INFINITY;
+                layerCount = 1;
                 prevLoopTangent = currentTangent;
                 prevEvalPos = samplePoint;
                 prevEvalTangent = currentTangent;
                 isNewStream = true;
+                //If the first point has quantized elevation evaluated at 0, consider this a level 0 segment from
+                // a blotting and distance override standpoint.
+                if (i==0 && quantizedElev==0){
+                    level = 0;
+                    levelNibble = 0;
+                }
             }
             // === Step B: Continued stream ===
             // prevLoopTangent already holds previous loop iteration's currentTangent
@@ -3447,16 +4188,25 @@ public class DendrySampler implements Sampler {
             int potentialElev = (int) Math.min(255, Math.max(0, samplePoint.z * elevQuantizeRes));
             boolean elevationChanged = false;
 
-            // Check if quantized elevation changed
-            if (potentialElev != centralElev) {
-                outerElev = innerElev;
-                innerElev = centralElev;
-                centralElev = potentialElev;
-                outerRadius = innerRadius;
-                innerRadius = centralRadius;
-                centralRadius = 1.0;  // 1.0 in normalized (river-width) space
+            // Check if quantized elevation changed (compare against newest layer)
+            if (potentialElev != layerElev[0]) {
+                boolean isDecrease = potentialElev < layerElev[0];
+                // Shift all layers right (drop oldest if full)
+                int shiftCount = Math.min(layerCount, MAX_ELEV_LAYERS - 1);
+                System.arraycopy(layerElev, 0, layerElev, 1, shiftCount);
+                System.arraycopy(layerRadius, 0, layerRadius, 1, shiftCount);
+                System.arraycopy(layerLastElevChangeArc, 0, layerLastElevChangeArc, 1, shiftCount);
+                layerElev[0] = potentialElev;
+                layerRadius[0] = 1.0;  // 1.0 in normalized (river-width) space
+                // Only reset arc tracking on elevation decrease; on increase, inherit
+                // from previous layer so the distance-to-change reflects the last *drop*.
+                layerLastElevChangeArc[0] = isDecrease
+                    ? accumulatedArcLength
+                    : layerLastElevChangeArc[1];
+                layerCount = Math.min(layerCount + 1, MAX_ELEV_LAYERS);
                 elevationChanged = true;
             }
+            prevQuantizedElev = currentQuantizedElev;
 
             // === Step D: Should this sample be evaluated/projected? ===
             boolean shouldEvaluate = false;
@@ -3503,6 +4253,7 @@ public class DendrySampler implements Sampler {
 
             // === Step E: Update elevation radii ===
             double riverWidthGrid = calculateRiverWidth(level, samplePoint.x, samplePoint.y);
+            double borderWidthGrid = Math.min(maxDistPrune, getBorderWidth(samplePoint.x, samplePoint.y));
 
             // Width transition: linearly widen to match lower-level river at endpoint
             if (endFlowLevel >= 0 && endFlowLevel < level && endConnections == 1) {
@@ -3514,9 +4265,13 @@ public class DendrySampler implements Sampler {
                 double dx = samplePoint.x - prevEvalPos.x;
                 double dy = samplePoint.y - prevEvalPos.y;
                 double distSinceLastEval = Math.sqrt(dx * dx + dy * dy) / riverWidthGrid;
-                outerRadius = Math.max(0, outerRadius - distSinceLastEval);
-                innerRadius = Math.max(0, innerRadius - distSinceLastEval);
-                centralRadius = Math.max(0, centralRadius - distSinceLastEval);
+                for (int li = 0; li < layerCount; li++) {
+                    layerRadius[li] = Math.max(0, layerRadius[li] - distSinceLastEval);
+                }
+                // Prune fully-decayed layers from the tail (keep at least 1)
+                while (layerCount > 1 && layerRadius[layerCount - 1] <= 0) {
+                    layerCount--;
+                }
             }
 
             // Saturate radii to distance from segment end (normalized by river width)
@@ -3525,9 +4280,9 @@ public class DendrySampler implements Sampler {
                 double dyEnd = samplePoint.y - seg.end.y;
                 double distToEndNorm = Math.sqrt(dxEnd * dxEnd + dyEnd * dyEnd) / riverWidthGrid;
                 double maxRadius = Math.max(0, distToEndNorm - 1);
-                outerRadius = Math.min(outerRadius, maxRadius);
-                innerRadius = Math.min(innerRadius, maxRadius);
-                centralRadius = Math.min(centralRadius, maxRadius);
+                for (int li = 0; li < layerCount; li++) {
+                    layerRadius[li] = Math.min(layerRadius[li], maxRadius);
+                }
             }
 
             // === Step F: Segment fill flag ===
@@ -3542,11 +4297,20 @@ public class DendrySampler implements Sampler {
             }
 
             // === Project to boxes ===
+            // Compute per-layer base distance-to-change from accumulated arc length.
+            // These raw distances are passed to projectConeToBoxes so that each arc
+            // sample can add its angular displacement, producing curved contours
+            // instead of straight radial lines.
+            double[] layerBaseDistChange = new double[layerCount];
+            for (int li = 0; li < layerCount; li++) {
+                layerBaseDistChange[li] = accumulatedArcLength - layerLastElevChangeArc[li];
+            }
+
             projectConeToBoxes(samplePoint, currentTangent, prevEvalTangent,
-                centralElev, innerElev, outerElev,
-                centralRadius, innerRadius, outerRadius,
-                riverWidthGrid, segmentFill, isStartPoint,
-                segmentSlope, chunk, chunkSizeGrid);
+                layerElev, layerRadius, layerCount,
+                riverWidthGrid, borderWidthGrid, segmentFill, isStartPoint,
+                segmentSlope, chunk, chunkSizeGrid, level,
+                levelNibble, layerBaseDistChange, heightChangeMaxDistGrid);
 
             // Update state for next iteration
             prevEvalPos = samplePoint;
@@ -3561,40 +4325,49 @@ public class DendrySampler implements Sampler {
      * Uses cubic Hermite interpolation: H(t) = (2t³-3t²+1)P0 + (t³-2t²+t)T0 + (-2t³+3t²)P1 + (t³-t²)T1
      */
     private Point3D evaluateHermiteSpline(Segment3D seg, double t) {
+        // Elevation (z) uses simple clamped linear interpolation:
+        // t in [0, 0.25]: hold start elevation
+        // t in [0.25, 0.75]: linearly interpolate from start to end elevation
+        // t in [0.75, 1.0]: hold end elevation
+        double z;
+        if (t <= 0.25) {
+            z = seg.srt.z;
+        } else if (t >= 0.75) {
+            z = seg.end.z;
+        } else {
+            double tZ = (t - 0.25) / 0.5; // maps [0.25, 0.75] -> [0, 1]
+            z = seg.srt.z + (seg.end.z - seg.srt.z) * tZ;
+        }
+
         if (!useSplines || seg.tangentSrt == null || seg.tangentEnd == null) {
-            // Fall back to linear interpolation
-            return seg.lerp(t);
+            // Fall back to linear interpolation for x,y
+            double x = seg.srt.x + (seg.end.x - seg.srt.x) * t;
+            double y = seg.srt.y + (seg.end.y - seg.srt.y) * t;
+            return new Point3D(x, y, z);
         }
 
         double t2 = t * t;
         double t3 = t2 * t;
 
-        // Hermite basis functions
+        // Hermite basis functions for x,y
         double h00 = 2*t3 - 3*t2 + 1;   // (2t³ - 3t² + 1)
         double h10 = t3 - 2*t2 + t;     // (t³ - 2t² + t)
         double h01 = -2*t3 + 3*t2;      // (-2t³ + 3t²)
         double h11 = t3 - t2;            // (t³ - t²)
 
-        // Tangent vectors scaled by segment length and tangent strength
+        // Tangent vectors scaled by segment length and curvature
         double segLen = seg.length();
-        double tangentScale = segLen * tangentStrength;
+        double tangentScale = segLen * curvature;
 
-        // Apply curvature scaling
-        double effectiveCurvature = curvature;
+        double tx0 = seg.tangentSrt.x * tangentScale;
+        double ty0 = seg.tangentSrt.y * tangentScale;
 
-        // Tangent vectors in 3D (tangents are 2D, z component from elevation difference)
-        double tx0 = seg.tangentSrt.x * tangentScale * effectiveCurvature;
-        double ty0 = seg.tangentSrt.y * tangentScale * effectiveCurvature;
-        double tz0 = (seg.end.z - seg.srt.z) * effectiveCurvature;
+        double tx1 = seg.tangentEnd.x * tangentScale;
+        double ty1 = seg.tangentEnd.y * tangentScale;
 
-        double tx1 = seg.tangentEnd.x * tangentScale * effectiveCurvature;
-        double ty1 = seg.tangentEnd.y * tangentScale * effectiveCurvature;
-        double tz1 = (seg.end.z - seg.srt.z) * effectiveCurvature;
-
-        // Hermite interpolation
+        // Hermite interpolation for x,y only; z uses clamped linear above
         double x = h00 * seg.srt.x + h10 * tx0 + h01 * seg.end.x + h11 * tx1;
         double y = h00 * seg.srt.y + h10 * ty0 + h01 * seg.end.y + h11 * ty1;
-        double z = h00 * seg.srt.z + h10 * tz0 + h01 * seg.end.z + h11 * tz1;
 
         return new Point3D(x, y, z);
     }
@@ -3606,7 +4379,7 @@ public class DendrySampler implements Sampler {
         if (seg.tangentSrt != null && seg.tangentEnd != null && useSplines) {
             // True Hermite spline derivative: H'(t) = dh00*P0 + dh10*T0*s + dh01*P1 + dh11*T1*s
             double segLen = seg.srt.projectZ().distanceTo(seg.end.projectZ());
-            double s = segLen * tangentStrength * curvature;
+            double s = segLen * curvature;
             double t2 = t * t;
 
             double dh00 = 6 * t2 - 6 * t;
@@ -3645,35 +4418,26 @@ public class DendrySampler implements Sampler {
      * Project a cone of influence from a sample point onto bigchunk boxes.
      * All coordinates and distances are in grid coordinate space.
      * @param samplePoint Sample position in grid coordinates
-     * @param elevation Elevation value
-     * @param riverWidthGrid River width in grid coordinates
-     * @param chunkSizeGrid Chunk size in grid coordinates
-     */
-    /**
-     * Project a cone of influence from a sample point onto bigchunk boxes.
-     * All coordinates and distances are in grid coordinate space.
-     * @param samplePoint Sample position in grid coordinates
      * @param currentTangent Current tangent direction at sample point
      * @param prevTangent Previous evaluated tangent direction
-     * @param centralElev Pre-quantized central elevation (UInt8)
-     * @param innerElev Pre-quantized inner elevation (UInt8)
-     * @param outerElev Pre-quantized outer elevation (UInt8)
-     * @param centralRadius Central elevation radius (normalized by river width, 0-1)
-     * @param innerRadius Inner elevation radius (normalized by river width, 0-1)
-     * @param outerRadius Outer elevation radius (normalized by river width, 0-1)
+     * @param layerElev Array of pre-quantized elevations (UInt8), index 0 = newest
+     * @param layerRadius Array of elevation radii (normalized by river width, 0-1), index 0 = newest
+     * @param layerCount Number of active layers in the arrays
      * @param riverWidthGrid River width in grid coordinates
      * @param segmentFill If true, fill a 180° semicircle at segment endpoint
      * @param isStartPoint True if this is the start of the segment (affects semicircle direction)
      * @param segmentSlope Segment slope (abs(height change / euclidean distance))
+     * @param layerBaseDistChange Per-layer base distance-to-elevation-change (arc length), index 0 = newest
+     * @param heightChangeMaxDistGrid Maximum distance over which dist-change nibble spans 0-15
      * @param chunk BigChunk to project onto
      * @param chunkSizeGrid Chunk size in grid coordinates
      */
     private void projectConeToBoxes(Point3D samplePoint, dendryterra.math.Vec2D currentTangent,
                                    dendryterra.math.Vec2D prevTangent,
-                                   int centralElev, int innerElev, int outerElev,
-                                   double centralRadius, double innerRadius, double outerRadius,
-                                   double riverWidthGrid, boolean segmentFill, boolean isStartPoint,
-                                   double segmentSlope, BigChunk chunk, double chunkSizeGrid) {
+                                   int[] layerElev, double[] layerRadius, int layerCount,
+                                   double riverWidthGrid, double borderWidthGrid, boolean segmentFill, boolean isStartPoint,
+                                   double segmentSlope, BigChunk chunk, double chunkSizeGrid, int level,
+                                   int levelNibble, double[] layerBaseDistChange, double heightChangeMaxDistGrid) {
         double cachepixelsGrid = cachepixels / gridsize;
 
         // Determine cone angle and bow direction
@@ -3700,69 +4464,96 @@ public class DendrySampler implements Sampler {
         double slopeFactor = Math.max(0, 1.0 - segmentSlope / slopeWhenStraight);
 
         // Project outward from sample point
-        int maxSteps = (int) Math.ceil(maxDistGrid / cachepixelsGrid);
+        // If blot filling, we don't need to  extend all the way out since blotting will naturally fill it.
+        //int maxSteps = (int) Math.max(0, Math.ceil(maxDistGrid / cachepixelsGrid)-((ENABLE_BLOT_FILLING > 0) ? 1 : 0));
+        int maxSteps = (int) Math.max(0, 1 + Math.ceil(maxDistPrune / cachepixelsGrid));
         for (int step = 0; step <= maxSteps; step++) {
             double distanceGrid = step * cachepixelsGrid;
-            if (step > 0 && distanceGrid > maxDistGrid) break;
+            if (step > 0 && distanceGrid > maxDistPrune) break;
 
             // Normalized distance from river center (in river-width units)
             double normDistFromCenter = (riverWidthGrid > 0) ? distanceGrid / riverWidthGrid : 1.0;
 
-            // Determine which elevation to use based on centroid distances
-            int selectedElev = centralElev;  // Default
+            // Determine which elevation to use based on centroid distances.
+            // Check newest-first: newest layer (largest radius) qualifies in the narrowest
+            // zone near center; older layers (smaller radii) qualify in progressively wider
+            // zones. First qualifying layer wins.
+            // Result: center = newest elevation, edges = oldest elevation.
+            int selectedLayerIndex = layerCount - 1;  // Default = oldest layer
+            int selectedElev = layerElev[selectedLayerIndex];
             if (normDistFromCenter < 1.0) {
-                // Check elevation layers from biggest radius to smallest
-                if (outerRadius > 0) {
-                    double centroidDist = Math.sqrt(
-                        normDistFromCenter * normDistFromCenter +
-                        Math.pow(outerRadius * slopeFactor, 2)
-                    );
-                    if (centroidDist < 1.0) {
-                        selectedElev = outerElev;
+                for (int li = 0; li < layerCount; li++) {
+                    if (layerRadius[li] > 0) {
+                        double centroidDist = Math.sqrt(
+                            normDistFromCenter * normDistFromCenter +
+                            Math.pow(layerRadius[li] * slopeFactor, 2)
+                        );
+                        if (centroidDist < 1.0) {
+                            selectedLayerIndex = li;
+                            selectedElev = layerElev[li];
+                            break;
+                        }
                     }
                 }
-                if (selectedElev == centralElev && innerRadius > 0) {
-                    double centroidDist = Math.sqrt(
-                        normDistFromCenter * normDistFromCenter +
-                        Math.pow(innerRadius * slopeFactor, 2)
-                    );
-                    if (centroidDist < 1.0) {
-                        selectedElev = innerElev;
-                    }
-                }
-                // Otherwise centralElev (already set)
             }
+            // Base distance-to-change for the selected layer (no arc displacement yet)
+            double baseDistChange = layerBaseDistChange[selectedLayerIndex];
 
-            boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING && (step > 0);
+            boolean blotAdjacentBoxes = ENABLE_BLOT_FILLING > 0;
 
             if (step == 0) {
-                // Center point - set the box at samplePoint
+                // Center point - set the box at samplePoint (zero arc displacement)
+                int distChangeNibble = (heightChangeMaxDistGrid > 0)
+                    ? (int) Math.min(15, baseDistChange / heightChangeMaxDistGrid * 15)
+                    : 15;
                 int bx = gridToBlockIndex(samplePoint.x, chunk.gridOriginX, cachepixelsGrid);
                 int by = gridToBlockIndex(samplePoint.y, chunk.gridOriginY, cachepixelsGrid);
                 if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
-                    updateBox(chunk.getBlock(bx, by), 0.0, selectedElev, riverWidthGrid,
-                             false, bx, by, chunk, step);
+                    updateBox(chunk, bx, by, 0.0, selectedElev, riverWidthGrid, borderWidthGrid,
+                             false, step, level, levelNibble, distChangeNibble);
                 }
             } else {
-                // Arc samples at this radius - both sides (positive and opposite)
+                // Arc samples at this radius - active side, and optionally the opposite side
                 double arcLength = coneAngle * distanceGrid;
                 int numArcSamples = Math.max(2, (int) Math.ceil(arcLength / (cachepixelsGrid * 0.5)));
 
                 for (int side = 0; side < 2; side++) {
                     double sideOffset = side * Math.PI;
-                    for (int a = 0; a < numArcSamples; a++) {
-                        double angleOffset = coneAngle * ((double) a / (numArcSamples - 1) - 0.5);
+                    double SelArcSamples = numArcSamples;
+                    if (side == 1 && !ENABLE_OPPOSITE_CONE && !segmentFill) {
+                        //If opposite cone is disabled, don't sweep the cone, just sample along tangent.
+                        SelArcSamples = 1;
+                    }
+                    for (int a = 0; a < SelArcSamples; a++) {
+                        double angleOffset = 0;
+                        if (SelArcSamples == 1) {
+                            // If only one sample, place it directly in the bow direction
+                            angleOffset = coneAngle;
+                        }
+                        else{
+                            angleOffset = coneAngle * ((double) a / (SelArcSamples - 1) - 0.5);
+                        }
                         double angle = bowDirectionRad + sideOffset + angleOffset;
 
                         double px = samplePoint.x + Math.cos(angle) * distanceGrid;
                         double py = samplePoint.y + Math.sin(angle) * distanceGrid;
 
+                        // Adjust distance-to-change by adding angular arc displacement.
+                        // Points further from the perpendicular center are further in arc
+                        // terms from the elevation change, producing curved contours.
+                        double arcDisplacement = Math.abs(angleOffset) * distanceGrid;
+                        double adjustedDistChange = baseDistChange + arcDisplacement;
+                        int distChangeNibble = (heightChangeMaxDistGrid > 0)
+                            ? (int) Math.min(15, adjustedDistChange / heightChangeMaxDistGrid * 15)
+                            : 15;
+
                         int bx = gridToBlockIndex(px, chunk.gridOriginX, cachepixelsGrid);
                         int by = gridToBlockIndex(py, chunk.gridOriginY, cachepixelsGrid);
 
                         if (bx >= 0 && bx < 256 && by >= 0 && by < 256) {
-                            updateBox(chunk.getBlock(bx, by), distanceGrid, selectedElev,
-                                     riverWidthGrid, blotAdjacentBoxes, bx, by, chunk, step);
+                            updateBox(chunk, bx, by, distanceGrid, selectedElev,
+                                     riverWidthGrid, borderWidthGrid, blotAdjacentBoxes,
+                                     step, level, levelNibble, distChangeNibble);
                         }
                     }
                 }
@@ -3819,7 +4610,7 @@ public class DendrySampler implements Sampler {
     }
 
     /** Compile-time toggle for adjacent box blot filling */
-    private static final boolean ENABLE_BLOT_FILLING = true;
+    private static final int ENABLE_BLOT_FILLING = 2;  // 0=off, 1=4 cardinal neighbors, 2=all 8 neighbors
 
     /**
      * Update a bigchunk block with new distance and elevation values.
@@ -3828,70 +4619,76 @@ public class DendrySampler implements Sampler {
      * @param distanceGrid Distance in grid coordinates
      * @param elevationU8 Pre-quantized elevation value (0-255)
      * @param riverWidthGrid River width in grid coordinates
-     * @param blotAdjacentBoxes If true, also fill 4 adjacent boxes with same values
+     * @param blotAdjacentBoxes If true, also fill adjacent boxes with same values
      * @param blockX Block X index within chunk (for adjacent access)
      * @param blockY Block Y index within chunk (for adjacent access)
      * @param chunk BigChunk for adjacent box access
      * @param outwardStep The outward step index (0 = center, 1 = first ring, etc.)
      */
-    private void updateBox(BigChunk.BigChunkBlock box, double distanceGrid,
-                          int elevationU8, double riverWidthGrid,
-                          boolean blotAdjacentBoxes, int blockX, int blockY,
-                          BigChunk chunk, int outwardStep) {
-        // Compute normalized distance
-        double normalizedDist;
-        if (distanceGrid < riverWidthGrid) {
-            // River is ratiometric, inside river is less than 1.
-            // Divided by gridsize since this is the ratio in grid units.
-            normalizedDist = (distanceGrid / riverWidthGrid) / gridsize;
+    private void updateBox(BigChunk chunk, int blockX, int blockY,
+                          double distanceGrid,
+                          int elevationU8, double riverWidthGrid, double borderWidthGrid,
+                          boolean blotAdjacentBoxes,
+                          int outwardStep, int level,
+                          int levelNibble, int distChangeNibble) {
+        // Quantize normalized distance to uint8 in range [0, 255]:
+        //   [0, 127]   = inside river:  0 (center, output -1) → 127 (edge, output ≈ 0)
+        //   [128, 255] = outside river: 128 (edge, output 0) → 255 (at borderwidth, output 1)
+        int distU8;
+        if (distanceGrid <= riverWidthGrid) {
+            double ratio = (riverWidthGrid > 0) ? distanceGrid / riverWidthGrid : 0.0;
+            distU8 = (int) Math.min(127, Math.max(0, ratio * 127));
         } else {
-            // Outside river is absolute distance to river's edge.
-            normalizedDist = distanceGrid - riverWidthGrid;
+            double outDist = distanceGrid - riverWidthGrid;
+            double ratio = (borderWidthGrid > 0) ? Math.min(1.0, outDist / borderWidthGrid) : 1.0;
+            distU8 = (int)(128 + Math.min(127, ratio * 127));
         }
 
-        // Quantize distance to uint8
-        double distQuantizeRes = 255.0 / maxDistGrid;
-        int distU8 = (int) Math.min(255, Math.max(0, normalizedDist * distQuantizeRes));
+        int finalElevU8 = Math.max(elevationU8, Math.min(1, level));
 
-        // Apply elevation smoothing noise at river edge transitions
-        int finalElevU8 = elevationU8;
-        int currentElev = box.getElevationUnsigned();
-        int currentDist = box.getDistanceUnsigned();
+        applyBoxUpdate(chunk, blockX, blockY, distU8, finalElevU8, levelNibble, distChangeNibble);
 
-        // If box was previously set (distance < 255), new elevation is lower,
-        // and we're at the first outward step from river edge, add random noise
-        if (currentElev > elevationU8 && currentDist < 255 && outwardStep == 1) {
-            int range = currentElev - elevationU8;
-            int noise = (int)(Math.random() * range);
-            finalElevU8 = elevationU8 + noise;
-        }
-
-        // Update this box
-        applyBoxUpdate(box, distU8, finalElevU8);
-
-        // Blot: fill 4 adjacent boxes with same values (pin-hole filling)
-        if (ENABLE_BLOT_FILLING && blotAdjacentBoxes) {
-            int[][] neighbors = {{-1,0},{1,0},{0,-1},{0,1}};
+        if (ENABLE_BLOT_FILLING > 0 && blotAdjacentBoxes) {
+            int blotDistU8 = (distU8 > 127) ? Math.min(255, distU8 + 1) : distU8;
+            int[][] neighbors;
+            if (ENABLE_BLOT_FILLING >= 2) {
+                neighbors = new int[][]{{-1,0},{1,0},{0,-1},{0,1},{-1,-1},{-1,1},{1,-1},{1,1}};
+            } else {
+                neighbors = new int[][]{{-1,0},{1,0},{0,-1},{0,1}};
+            }
             for (int[] d : neighbors) {
                 int nx = blockX + d[0], ny = blockY + d[1];
                 if (nx >= 0 && nx < 256 && ny >= 0 && ny < 256) {
-                    applyBoxUpdate(chunk.getBlock(nx, ny), distU8, finalElevU8);
+                    applyBoxUpdate(chunk, nx, ny, blotDistU8, finalElevU8, levelNibble, distChangeNibble);
                 }
             }
         }
     }
 
     /**
-     * Apply distance and elevation updates to a single box.
-     * Distance: lower wins (closer to river).
-     * Elevation: lower wins (river valley).
+     * Apply distance, elevation, level, and distChange updates to a single block.
+     *   Inside river  (distU8 <= 127): lower wins independently for each parameter.
+     *   Outside river (distU8 >  127): overwrite ALL parameters atomically only if
+     *       the new distance is strictly closer than the existing distance.
      */
-    private void applyBoxUpdate(BigChunk.BigChunkBlock box, int distU8, int elevU8) {
-        if (distU8 < box.getDistanceUnsigned()) {
-            box.setDistanceUnsigned(distU8);
-        }
-        if (elevU8 < box.getElevationUnsigned()) {
-            box.setElevationUnsigned(elevU8);
+    private void applyBoxUpdate(BigChunk chunk, int bx, int by,
+                                int distU8, int elevU8,
+                                int levelNibble, int distChangeNibble) {
+        int existingDist = chunk.getBlockDistance(bx, by);
+
+        if (distU8 <= 127) {
+            if (distU8 < existingDist)                             chunk.setBlockDistance(bx, by, distU8);
+            if (elevU8 < chunk.getBlockElevation(bx, by))         chunk.setBlockElevation(bx, by, elevU8);
+            if (levelNibble < chunk.getBlockLevelNibble(bx, by))  chunk.setBlockLevelNibble(bx, by, levelNibble);
+            if (distChangeNibble < chunk.getBlockDistChangeNibble(bx, by))
+                chunk.setBlockDistChangeNibble(bx, by, distChangeNibble);
+        } else {
+            if (distU8 < existingDist) {
+                chunk.setBlockDistance(bx, by, distU8);
+                chunk.setBlockElevation(bx, by, elevU8);
+                chunk.setBlockLevelNibble(bx, by, levelNibble);
+                chunk.setBlockDistChangeNibble(bx, by, distChangeNibble);
+            }
         }
     }
 }

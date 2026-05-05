@@ -301,14 +301,16 @@ public class SegmentList {
         Random rng = new Random(seed);
 
         // Step 1: Compute tangents based on connection patterns using global config
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, rng);
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, level, rng);
         Vec2D tangentSrt = tangents[0];
         Vec2D tangentEnd = tangents[1];
 
-        // Step 1b: Bound tangent magnitudes to maxSegmentLength to prevent excessive curves
+        // Step 1b: Normalize tangents to unit length — the Hermite evaluation in
+        // evaluateHermiteSpline applies segLen * curvature, giving
+        // linear scaling with segment length (not quadratic).
         double distance = srt.position.distanceTo(end.position);
-        tangentSrt = scaleTangentMagnitude(tangentSrt, distance);
-        tangentEnd = scaleTangentMagnitude(tangentEnd, distance);
+        tangentSrt = scaleTangentMagnitude(tangentSrt, 1.0);
+        tangentEnd = scaleTangentMagnitude(tangentEnd, 1.0);
 
         // Step 1c: Clamp tangent components near cell boundaries to prevent spline overshoot
         tangentSrt = clampTangentToCellBoundary(tangentSrt, srt.position, distance);
@@ -374,7 +376,7 @@ public class SegmentList {
     /**
      * Clamp tangent components to prevent Hermite spline from crossing cell boundaries.
      * For a cubic Hermite spline, the maximum overshoot from a tangent is approximately
-     * 0.25 * tangent_component * segmentLength * tangentStrength.
+     * 0.25 * tangent_component * segmentLength * curvature.
      *
      * @param tangent The tangent vector to clamp
      * @param position The point position (to compute distance to cell edges)
@@ -396,7 +398,7 @@ public class SegmentList {
 
         // Maximum allowed tangent component = distToEdge / (overshootFactor * segmentLength * tangentStrength)
         // Using 0.25 as conservative overshoot factor for cubic Hermite
-        double overshootFactor = 0.25 * segmentLength * config.tangentStrength;
+        double overshootFactor = 0.25 * segmentLength * config.curvature;
         if (overshootFactor < MathUtils.EPSILON) return tangent;
 
         double clampedX = tangent.x;
@@ -478,7 +480,7 @@ public class SegmentList {
      * Compute tangents for a connection based on existing connectivity patterns.
      * Uses global configuration parameters.
      */
-    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, Random NoiseGen) {
+    private Vec2D[] computeTangentsForConnection(int srtIdx, int endIdx, int segmentLevel, Random NoiseGen) {
         
         NetworkPoint srt = points.get(srtIdx);
         NetworkPoint end = points.get(endIdx);
@@ -493,8 +495,8 @@ public class SegmentList {
         }
         
         // Compute tangents based on connection patterns
-        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true,NoiseGen);
-        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false,NoiseGen);
+        Vec2D tangentSrt = computePointTangent(srtIdx, endIdx, true, segmentLevel, NoiseGen);
+        Vec2D tangentEnd = computePointTangent(endIdx, srtIdx, false, segmentLevel, NoiseGen);
         
         return new Vec2D[] { tangentSrt, tangentEnd };
     }
@@ -503,7 +505,7 @@ public class SegmentList {
      * Compute tangent for a specific point based on its connections.
      * Uses global configuration parameters.
      */
-    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, Random NoiseGen) {
+    private Vec2D computePointTangent(int pointIdx, int targetIdx, boolean isStart, int segmentLevel, Random NoiseGen) {
         
         NetworkPoint point = points.get(pointIdx);
         NetworkPoint target = points.get(targetIdx);
@@ -556,25 +558,52 @@ public class SegmentList {
                 if (point.connections == 1) {
                     return continuousTangent;
                 }
-                // Multiple connections, take random angle between continuous tangent and direction to target
+                // Multiple connections (2+): compute tangent that points toward the average
+                // direction of already-connected points, so the new segment flows into the
+                // junction without overlapping existing segments.
                 else {
-                        // Pick a random angle between continuousTangent and toTarget
-                        double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
-                        double angleTarget = Math.atan2(segTangent.y, segTangent.x);
+                        // For level 0, keep original perpendicular/interpolation behavior
+                        if (segmentLevel == 0) {
+                            double magnitude = continuousTangent.length();
+                            double angleContinuous = Math.atan2(continuousTangent.y, continuousTangent.x);
+                            double angleTarget = Math.atan2(segTangent.y, segTangent.x);
+                            double angleDiff = angleTarget - angleContinuous;
+                            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                            double interpolationFactor = NoiseGen.nextFloat();
+                            double resultAngle = angleContinuous + angleDiff * interpolationFactor;
+                            return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
+                        }
 
-                        // Calculate the angular difference (taking the shorter path)
-                        double angleDiff = angleTarget - angleContinuous;
-                        // Normalize to [-PI, PI]
-                        while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-                        while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                        // Level 1+: average-of-neighbors approach to avoid overlap.
+                        // Compute average direction from junction to all connected endpoints.
+                        List<SegmentConnection> conns = pointToSegments.get(pointIdx);
+                        Point2D junctionPos = point.position.projectZ();
+                        double avgX = 0, avgY = 0;
+                        for (SegmentConnection conn : conns) {
+                            SegmentIdx seg = segments.get(conn.segmentIndex);
+                            int otherIdx = conn.isStart ? seg.endIdx : seg.srtIdx;
+                            Point2D otherPos = points.get(otherIdx).position.projectZ();
+                            Vec2D toOther = new Vec2D(junctionPos, otherPos);
+                            double len = toOther.length();
+                            if (len > MathUtils.EPSILON) {
+                                avgX += toOther.x / len;
+                                avgY += toOther.y / len;
+                            }
+                        }
 
-                        // Pick a random interpolation factor [0, 1] and interpolate the angle
-                        double interpolationFactor = NoiseGen.nextFloat();
-                        double resultAngle = angleContinuous + angleDiff * interpolationFactor;
+                        Vec2D avgDirection;
+                        double avgLen = Math.sqrt(avgX * avgX + avgY * avgY);
+                        if (avgLen > MathUtils.EPSILON) {
+                            avgDirection = new Vec2D(avgX / avgLen, avgY / avgLen);
+                        } else {
+                            // Connected points cancel out (symmetric) — fall back to segTangent
+                            avgDirection = segTangent;
+                        }
 
-                        // Create vector at the interpolated angle with the magnitude of continuousTangent
-                        double magnitude = continuousTangent.length();
-                        return new Vec2D(Math.cos(resultAngle) * magnitude, Math.sin(resultAngle) * magnitude);
+                        // Clamp to within 60 degrees of the raw point-to-target direction
+                        double maxTangentAngle = Math.PI / 3.0;
+                        return clampTangentAngle(avgDirection, segTangent, maxTangentAngle);
                     }
 
                 }
@@ -630,14 +659,18 @@ public class SegmentList {
             }
         }
 
-        // Determine if we need to negate based on connection types:
-        // Same-side connections (start-start or end-end): negate for opposite flow
-        // Opposite-side connections (start-end or end-start): same direction for continuous flow
+        // Determine orientation based on connection types:
+        // Opposite-side (end→start or start→end): C1 continuity applies — both tangents
+        //   point in the travel direction through the junction. Same direction.
+        // Same-side (start→start or end→end): this is a merge or split point where
+        //   two segments meet on the same side. C1 path continuity doesn't apply.
+        //   Return null to let the caller fall back to the segment's own direction,
+        //   preventing the curve from doubling back on itself.
         boolean sameType = (conn.isStart == isNewSegmentStart);
 
         if (sameType) {
-            // start→start or end→end: negate for proper flow direction
-            return existingTangent.negate();
+            // start→start or end→end: merge/split point — no continuous tangent
+            return null;
         } else {
             // end→start or start→end: same direction for continuous flow
             return existingTangent;
@@ -693,7 +726,7 @@ public class SegmentList {
             double rawMagnitude = Math.sqrt(jitterX * jitterX + jitterY * jitterY);
             double jitterMagnitude = rawMagnitude / Math.sqrt(0.5);
 
-            double maxJitter = maxSegmentLength * 0.5 * Math.pow(config.jitterReductionBase, level);
+            double maxJitter = maxSegmentLength * 0.6 * Math.pow(config.jitterReductionBase, level);
             double scaledMagnitude = Math.min(rawMagnitude * maxSegmentLength, maxJitter);
 
             if (rawMagnitude > MathUtils.EPSILON) {
@@ -704,40 +737,161 @@ public class SegmentList {
                 jitterY = 0;
             }
 
+            // Prevent jitter from moving points closer to end point (backward along segment).
+            // segAxis points srt→end; a positive dot means jitter pushes toward end, so remove it.
+            if (jitterX != 0 || jitterY != 0) {
+                double segAxisX = end.position.x - srt.position.x;
+                double segAxisY = end.position.y - srt.position.y;
+                double segLen = Math.sqrt(segAxisX * segAxisX + segAxisY * segAxisY);
+                if (segLen > MathUtils.EPSILON) {
+                    double normX = segAxisX / segLen;
+                    double normY = segAxisY / segLen;
+                    double dot = jitterX * normX + jitterY * normY;
+                    if (dot > 0) {
+                        jitterX -= dot * normX;
+                        jitterY -= dot * normY;
+                    }
+                }
+            }
+
             Point3D intermediatePoint;
             if (config.useSplines && config.curvature > 0) {
                 intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
-                                                           tangentSrt, tangentEnd, t, config.tangentStrength, jitterX, jitterY);
+                                                           tangentSrt, tangentEnd, t, config.curvature, jitterX, jitterY);
             } else {
                 intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, jitterX, jitterY);
             }
 
-            // Distance check (currently always passes since distanceToSel = MAX_VALUE)
-            double distanceToSel = Double.MAX_VALUE;
-            if (distanceToSel < minDistanceThreshold) {
+            // For levels > 0, check if the jittered point lands too close to any
+            // lower-level segment. If so, recompute without jitter to avoid overlap.
+            if (level > 0 && (jitterX != 0 || jitterY != 0)) {
+                Point2D pt2D = intermediatePoint.projectZ();
+                double proximityThreshold = minDistanceThreshold;
+                boolean tooClose = false;
+                for (SegmentIdx existingSeg : segments) {
+                    if (existingSeg.level >= level) continue; // only check lower levels
+                    Point2D segSrt = points.get(existingSeg.srtIdx).position.projectZ();
+                    Point2D segEnd = points.get(existingSeg.endIdx).position.projectZ();
+                    MathUtils.DistanceResult dr = MathUtils.distanceToLineSegment(pt2D, segSrt, segEnd);
+                    if (dr.distance < proximityThreshold) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                if (tooClose) {
+                    // Recompute without jitter
+                    if (config.useSplines && config.curvature > 0) {
+                        intermediatePoint = interpolateHermiteSpline(srt.position, end.position,
+                                                                   tangentSrt, tangentEnd, t, config.curvature, 0, 0);
+                    } else {
+                        intermediatePoint = interpolateLinearWithJitter(srt.position, end.position, t, 0, 0);
+                    }
+                    jitterMagnitude = 0;
+                }
+            }
+
+            // Skip points that are too close to the previous point in the chain
+            Point3D prevPoint = interPositions.isEmpty() ? srt.position : interPositions.get(interPositions.size() - 1);
+            double distToPrev = intermediatePoint.projectZ().distanceTo(prevPoint.projectZ());
+            if (distToPrev < minDistanceThreshold) {
                 continue;
             }
 
             Vec2D intermediateTangent;
+            // Reduce twist angle with level, same decay rate as jitter
+            double levelTwist = config.maxIntermediateTwistAngle * Math.pow(config.jitterReductionBase, level);
             if (config.useSplines && config.curvature > 0 && tangentSrt != null && tangentEnd != null) {
                 intermediateTangent = computeHermiteTangent(srt.position, end.position,
-                                                           tangentSrt, tangentEnd, t, config.tangentStrength);
+                                                           tangentSrt, tangentEnd, t, config.curvature);
                 intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
-                                                       config.maxIntermediateTwistAngle, rng);
+                                                       levelTwist, rng);
             } else {
                 Vec2D baseDirection = new Vec2D(srt.position.projectZ(), end.position.projectZ()).normalize();
                 intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
-                                                       config.maxIntermediateTwistAngle, rng);
+                                                       levelTwist, rng);
             }
+            // Normalize intermediate tangents to unit length (matching start/end tangent convention).
+            // The sampler's evaluateHermiteSpline scales by segLength * curvature, so unit-length
+            // tangents produce curvature proportional to sub-segment length.
             intermediateTangent = scaleTangentMagnitude(intermediateTangent,
-                ((maxSegmentLength * 8) / Math.pow(config.tangentReductionBase, level)));
+                (1.0 / Math.pow(config.tangentReductionBase, level)));
 
             interPositions.add(intermediatePoint);
             interTangents.add(intermediateTangent);
         }
 
+        // Self-intersection check: verify no two non-adjacent sub-segments cross.
+        // Chain is: srt -> interPositions[0] -> ... -> interPositions[n-1] -> end
+        // If a crossing is found, replace the offending intermediate point with a
+        // straight-line interpolation (remove jitter) to eliminate the loop.
+        if (interPositions.size() >= 3) {
+            boolean fixed;
+            do {
+                fixed = false;
+                // Build chain of 2D points
+                List<Point2D> chain = new ArrayList<>();
+                chain.add(srt.position.projectZ());
+                for (Point3D p : interPositions) chain.add(p.projectZ());
+                chain.add(end.position.projectZ());
+
+                // Check all pairs of non-adjacent chain segments
+                outer:
+                for (int i = 0; i < chain.size() - 1; i++) {
+                    for (int j = i + 2; j < chain.size() - 1; j++) {
+                        if (i == 0 && j == chain.size() - 2) continue; // skip first-last
+                        if (segmentsIntersect2D(chain.get(i), chain.get(i+1),
+                                                chain.get(j), chain.get(j+1))) {
+                            // Remove the intermediate point closest to the crossing
+                            // (j refers to the later segment; its start index in interPositions is j-1)
+                            int removeIdx = Math.min(j - 1, interPositions.size() - 1);
+                            if (removeIdx >= 0) {
+                                interPositions.remove(removeIdx);
+                                interTangents.remove(removeIdx);
+                                fixed = true;
+                                break outer;
+                            }
+                        }
+                    }
+                }
+            } while (fixed && interPositions.size() >= 3);
+        }
+
         // Total segments = interPositions.size() + 1 (for the final segment to end)
         int totalSegments = interPositions.size() + 1;
+
+        // === Reduce original start/end tangent magnitudes based on intermediate point displacement ===
+        // When jitter and twist push intermediate points away from the original Hermite curve,
+        // the original tangent vectors become less valid for the resulting sub-segments.
+        // Scale tangent magnitude down proportionally to displacement.
+        Vec2D adjustedTangentSrt = tangentSrt;
+        Vec2D adjustedTangentEnd = tangentEnd;
+
+        if (!interPositions.isEmpty()) {
+            // Measure displacement of first intermediate point from its un-jittered curve position
+            double tFirst = 1.0 / numDivisions;
+            Point3D idealFirst = (config.useSplines && config.curvature > 0)
+                ? interpolateHermiteSpline(srt.position, end.position, tangentSrt, tangentEnd, tFirst, config.curvature, 0, 0)
+                : interpolateLinearWithJitter(srt.position, end.position, tFirst, 0, 0);
+            double displacementFirst = interPositions.get(0).projectZ().distanceTo(idealFirst.projectZ());
+            double subSegLen = srt.position.projectZ().distanceTo(interPositions.get(0).projectZ());
+            if (subSegLen > MathUtils.EPSILON) {
+                double reductionFirst = Math.max(0.0, 1.0 - displacementFirst / subSegLen);
+                adjustedTangentSrt = scaleTangentMagnitude(tangentSrt, tangentSrt.length() * reductionFirst);
+            }
+
+            // Measure displacement of last intermediate point from its un-jittered curve position
+            double tLast = (double)(numDivisions - 1) / numDivisions;
+            Point3D idealLast = (config.useSplines && config.curvature > 0)
+                ? interpolateHermiteSpline(srt.position, end.position, tangentSrt, tangentEnd, tLast, config.curvature, 0, 0)
+                : interpolateLinearWithJitter(srt.position, end.position, tLast, 0, 0);
+            Point3D actualLast = interPositions.get(interPositions.size() - 1);
+            double displacementLast = actualLast.projectZ().distanceTo(idealLast.projectZ());
+            subSegLen = actualLast.projectZ().distanceTo(end.position.projectZ());
+            if (subSegLen > MathUtils.EPSILON) {
+                double reductionLast = Math.max(0.0, 1.0 - displacementLast / subSegLen);
+                adjustedTangentEnd = scaleTangentMagnitude(tangentEnd, tangentEnd.length() * reductionLast);
+            }
+        }
 
         // Determine which segments to materialize (closest to end = highest indices)
         int startFrom = Math.max(0, totalSegments - maxSegments);
@@ -749,7 +903,7 @@ public class SegmentList {
         if (startFrom == 0) {
             // Creating all segments from the original start
             prevIdx = srtIdx;
-            prevTangent = tangentSrt;
+            prevTangent = adjustedTangentSrt;
         } else {
             // Skip early segments; start from an intermediate point
             // The point at index (startFrom - 1) becomes the new chain start
@@ -767,7 +921,7 @@ public class SegmentList {
         }
 
         // Create final segment to end point
-        addBasicSegment(prevIdx, endIdx, level, prevTangent, tangentEnd);
+        addBasicSegment(prevIdx, endIdx, level, prevTangent, adjustedTangentEnd);
     }
     
     /**
@@ -784,7 +938,7 @@ public class SegmentList {
      * @return Interpolated point with jitter applied
      */
     private Point3D interpolateHermiteSpline(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd,
-                                             double t, double tangentStrength, double jitterX, double jitterY) {
+                                             double t, double curvature, double jitterX, double jitterY) {
         double t2 = t * t;
         double t3 = t2 * t;
         double h00 = 2 * t3 - 3 * t2 + 1;
@@ -793,7 +947,7 @@ public class SegmentList {
         double h11 = t3 - t2;
 
         double segLength = srt.projectZ().distanceTo(end.projectZ());
-        double tangentScale = segLength * tangentStrength;
+        double tangentScale = segLength * curvature;
 
         double x = h00 * srt.x + h10 * (tangentSrt != null ? tangentSrt.x * tangentScale : 0)
                  + h01 * end.x + h11 * (tangentEnd != null ? tangentEnd.x * tangentScale : 0);
@@ -822,9 +976,9 @@ public class SegmentList {
      * Returns the derivative of the spline, which gives the direction at that point.
      */
     private Vec2D computeHermiteTangent(Point3D srt, Point3D end, Vec2D tangentSrt, Vec2D tangentEnd,
-                                        double t, double tangentStrength) {
+                                        double t, double curvature) {
         double segLength = srt.projectZ().distanceTo(end.projectZ());
-        double tangentScale = segLength * tangentStrength;
+        double tangentScale = segLength * curvature;
 
         // Hermite basis function derivatives
         double t2 = t * t;
@@ -856,9 +1010,8 @@ public class SegmentList {
         // Compute twist reduction factor based on jitter
         // More jitter (more displacement) -> less twist
         // Use exponential decay: twist scales down as jitter increases
-        //double jitterRatio = Math.min(1.0, jitterMagnitude / 0.02); // Normalize to typical jitter scale
-        //double twistScale = Math.exp(-2.0 * jitterRatio); // Exponential decay
-        double twistScale = (1.0 - jitterMagnitude); // Linear decay alternative
+        // Steeper linear decay: twist falls off faster with jitter to prevent tight S-curves
+        double twistScale = Math.max(0, 1.0 - 2.0 * jitterMagnitude);
 
         // Random twist angle in range [-maxTwist, +maxTwist], scaled by twist reduction
         double twistAngle = (rng.nextDouble() * 2.0 - 1.0) * maxTwist * twistScale;
@@ -870,6 +1023,19 @@ public class SegmentList {
         double newY = tangent.x * sin + tangent.y * cos;
 
         return new Vec2D(newX, newY);
+    }
+
+    /**
+     * Test if two 2D line segments intersect (excluding endpoints).
+     */
+    private static boolean segmentsIntersect2D(Point2D a1, Point2D a2, Point2D b1, Point2D b2) {
+        double d1x = a2.x - a1.x, d1y = a2.y - a1.y;
+        double d2x = b2.x - b1.x, d2y = b2.y - b1.y;
+        double cross = d1x * d2y - d1y * d2x;
+        if (Math.abs(cross) < MathUtils.EPSILON) return false;
+        double t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / cross;
+        double u = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / cross;
+        return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
     }
 
     /**

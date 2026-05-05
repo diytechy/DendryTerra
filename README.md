@@ -28,12 +28,35 @@ The `return` parameter selects what value `getSample` produces. Different return
 | `PIXEL_LEVEL` | Cached pixel resolution level | `cachepixels > 0` |
 | `PIXEL_DEBUG` | Cached pixel point type visualization | `cachepixels > 0` |
 | `PIXEL_RIVER_LEGACY` | River/border/outside classification (0/1/2) using pixel cache | `cachepixels > 0` |
-| `PIXEL_RIVER` | BigChunk-cached distance (de-quantized to sampler units) | — |
+| `PIXEL_RIVER` | BigChunk-cached normalized distance on [-1, 1] scale | — |
 | `PIXEL_RIVER_CTRL` | BigChunk-cached elevation (de-quantized) | — |
+| `PIXEL_RIVER_FAR` | Coarse far-distance to nearest segment in world units (4x4 cache) | — |
+| `PIXEL_RIVER_FAR2` | Far-distance with normal-based sub-cell offset compensation (4x4 cache) | — |
+| `PIXEL_RIVER_FAR_NORM` | Far-distance normalized to same [-1, 1] scale as `PIXEL_RIVER` | — |
+
+**PIXEL_RIVER distance scale:**
+- `-1.0` = query is at the river centerline
+- `0.0` = query is at the flow edge (distance equals river half-width)
+- `+1.0` = query is at the border edge (flow edge + border-width away)
+- `> +1.0` = beyond the border (only from PIXEL_RIVER_FAR_NORM, which is not clamped)
+
+**PIXEL_RIVER_FAR / FAR2 / FAR_NORM performance note:** These types skip the expensive 256×256 block rasterization on chunk cache-miss; only the 64×64 far-distance cache is filled (~8 KB/chunk vs ~200 KB for the full block grid). This makes cold-start cost significantly lower than `PIXEL_RIVER` when only far-distance is needed.
 
 ### PIXEL_RIVER y-input selector
 
-When `return` is `PIXEL_RIVER`, calling the 4-argument form `getSample(seed, x, y, z)` with `y == 1.0` returns elevation instead of distance (same as `PIXEL_RIVER_CTRL`). Any other `y` value falls through to normal distance output. This allows a single sampler instance to provide both distance and elevation.
+When `return` is `PIXEL_RIVER`, the 4-argument form `getSample(seed, x, y, z)` selects among several sub-modes based on `y`. This allows a single sampler instance to serve multiple data channels without allocating extra caches.
+
+| `y` range | Returns | Cache updated on miss |
+|---|---|---|
+| `y >= 3.0` | Distance-to-elevation-change (world units, 4-bit quantized) | 256×256 block cache (~200 KB/chunk) |
+| `2.0 <= y < 3.0` | Segment level (0–14, 15 = not available) | 256×256 block cache (~200 KB/chunk) |
+| `0.0 < y < 2.0` | Elevation (same as `PIXEL_RIVER_CTRL`) | 256×256 block cache (~200 KB/chunk) |
+| `y == 0.0` | Normal distance output (same as 2-argument call) | 256×256 block cache (~200 KB/chunk) |
+| `-2.0 < y < 0.0` | Far-distance in world units (same as `PIXEL_RIVER_FAR`) | 64×64 far cache only (~8 KB/chunk) |
+| `-3.0 <= y <= -2.0` | Far-distance with normal compensation (same as `PIXEL_RIVER_FAR2`) | 64×64 far cache only (~8 KB/chunk) |
+| `y < -3.0` | Normalized far-distance on [-1, 1] scale (same as `PIXEL_RIVER_FAR_NORM`) | 64×64 far cache only (~8 KB/chunk) |
+
+**Cache layer independence:** The 256×256 block cache and the 64×64 far cache are computed and stored independently within each BigChunk. A query with `y < 0` populates only the far cache; a subsequent `y >= 0` query on the same chunk still triggers full block rasterization. Conversely, if blocks are already computed, a `y < 0` query on that chunk still needs to compute the far cache separately. Mixing positive- and negative-y queries for the same chunk will ultimately cause both layers to be computed. If only far-distance values are needed, use exclusively negative `y` values to avoid triggering the expensive block rasterization.
 
 ## Parameters
 
@@ -145,17 +168,17 @@ These parameters control how the river network is generated. Since all return ty
 - **Config key**: `riverwidth` (Sampler, nullable), `default-riverwidth` (double)
 - **Defaults**: `null` / `16.0`
 - **Units**: sampler (world) units
-- **Affects**: `PIXEL_RIVER_LEGACY`, `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`
+- **Affects**: `PIXEL_RIVER_LEGACY`, `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2`, `PIXEL_RIVER_FAR_NORM`
 - **Does NOT affect**: `DISTANCE`, `WEIGHTED`, `ELEVATION`, `PIXEL_ELEVATION`, `PIXEL_LEVEL`, `PIXEL_DEBUG`
-- **Effect**: Base river width before level falloff. When a `riverwidth` sampler is provided, it is queried at the point location in sampler coordinates. River width at each level = `baseWidth * 0.6^level`, with a minimum of `2 * cachepixels`. In PIXEL_RIVER/PIXEL_RIVER_CTRL, this controls how wide rivers are drawn into the BigChunk cache. Width transitions are applied at junctions where a higher-level river flows into a lower-level river.
+- **Effect**: Base river width before level falloff. When a `riverwidth` sampler is provided, it is queried at the point location in sampler coordinates. River width at each level = `baseWidth * riverWidthFalloff^level`, with a minimum of `2 * cachepixels`. In `PIXEL_RIVER`/`PIXEL_RIVER_CTRL`, this controls how wide rivers are drawn into the BigChunk cache. In `PIXEL_RIVER_FAR_NORM`, it is sampled at the query location (level 0, no falloff) to approximate the flow-edge threshold for normalization.
 
 #### `borderwidth` / `default-borderwidth`
 - **Config key**: `borderwidth` (Sampler, nullable), `default-borderwidth` (double)
 - **Defaults**: `null` / `20.0`
 - **Units**: sampler (world) units
-- **Affects**: `PIXEL_RIVER_LEGACY` only
-- **Does NOT affect**: `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, and all other return types
-- **Effect**: Width of the border zone around rivers. Points within `riverWidth + borderWidth` of a segment return 1 (border). Only used by the legacy river classification system.
+- **Affects**: `PIXEL_RIVER_LEGACY`, `PIXEL_RIVER_FAR_NORM`
+- **Does NOT affect**: `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2`, and all non-BigChunk types
+- **Effect**: Width of the border zone around rivers. In `PIXEL_RIVER_LEGACY`, points within `riverWidth + borderWidth` of a segment return 1 (border). In `PIXEL_RIVER_FAR_NORM`, used as the denominator for positive normalized distance: `(dist - riverWidth) / borderWidth` gives +1 at the border edge.
 
 #### `max`
 - **Config key**: `max`
@@ -219,11 +242,11 @@ DendryTerra uses several caching layers depending on return type:
 
 | Cache | Size Limit | Used By |
 |---|---|---|
-| SegmentList LRU cache | 10 MB | `PIXEL_RIVER`, `PIXEL_RIVER_CTRL` |
-| BigChunk LRU cache | 10 MB | `PIXEL_RIVER`, `PIXEL_RIVER_CTRL` |
+| SegmentList LRU cache | 10 MB | All BigChunk types |
+| BigChunk LRU cache | 10 MB | All BigChunk types |
 | Pixel cache (per-cell) | 10 MB | `PIXEL_ELEVATION`, `PIXEL_LEVEL`, `PIXEL_DEBUG`, `PIXEL_RIVER_LEGACY` |
 
-For `PIXEL_RIVER` / `PIXEL_RIVER_CTRL`, the SegmentList and BigChunk caches are only allocated when those return types are selected. Other return types skip allocation entirely.
+"BigChunk types" are: `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2`, `PIXEL_RIVER_FAR_NORM`. Both the SegmentList and BigChunk caches are only allocated when one of these return types is active. The FAR types populate only the 64×64 far-distance sub-cache within each BigChunk (~8 KB/chunk); the full 256×256 block grid (~200 KB/chunk) is only rasterized for `PIXEL_RIVER` and `PIXEL_RIVER_CTRL`.
 
 ## Architecture Overview
 

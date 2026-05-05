@@ -1,10 +1,13 @@
 package dendryterra;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * LRU cache for SegmentList instances from generateAllSegments.
  * Stores up to 10 MB of segment lists to avoid regenerating asterisms and segments.
+ * Thread-safe: uses ConcurrentHashMap for reads and synchronized for mutations.
  */
 public class SegmentListCache {
     private static final long MAX_MEMORY = 10 * 1024 * 1024; // 10 MB
@@ -16,7 +19,7 @@ public class SegmentListCache {
     private static final int BYTES_PER_SEGMENT = 48;
 
     /** Map from cell coordinates to cached segment lists */
-    private final Map<CellKey, CachedSegmentList> cache;
+    private final ConcurrentHashMap<CellKey, CachedSegmentList> cache;
 
     /** Current estimated memory usage in bytes */
     private long currentMemory;
@@ -24,8 +27,13 @@ public class SegmentListCache {
     /** LRU counter for cache eviction */
     private int lruCounter;
 
+    // Hit/miss counters for diagnosing unexpected recomputation
+    private final AtomicLong hits     = new AtomicLong(0);
+    private final AtomicLong misses   = new AtomicLong(0);
+    private final AtomicLong evictions = new AtomicLong(0);
+
     public SegmentListCache() {
-        this.cache = new HashMap<>();
+        this.cache = new ConcurrentHashMap<>();
         this.currentMemory = 0;
         this.lruCounter = 0;
     }
@@ -41,10 +49,12 @@ public class SegmentListCache {
         CachedSegmentList cached = cache.get(key);
 
         if (cached != null) {
-            cached.lruCounter = ++lruCounter;
+            cached.lruCounter = lruCounter; // Approximate LRU, exact ordering not critical
+            hits.incrementAndGet();
             return cached.segmentList;
         }
 
+        misses.incrementAndGet();
         return null;
     }
 
@@ -54,8 +64,13 @@ public class SegmentListCache {
      * @param cellY Cell Y coordinate
      * @param segmentList The SegmentList to cache
      */
-    public void put(double cellX, double cellY, SegmentList segmentList) {
+    public synchronized void put(double cellX, double cellY, SegmentList segmentList) {
         CellKey key = new CellKey(cellX, cellY);
+
+        // Check if already inserted by another thread
+        if (cache.containsKey(key)) {
+            return;
+        }
 
         // Calculate memory usage for this segment list
         long memorySize = estimateMemory(segmentList);
@@ -68,13 +83,6 @@ public class SegmentListCache {
         // Add to cache if it fits
         if (currentMemory + memorySize <= MAX_MEMORY) {
             CachedSegmentList cached = new CachedSegmentList(segmentList, memorySize, ++lruCounter);
-
-            // Remove old entry if updating
-            CachedSegmentList old = cache.get(key);
-            if (old != null) {
-                currentMemory -= old.memorySize;
-            }
-
             cache.put(key, cached);
             currentMemory += memorySize;
         }
@@ -91,6 +99,7 @@ public class SegmentListCache {
 
     /**
      * Evict the least recently used segment list from the cache.
+     * Must be called while holding the synchronized lock.
      */
     private void evictOldest() {
         if (cache.isEmpty()) {
@@ -111,8 +120,29 @@ public class SegmentListCache {
             CachedSegmentList removed = cache.remove(oldestKey);
             if (removed != null) {
                 currentMemory -= removed.memorySize;
+                evictions.incrementAndGet();
             }
         }
+    }
+
+    /**
+     * Return a summary of cache activity (hits, misses, evictions, current size).
+     * A high miss count relative to hits indicates unexpected recomputation —
+     * either from eviction pressure or a cache key mismatch.
+     */
+    public String getStats() {
+        long h = hits.get(), m = misses.get(), e = evictions.get();
+        long total = h + m;
+        double hitRate = total > 0 ? 100.0 * h / total : 0;
+        return String.format("hits=%d, misses=%d (%.1f%% hit rate), evictions=%d, entries=%d, mem=%dKB",
+            h, m, hitRate, e, cache.size(), currentMemory / 1024);
+    }
+
+    /** Reset all counters (useful between benchmark runs). */
+    public void resetStats() {
+        hits.set(0);
+        misses.set(0);
+        evictions.set(0);
     }
 
     /**
@@ -121,7 +151,7 @@ public class SegmentListCache {
     private static class CachedSegmentList {
         final SegmentList segmentList;
         final long memorySize;
-        int lruCounter;
+        volatile int lruCounter;
 
         CachedSegmentList(SegmentList segmentList, long memorySize, int lruCounter) {
             this.segmentList = segmentList;

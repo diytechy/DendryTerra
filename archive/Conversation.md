@@ -1429,3 +1429,371 @@ The function "boundTangentMagnitude" should be renamed to "ScaleTangentMagnitude
 ########################################
 
 Consider method to generate points near the cell wall to prevent vertical / horizontal segments from forming naturally against cell boundaries.  Similar to epsilon method used in base Dendry noise sampler.
+
+###################################
+
+Add an option like "ENABLE_SEGMENT_FILL_ALL" that will allow opposite tangent cone computation to be skipped (in projectConeToBoxes, "// Arc samples at this radius - both sides (positive and opposite)"), instead just compute along the single active tangent (again, don't sweep across the full cone for the opposite side).  Since the opposite tangent cone is on the inside curve, it's not necessary to perform a sweep along the cone.
+
+When blot mode is enabled, take the river width and subtract it by the pixelcache size, since blotting will naturally result in wider artifacts.
+
+If the probability of branching is 0 (near 0?) at the center of the query cell, just disable and 1+ level segments, since the points shouldn't get generated anyways.
+
+Consider allowing segments to flow into lower levels?
+
+For the 3d sampler query, allow any non-zero y value input to return elevation / control data instead of only specifically 1.0.
+
+Don't perform segment point filling on end points that are connected to lower level segments.
+
+Riverwidth should never be evaluated to less than the pixelcache size, so that a full river width is rendered within a pixel.
+
+Anything else that can be done to improve river "squiglyness"?  Maybe just need to query with noise applied to coordinates, perlin would likely be sufficient, but frequency is questionable.  Period of 10 blocks?
+
+##################################
+
+Build a plan to make sure the PIXEL_RIVER river distance sampler output act as a normalized value from -1 to 1 instead of the current implimentation from 0 to max-dist.  This will require some changes to the calculations to satisfy:
+
+IMPORTANT: Quantization must be taken care of here very carefully, as real world units are converted to cell units according to the gridsize, and those are further converted to bigcache location units using the pixelcache resolution.
+
+1. Instead of stepping from 0 to 1 from the river center to the edge, the output should step from -1 to 0 as it comes from the center of the river to the outside edge.
+2. The distance from the outside edge than should be 0 from the edge to 1, such that at 1 the true world distance is equal to borderwidth (or borderwidth-default if borderwidth is null)
+3. The borderwidth value for a river shall be saturated to max-dist. (if borderwidth exceeds this, it shall be saturated)
+
+#################################
+
+Implimennt a change to ensure the elevation for all level 1+ points evaluate to the minimum quantized distance (1/255 * max).
+
+##################################
+
+Plan an update for DendryTerra to have runtime validation of the river width sampler and river distance sampler.
+
+If riverwidthSampler is evaluated, produce a warning if it's value is more than defaultRiverwidth, and saturate the returned sampler distance to defaultRiverwidth.
+
+If borderwidthSampler is evaluated, produce a warning if it's value is more than defaultBorderwidth, and saturate the returned sampler distance to defaultRiverwidth.
+
+Plan an update for DendryTerra to support a new return type PIXEL_RIVER_FAR which reports the far distance from the river edge in actual world units.  Also report this if the y input for PIXEL_RIVER is less than 0.  (So the elevation should only be reported when the y input is more than 0, and current default distance is reported with ==0).
+
+This will report the approximate far distances to any river edge.
+
+This will require additional refactoring in the pixel cache, recommended direction:
+
+Each big cache will also contain a smaller 8x8 far-distance cache that will contain for each center "point" in the grid:
+ Distance from far cache border to the z+ segment (Uint8)
+ Distance from far cache border to z- segment (Uint8)
+ Distance from far cache border to x+ segment (Uint8)
+ Distance from far cache border to x- segment (Uint8)
+
+Update collectSegmentsForBigChunk to use maxDistPrune instead of maxDistGrid since it only needs to keep segments very close.
+
+Then introduce a new function before collectSegmentsForBigChunk that acts very similarly but collects all segments within the maxDistGrid, which will be used to normalize the distance values for far values and fill those far distance properties.
+
+Within this new function:
+
+	Walk along each segment similar to what is done for sampleSegmentAlongSpline, but steps can be in the size of of a far distance cache since this does not need to be very precise.  For each point along the segment (including the end-points), determine it's quadrent against the far cache point, and select the distance with the highest value, and update the distance for the far cache point if it is smaller than it's current value.  Note since this is based on quadrent, only 2 distances of any point in the 8x8 far cache grid could be updated, and only if that distance is less than the current stored distance for that segment direction.
+ 
+    If an evaluated point is located inside of the far grid cache square, all distances for that grid should be set to 0.
+
+    Distance should be stored in quantized values, where the max value (255 UInt8) corresponds to the maxDist value.
+
+Then when returning this far distance, the query coordinate can find the far-grid cache it belongs to, use it's offset to find the actual distance to any point in the x- / x+ / z- / z+ direction (by adding it's offset in the far-cache grid by the distances stored for the grid properties), and report back the lowest distance.
+
+##################
+
+I have made some modifications to the last implimented plan in order to get distance from the query point, ignoring any concept of boundary.  This is PIXEL_RIVER_FAR.
+
+Output magnitudes are correct, and sometimes results appear correct, but two issues:
+
+Sometimes the gradient created from the query is not smooth or flipped. For instance, if the distance from a river is 100 at coordinates (150,150), the river distance reported at (151, 150) should be 101, but instead it appears to sometimes be 99, as if there is something causing an inverted calculation.
+
+Additionally, sometimes distances abruptly increase (like from 100 to 200), indicating the distance calculation is getting missed / overwritten from another segment, or segment points are getting skipped entirely.
+
+##################################
+
+********Complex option:
+
+Create a plan to try this a little differently.  Instead of storing the 4 distances from center which is sensative to corner artifacts (ex: distXPlus), change the cache to store:
+
+LowestQuantizedDistance (Same units as today, but just stores the lowest distance based on the evaluated distances between segment points and the pixel cache.)
+Store closest quantized river distance, store y slope, store x slope.
+
+Normal (Quantized angle, 255 bits to cover the entire angle around the point) the describes the direction that gets further away from the selected river.  It may make sense to wait to calculate the normal until after the closest pair is found.
+
+When evaluating, just return the distance for the farcache if the query point is on the cache.
+
+Add another return type (PIXEL_RIVER_FAR2, or y<=-2 for PIXEL_RIVER) that will also include calculation of the normal angle to further compensate the reported far distance based on where the query point is on far cache.  So if the normal angle is 45 degrees NE (X+ / Z+) and the query point is on the upper right corner off the farcache, the reported distance would increase by the corresponding world units knowing the normal defines the distance change.
+
+*********Super simple option:
+
+##############################################
+
+Add an additional mode to ENABLE_BLOT_FILLING, such that when it is "2" all 8 squares around a sample point are filled, instead of just the 4 around the adjacent sides.
+
+The normal angle used in evaluateWithBigChunkFarDistance2 should just be the perpendicular arrow from the river's evaluated tangent moving away from the river, instead of the angle computed between the segment sample and the far cell center.
+
+If an parameter is defined for the sampler which is NOT used (ex: default-riverwidth is a parameter which the sampler does use), produce a warning so the user knows the sampler may not be configured correctly.
+
+#################################
+
+Plan an update the removes any level 1+ point (so that it cannot be used in subsequent segment generation) if the probaility sampler (if not null) returns 0 (or nearly 0) at that point's position.
+
+####################################
+
+2 changes related to segment / flow elevation.
+
+In PIXEL_RIVER_CTRL, which returns the flow's elevation given the coordinates requested and resolution.  There should be additional protections against allowing the elevation to drop suddenly.
+
+1. When setting the elevation of a block, if the elevation was previously set (not IntMax)and the river distance exceeds 0 (outside the river border), do not update the elevation.
+2. When evaluating a segment's elevation, instead of interpolating the elevation from the higher position to the lower position over the entire range of the segment, interpolate the height from the heighest point to half of the segment length, this way the lowest elevation is achieved half-way down the segment, which may miticate a drop in elevation that may be seen at evaluation of the next segment.
+
+
+####################################
+
+Create a plan and ask questions for clarity if needed for 2 more changes related to this dendry filter, specifically this change would likely best add another uint8 variable to the block datatype (BigChunkBlock)
+
+Add 1 new parameters:
+
+"height-change-max-distance" - initialize to 15.
+
+Store 2 new variables in this uint8 variable:
+
+1. A 4 bit variable representing the level of the river segment.  Initialize level to 15 (To mean not available)
+2. A 4 bit variable storing a quantized distance to the next quantized change in elevation.  (Initialize to a bit value of 15 to mean undefined or too far)
+
+While setting the other variables related to the BigChunkBlock like elevation and distance, also set these two new variables:
+
+- Set the level according to the current segments starting / higher elevation point.  Lower level segments should take priority.  This should be set over the entire river distance from -1 to 1.  This would be returned from 0 to 15 when the 3d sampler is queried with 2<=y<3.
+- Set the quantized distance according to the distance from the last position along the segment quantized distance changed, noting this is quantized according to the "height-change-max-distance".  So with a default value of 15 (which is world units) and a gridsize of 1000 (which controls evaluation scaling), this quantized distance should range from 0 to 0.015.  Each time the quantized elevation along the segment decreases, this distance should be the distance along the segment spline to that step change in elevation.  It need only increase downward.  This would be returned from 0 to "height-change-max-distance" when the 3d sampler is queried with 3<=y<4.
+
+Finally, update the version of Dendry rivers to "-5" instead of "-4"
+
+##############################3
+
+Plan for some tweaks.
+
+For level return value (based on the nibble), it should only update / set within the distance boundary of the river (outside the river (distance>0, distance integer > 128) the level should not be set.)
+
+Also, can you create a special return trigger such that if either x or y are NaN, y is interpretted as a level request, and the returned value is "Math.pow(RIVER_WIDTH_FALLOFF, level);" where the level in this case is the y level requested.  This way it can be understood how Dendry is changing the river width as a function of river width.
+
+###########################3
+
+Make a plan for some changes.
+
+You implied the elevation is not set beyond the river borders, but this should actually be a little more complex for better blending.
+
+To do this I think a temporary array will be needed (the same size as BigChunk), which can track the evaluated river distances.
+
+As segments are being evaluated, the lower elevation should always win within a river boundary (as should already be implimented).  Outside the river boundary, the elevation shall be overwritten only while the current evaluated river distance beyond the river border (>0) is less than the river distance that was used to last set that the elevation on that same block.
+
+####################################
+
+evaluateWithBigChunkDistChange should only reset distance to 0 when a confirmed change in elevation occurs (which should never be at the first or last point of a segment).  It looks like because "accumulatedArcLength" is initialized to 0 every evaluated sample around the start point is seeing it as a reset to the elevation step change.  I believe to fix this "accumulatedArcLength" just needs to be initialized to and infinite value.  Can you checkk that proposal and confirm that it will result in evaluateWithBigChunkDistChange only going to 0 when a detected change in elevation occurs?
+
+############################################
+
+The changes from "1f71054eadae" appear to be causing some unintended artifacts around the way elevation drop-off is happening across the width of the river and at river intersection points.
+
+Instead of evaluating on a compressed hermite (which then appears to get out of sync with other evaluations), the evaluated elevation should just be clamped to return the start points elevation from 0.0<t<0.25 then interpolate down to the end point elevation at 0.75<t<1.0.
+
+I'm also not sure if the changes to the segment distance (dcdbd569acb) affected outerElev and innerElev in unexpected ways.  As those elevation layers rely on distance travelled and slope information to create a curve across the width of the river.
+
+##########################################
+
+Reviewing the output, I'm seeing artifacts where just a few block points near the center of the river are lower elevation than the rest of the span of the river.  The intent of the innerElev / OuterElev is to create a smooth curve across the width of the river, and this was working before, but it appears some other update broke it.  I suspect either the radius is getting calculated to a very small value (making the centerElev evaluate for only a few segments, and then jumping up to a higher elevation for many inner / outper segments), or something else is causing the elevation to just overwrite for only that point.  Can you investigate what might be causing just a few points near centerElev to drop down when the radius should keep a consistent profile across the width of the river channel?
+
+I am seeing long strips in the river where it appears that only the central part of the river is at a lower elevation, and it does not spread out until far along into the river.
+
+#############################
+
+On line 3811, is where elevation is set.
+
+I'm trying to investigate discontinuities in this sampler project's output (Discontinuities.png, circled in a blue surround)
+
+After pruning segments for the big chunk (line 3399), can you create a validation that ensures all segment points that are located at the same position have the same elevation?  If not, produce an error, as it seems some segments (that are connected via the same points) somehow evaluate with a step change in elevation, which should not be possible.
+
+Additionally, I suspect some of this may be due to how the outerRadius and innerRadius variables are being used.  Those should be the distance till the elevation falls at the boundary of the river, but it appears it may be working inversly (elevation is falling at the edges earlier than the center).  Instead of limiting this to 3 variables (center / inner / outer) it might be better to redesign this into an array that can track multiple elevation changes and distances to outer dropoff (instead of using the simantics of "radius"), but it is not clear to me if this is a source of some discontinuities.
+
+##############################
+
+To address some non-ideal behavior with the distance tracking to elevation change, plan for some updates:
+
+1. The distance to elevation change (from the 4 bit nibble, return y value 3.0) should also change along the length of the river just like the actual elevation changes as a function of the array based layer elevation / layer radius delays changes in elevation to further down the segment.
+2. The distance to elevation change should only be populated within the river boundary (river distance <=0, or integer 127 value) right now it appears to extend beyond that border.
+
+
+
+The source of discontinuity appears to be due to very small loops causing the elevation to change as it's wrapping around a point and doubling back on itself.  
+
+I need some deeper analysis around segment generation.
+
+It appears some segments cross over other segments creating knots / loops that create these discontinuities if they are offset slightly.  I'd like to explore some options to reduce / mitigate segment knotting / looping above level 0:
+    Curvature might need to fall off with level, but this is already normalized for distance.
+    If a segment is in range of another segment (the maximum river width * 2) that it is not connecting with, it might risk creating an overlap.  The actual segmeent branch shouldn't be removed, but how can the segmeent winding be compensated differently?
+    The jitter might need to be reduced during segment subdivision.  But jitter is already restricted to a function of the segment length.
+    Perhaps as jitter increases, curvature also needs to be decreased.
+    To give river / flow structures more variation, it might be good to have a minimum jitter while also decreasing the maximum jitter, and further restricting any applied twist as a funciton of applied jitter, but I thougght that was already completed.
+
+Additionally, segments need to come into their lower level segment at -20 to +20 perpendicular to the lower level segment that they are branching from (aka: A segment that already has 2+ connections), or else the segment can travel right next to the lower level segment, but with a different elevation profile, which will also cause discontinuities.
+
+Please provide recommendations for this initial analysis and any other suspecious items that are observed while investigating.
+
+#########################################
+
+Much better, the only time I see double-backing now is due to points being located on top of a segments, for which there is currently no protection (points are only compared to existing points).
+
+After point cloud generation (likely also including point merging and probabilistic removal) also remove any points that are within merge distance of a lower level segment spline.  It will probably be important to use hermite calculations here as well instead of linear approximation given how much the tangents change the distance.  It may be easier to just evaluate points along the segment vs the point cloud of the next level, since this doesn't need to be exact, it just needs to remove points from the next level that are in proximity to the segment line.
+
+##########################################
+
+Interesting.  I still see level 1 points basically directly on top of a level 0 segment.  Based on the segment shortening per level, do the number of samples need to increase?  Is the cutoff distance the merge distance?  The divisions to check on the lower level segment should have at least 1/3 the distance between them compared to the cutoff / rejection distance.
+
+##########################################
+
+No, I'm still seeing it, I suppose it could be from segment subdivision and jitter, since those points aren't filtered out, but then the overlapping filter should reject and rollback.  Is the segment overlap and rollback being compared to both segments on the same level and segments at lower levels?
+
+############################################
+
+Perform some investigations and plan respective updates:
+
+IMPORTANT: Distance to elevation changes are still not following the elevation arc, they all appear as straight lines, but the elevation shifts that occur with the array restricted by MAX_ELEV_LAYERS all produce an arc in elevation steps across the width of the river.
+
+The elevation itself also appears to sometimes be overwriting the elevation that was set by adjacent but non-intersecting rivers.  This may be related to earlier changes related to tracking elevation changes in an array (MAX_ELEV_LAYERS).  Once outside the river boundary, the same elevation that was used at the edge of the river should continue to push outward, continuing to also set it's distance for the tracking array to indicate what distance was used to set the elevation.  Once outside the river border, if the elevation block was already written and the distance that was set was less than the current river distance + blot distance (since blotting expands the size of a segment), the already set elevation should not be overwritten.
+
+Finally, there are still some issues with overlap, I think the max allowable jitter needs to fall off more heavily for higher level segments, and perhaps points created during subdivision also need to be checked for being to close to a level 0 segment.  Or does jitter need to make sure subdivided points are only pushed away from the segment they are connected to.  There might be a few options here, but I'm convinced it is rooted in subdivided points somehow landing on top of a different segment.
+
+######################################
+
+I'm still seeing issues with the distance to elevation changes and elevation overwriting zones within the bounds of other rivers / segments.  Perhaps this  implementation should be refactored, and another source of corruption here might that elevation is blotted and perhaps distance and change from elevation is not blotted (though this is speculation on my side).  Can you investigate and create a plan to address first issues that are still present with elevation overrides that I suspect are due to distance?
+
+For setting box parameters like river distance, elevation, distance since last elevation change, and river level, they should allow follow the same blotting rules, and should also follow similar rules for determining when an evaluated point is outside of a rivers edge (distance > 0) AND for determining if it should overwrite a box that has already been set outside of a river edge (if the distance that was set in the box + the outward cone distance with blotting (distanceGrid * 3) is more than the current sample distance from the river)
+
+*****************************************
+
+For the next item I'd still like to address some of the remaining artifacts that I assume are due to jitter.
+
+First, can you tell me which hard-coded parameters (assuming there are some) control the jitter amount and falloff per level?
+
+Okay, disabling jitter does not appear to change much, it appears the overlap is being caused by incorrect tangent vectors.  For example, a start tangent lint should point to the lower level segment that it connects to, and then get some twist applied, if enabled.  What I see appears to indicate the start tangent pointing away from the end point (opposite direction) which causes the segment to push away from the segment it's flowing into, and double-back on itself.  Can you investigate available parameters for twist and see if there might be defect in how the initial tangent is calculated such that it would point opposite of the end point?
+
+######################################
+
+IMPORTANT "twist-angle" set to 30 gives much better results.
+
+Reducing twist angle helps significantly, but when a segment is subdivided it still get's a twist that can cause it's trajectory to be far misaligned with the start / stop tangents of the segment, likewise as a point jitter get's more magnitude.
+
+At subdivision of a segment, the start and end tangents probably need their tangent magnitudes reduced as a function of how much twist and jitter is applied - as that twist and jitter pushes the points away from their original hermite interpolation line and the original tangent vectors, but it's not clear to me how much their tangent's should be reduced to prevent overlap but still give unique curvatures to the segments.
+
+#############################################
+
+Plan an update:
+
+When a segment is subdivided, jitter should never move points closer to the end point.  That is, the vector created by moving from the end point to the start point of the segment before subdivision defines where it is pointing defines the vector to the start.  Jitter should only move points on this axis and perpendicular to this axis, but never backwards / closer to the original segment end point, which can cause overlap.
+
+#################################################
+
+Need to reduce intermittent twist on subdivide segments.
+Need to reduce number of subdivisions entirely, at each level are we getting more and more segments?  Is the distance for subdivision getting set inappropriately?  maxSegmentLength is too small?
+
+###################################################3
+
+Plan an update, but note this can be restricted level 1+ segments:
+
+When a segment is getting attached to a node that already has 2 or more connections, (Is already connected to an existing segment) the end tangent angle needs of the segment that is to be connected needs to be set so that it is at an angle so it does not overlap other segments.  It appears to currently set a tangent that is on the side of existing tangent that is closest to the point, but that causes overlaps depending on how the first two points are configured.
+
+The correct angle can be determined by looking at the existing tangents and their points.  For example, if a segment's end point is getting connected to a point that already exists, the new segment's end tangent should be set so that it points towards the average of the vector to the already connected points, in this way it will flow into the point such that it reduces the likelihood it overlaps an existing segment at that intersection.
+
+********************************************
+
+Plan an update to also reduce intermediate twist angle during subdivision.  Like jitter is reduced as a function of level, twist angle should also reduce.
+
+*******************************************
+
+It looks like the issue is actually with the main twist applied at point creation.
+
+
+
+Ex:
+
+Segment A flows into a lower level segment, and has a start point of point 0, Segment B flows into point A, and inherits the tangent and at point 0 that was originally set.  Segment C flows into point 0, and is given a tangent at point 0 that pushes it to a near perpendicular value closest to .
+Segment D flows into point 0, but right now it is ea
+
+1. For distance from elevation, I would expect the layer distance from last elevation change to be tracked just like the radius change (layerRadius), the only difference is that the change in radius is also scaled with slope, but the distance since last change in a layer can just increase with actual distance traveled along the segment.  When a box needs to be use a different layer depending on it's distance from the center, it can also use the distance that the layer has traveled along the segment.
+
+The simpler approach is just to have a temporary array tracking the distance traveled down the width of the river (at int step = 0; step <= maxSteps; in projectConeToBoxes) as this already walks through each point across the width of the river.  Each time the projectConeToBoxes is called, each point going outward can just be given a 
+
+##########################
+
+The "branches" parameter is intended to define how segments proliferate.  It is also supposed to remove points (specifically points for level 1+) for segment creation when the value is 0 to prevent segments from flowing into areas they should not, but it appears there may be cases where points are still retained even when their evaluated "branches" value is 0.  Can you check if there might be something that is allowing points with a "branches" value of 0 to be retained?  Are there places where the points are merged or their coordinates shifted and their "branches" value is not reevaluated?
+
+#################
+
+Can you confirm when the "branches" sampler is evaluated, are higher values increasing the probability of point removal?  Or are higher values increasing the probability of a point staying and getting used in segment branching?
+
+######################
+
+I want to perform a few actions carefully, perform the following to the best of your ability and make assumptions as I will not be present to make clarifications.  When finished present notes of any key assumptions you made and their potential impact, and I will review after:
+
+1. Confirm if the return type is PIXEL_RIVER_FAR, or if the 3d sampler is requesting with a y value of -1 (which should give the same result) that only the big cache is updated if a cache miss occurs, and that the main high resolution cache with elevation based on cache-pixels is not updated.  If it does not work that way, please update functionality.
+
+1A. Remove the return value restriction to a multiple of cachepixels if it is unnecessary ==> "return Math.min(distU8 * cachepixels,MaxRepDist);"
+1B. Reduce the big cache size from 8x to 4x so this return type has slightly better fidelity.
+1C. If the distance is based on walking the segment and computing point distances to cache centers, investigate and implement methods that might further reduce computation time and overhead (like evaluating in a spiral pattern from the segment point, other alternatives are welcome).  The step distance along the segment should also be half of the big cache size for general accuracy.  Again, only do this if the distance is currently computed by walking the segment, or if it appears that would be faster than the current implementation.
+1D. Create a variant return type "PIXEL_RIVER_FAR_NORM", or y value -3.0, which normalizes the big-cache value into the same same normalized distance reported from PIXEL_RIVER.  The river width (which will not be known and is normally sampled at the river center) can be approximated by calling the width sampler AT the location of the x/z query, and used to estimate the distance to the width of the river, the distance from the center to the bank / flow edge, and the distance from the bank / edge, to back-calculate an approximate normalized distance (from -1 to 1, with 0 on the flow edge).
+
+2. Update relevant comments especially around the ReturnType.java file, and make sure it's content is updated in the ReadMe.  Some content may be quite old, please update as needed.
+
+3. Verify compilation and iterate if required.  Clean up workspace files (move old investigation documents / pictures to archive)
+
+4. Check for any potential advantages to switching to Java 25, if there are any performance gains to take advantage of, note them for future reference.
+
+#######################
+
+Commit the latest changes before additional changes are made.
+
+##########################
+
+Additional changes:
+
+In principal I want to implement the functionality you describe, but it may take some more careful planning.  Let's break this into 2 parts:
+
+1. Update the benchmark bat file to just run the pixel river distance and the far distance to get an idea of their current performance.
+
+2. Make a plan to make some more substantial updates to be implemented after I run the updated benchmarK:
+
+For the 3d sampler on PIXEL_RIVER, only the cache that is required for the corresponding y coordinate / return key should be computed, as a query at one y / return type in the 3d sampler doesn't necessarily mean the other return types will be needed for the same coordinates.
+
+If the far cache should be on a separate object or the higher resolution cache should remain null to not consume memory, either method is fine, as long as the higher resolution cache is only updated when needed.
+
+For the far distance there is some misunderstanding, the size was intended to move to a block / pixel cache size of 4x4, which would actually bring the array size to 256/4 = 64x64, which is much bigger than the original, but that is why I want to update the benchmark.
+
+##########################
+
+1. Implement plan "Plan: Far cache resize to 64×64 + lazy per-mode computation" and bump the version up one (Ex: From -A to -B or from -B to -C)
+
+If benchmark shows about the same or better performance:
+
+2. Looking at the results, it is not much slower and there are significantly more points evaluated, which is surprising.  It suggests more time is actually spent trimming the segment cache before computing the individual cell distances for the sample, but that should not be occurring very often.  The benchmark's default settings walk a 1600 x 1600 real world size, for each 256x256 real world size, that means there are about 49 big chunks that need to be created.  Since the time difference is not significant between standard distance and far distance evaluation, it indicates the time to build a far cache and the normal cache are about the same despite the significant difference in the number of samples identified.  Can you investigate if there is something else forcing recalculation in some cases when it would not be expected?  Or do we need to add debugs to understand how much time is spent just trimming the segment list down compared to evaluating the distances?  Should the big cache actually evaluate a larger overall size (such as spanning a 2x2 size of the standard higher resolution cache (that would be a bigger change, but would reduce how often trimming needs to occure)
+
+#####################3
+
+Is there just an issue in the way the benchmark is assessed?  The latest benchmark (BenchmarkRun.txt) shows the raster step for standard Pixel_River took almost 40 s, but the farfill (PIXEL_RIVER_FAR) took only 3.4 s for the actual fill step.  The segment collection is also relatively small.  So the core calculation difference is more than 10x, but the reported difference is "37.7% FASTER".  Is there another source of timing that's missing?
+
+############################
+
+Why is the memory consumption for PIXEL_RIVER and for PIXEL_RIVER_FAR the same?  (Both shown in benchmark.txt as mem=638KB)?  The segment cache will consume the same amount of memory, but the lower resolution far cache should consume significantly less memory than the standard resolution cache for PIXEl_RIVER.  Or is it just storage resolution / object overhead that coincidentally causes them to consume exactly the same amount of memory?
+
+######################################
+
+3. Continue with the Java 25 conversion to take advantage of potential arithmetic improvements noted earlier, and I will see how it affects the benchmark.  An updated version of the Terra addon pack may be needed for compatability, but I assume reflection takes care of that.  Notes from earlier:
+
+Math.sqrt with AVX-512 — JDK 25 (via JVMCI/Graal improvements) better exploits SIMD for Math.sqrt calls in tight loops like computeFarCache. Worth benchmarking with -XX:+UseAVX=3
+
+#######################################
+
+Ideally queries within the cell are more accurate, but the accuracy at every 4th world interval is most important because of how the biome pipeline is sampled. (0,0; 4,0; 8,0; 4,4... etc)
+
+I see two alternatives here:
+
+1. The BigCache is actually queried at the coordinate offsets from it's origin instead of the cell centers.
+
+2. Interpolation could be performed using surrounding points, but care would need to be taken at query points where actual distance is less than 2 to estimate distances that are less than all the surrounding points.  This would give more general accuracy for other points, but realistically this method will only be used on biome pipeline queries at the intervals noted above.
+
+What would you recommend.

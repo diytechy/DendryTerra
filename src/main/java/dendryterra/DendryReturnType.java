@@ -72,5 +72,32 @@ public enum DendryReturnType {
      * Elevation is quantized to UInt8 based on the 'max' parameter (0 = 0.0, 255 = max).
      * Returns de-quantized elevation as a double value.
      */
-    PIXEL_RIVER_CTRL
+    PIXEL_RIVER_CTRL,
+
+    /**
+     * Reports approximate far distance to the nearest river segment centerline in world units.
+     * Uses a 4x4 directional distance cache per BigChunk (reduced from 8x8 for better fidelity).
+     * The return value is quantized to multiples of cachepixels (distU8 * cachepixels).
+     * Returns maxDist when no segment is within range.
+     * Also accessible via PIXEL_RIVER with y in (-2, 0).
+     */
+    PIXEL_RIVER_FAR,
+
+    /**
+     * Reports far distance to the nearest river segment with normal-based offset compensation.
+     * Uses the same 4x4 distance+normal cache per BigChunk for sub-cell accuracy by projecting
+     * the query offset from the cell center onto the stored perpendicular normal direction.
+     * Also accessible via PIXEL_RIVER with y in [-3, -2).
+     */
+    PIXEL_RIVER_FAR2,
+
+    /**
+     * Reports approximate far distance normalized to the same [-1, 1] scale as PIXEL_RIVER.
+     * Uses the 4x4 far cache distance and approximates river width by sampling the
+     * river-width sampler at the query location (level 0, no falloff applied).
+     * Returns -1 at the estimated river center, 0 at the estimated flow edge,
+     * and values &gt; 1 for distances beyond the border-width from the flow edge.
+     * Also accessible via PIXEL_RIVER with y &lt;= -3.
+     */
+    PIXEL_RIVER_FAR_NORM
 }

@@ -62,7 +62,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("default-branches")
     @Default
-    private @Meta int defaultBranches = 1;
+    private @Meta double defaultBranches = 1;
 
     /**
      * Curvature factor for Hermite spline subdivision.
@@ -70,7 +70,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("curvature")
     @Default
-    private @Meta double curvature = 0.9;
+    private @Meta double curvature = 1.5;
 
     // ========== Performance Tuning Flags ==========
 
@@ -80,7 +80,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("use-parallel")
     @Default
-    private @Meta boolean useParallel = true;
+    private @Meta boolean useParallel = false;
 
     /**
      * Enable debug timing output to console.
@@ -122,22 +122,11 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      * Maximum angle deviation for spline tangents at nodes (in degrees).
      * 0 = tangents point directly at connected nodes (linear-ish curves)
      * 90 = tangents can be perpendicular to the connection direction (maximum curvature)
-     * Range: 0-90, default 45.
+     * Range: 0-90, default 39.
      */
     @Value("tangent-angle")
     @Default
-    private @Meta double tangentAngle = 45.0;
-
-    /**
-     * Strength of spline tangents as a fraction of segment length.
-     * Controls how far the control point is from the node.
-     * 0 = control point at node (linear), 1 = control point at full tangent length.
-     * Higher values create more pronounced curves but risk overlap.
-     * Range: 0-1, default 0.4.
-     */
-    @Value("tangent-strength")
-    @Default
-    private @Meta double tangentStrength = 1.0;
+    private @Meta double tangentAngle = 39.0;
 
     /**
      * Pixel cache resolution for faster repeated queries.
@@ -148,7 +137,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("cachepixels")
     @Default
-    private @Meta double cachepixels = 0;
+    private @Meta double cachepixels = 1.0;
 
     /**
      * Slope threshold for fully aligning tangents with the gradient.
@@ -198,9 +187,18 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
     private @Meta int maxSegmentsPerLevel = 500;
 
     /**
+     * River width falloff factor per level.
+     * River width at each level = riverwidth * (river-width-falloff ^ level).
+     * Range: 0-1, default 0.6.
+     */
+    @Value("river-width-falloff")
+    @Default
+    private @Meta double riverWidthFalloff = 0.65;
+
+    /**
      * Sampler for river width at a given point.
      * The sampled value determines base river width in world units.
-     * Actual river width per level = riverwidth * (0.6^level), minimum 2x pixel resolution.
+     * Actual river width per level = riverwidth * (river-width-falloff^level), minimum 2x pixel resolution.
      */
     @Value("riverwidth")
     @Default
@@ -235,7 +233,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("max")
     @Default
-    private @Meta double max = 2.0;
+    private @Meta double max = 2.55;
 
     /**
      * Maximum expected distance for PIXEL_RIVER normalization.
@@ -244,7 +242,16 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
      */
     @Value("max-dist")
     @Default
-    private @Meta double maxDist = 50.0;
+    private @Meta double maxDist = 250.0;
+
+    /**
+     * Maximum world-unit distance for quantizing distance-to-elevation-change.
+     * Stored as a 4-bit nibble (0-15) in BigChunkBlock, so each step represents
+     * heightChangeMaxDist / 15 world units.
+     */
+    @Value("height-change-max-distance")
+    @Default
+    private @Meta double heightChangeMaxDist = 15.0;
 
     @Override
     public boolean validate() throws ValidationException {
@@ -257,10 +264,10 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         if (gridsize <= 0) {
             throw new ValidationException("gridsize must be positive, got: " + gridsize);
         }
-        if (defaultBranches < 1 || defaultBranches > 8) {
-            throw new ValidationException("default-branches must be between 1 and 8, got: " + defaultBranches);
+        if (defaultBranches < 0 || defaultBranches > 1) {
+            throw new ValidationException("default-branches must be between 0 and 1, got: " + defaultBranches);
         }
-        if (curvature < 0 || curvature > 1) {
+        if (curvature < 0 || curvature > 2) {
             throw new ValidationException("curvature must be in range [0, 1], got: " + curvature);
         }
         if (ConstellationScale < 1 || ConstellationScale > 10) {
@@ -268,9 +275,6 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
         }
         if (tangentAngle < 0 || tangentAngle > 90) {
             throw new ValidationException("tangent-angle must be between 0 and 90, got: " + tangentAngle);
-        }
-        if (tangentStrength < 0 || tangentStrength > 1) {
-            throw new ValidationException("tangent-strength must be between 0 and 1, got: " + tangentStrength);
         }
         if (cachepixels < 0) {
             throw new ValidationException("cachepixels must be non-negative, got: " + cachepixels);
@@ -304,14 +308,16 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             useParallel,
             debugTiming, parallelThreshold,
             ConstellationScale, constellationShape,
-            Math.toRadians(tangentAngle), tangentStrength,
+            Math.toRadians(tangentAngle),
             cachepixels,
             slopeWhenStraight, lowestSlopeCutoff,
             debug,
             riverwidthSampler, defaultRiverwidth,
             borderwidthSampler, defaultBorderwidth,
+            riverWidthFalloff,
             max, maxDist,
-            maxSegmentsPerLevel
+            maxSegmentsPerLevel,
+            heightChangeMaxDist
         );
     }
 }
