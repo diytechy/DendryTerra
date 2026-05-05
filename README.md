@@ -40,21 +40,23 @@ The `return` parameter selects what value `getSample` produces. Different return
 - `+1.0` = query is at the border edge (flow edge + border-width away)
 - `> +1.0` = beyond the border (only from PIXEL_RIVER_FAR_NORM, which is not clamped)
 
-**PIXEL_RIVER_FAR / FAR2 / FAR_NORM performance note:** These types skip the expensive 256×256 block rasterization on chunk cache-miss; only the 4×4 coarse cache is filled. This makes cold-start cost significantly lower than `PIXEL_RIVER` when only far-distance is needed.
+**PIXEL_RIVER_FAR / FAR2 / FAR_NORM performance note:** These types skip the expensive 256×256 block rasterization on chunk cache-miss; only the 64×64 far-distance cache is filled (~8 KB/chunk vs ~200 KB for the full block grid). This makes cold-start cost significantly lower than `PIXEL_RIVER` when only far-distance is needed.
 
 ### PIXEL_RIVER y-input selector
 
 When `return` is `PIXEL_RIVER`, the 4-argument form `getSample(seed, x, y, z)` selects among several sub-modes based on `y`. This allows a single sampler instance to serve multiple data channels without allocating extra caches.
 
-| `y` range | Returns |
-|---|---|
-| `y >= 3.0` | Distance-to-elevation-change (world units, 4-bit quantized) |
-| `2.0 <= y < 3.0` | Segment level (0–14, 15 = not available) |
-| `0.0 < y < 2.0` | Elevation (same as `PIXEL_RIVER_CTRL`) |
-| `y == 0.0` | Normal distance output (same as 2-argument call) |
-| `-2.0 < y < 0.0` | Far-distance in world units (same as `PIXEL_RIVER_FAR`) |
-| `-3.0 <= y <= -2.0` | Far-distance with normal compensation (same as `PIXEL_RIVER_FAR2`) |
-| `y < -3.0` | Normalized far-distance on [-1, 1] scale (same as `PIXEL_RIVER_FAR_NORM`) |
+| `y` range | Returns | Cache updated on miss |
+|---|---|---|
+| `y >= 3.0` | Distance-to-elevation-change (world units, 4-bit quantized) | 256×256 block cache (~200 KB/chunk) |
+| `2.0 <= y < 3.0` | Segment level (0–14, 15 = not available) | 256×256 block cache (~200 KB/chunk) |
+| `0.0 < y < 2.0` | Elevation (same as `PIXEL_RIVER_CTRL`) | 256×256 block cache (~200 KB/chunk) |
+| `y == 0.0` | Normal distance output (same as 2-argument call) | 256×256 block cache (~200 KB/chunk) |
+| `-2.0 < y < 0.0` | Far-distance in world units (same as `PIXEL_RIVER_FAR`) | 64×64 far cache only (~8 KB/chunk) |
+| `-3.0 <= y <= -2.0` | Far-distance with normal compensation (same as `PIXEL_RIVER_FAR2`) | 64×64 far cache only (~8 KB/chunk) |
+| `y < -3.0` | Normalized far-distance on [-1, 1] scale (same as `PIXEL_RIVER_FAR_NORM`) | 64×64 far cache only (~8 KB/chunk) |
+
+**Cache layer independence:** The 256×256 block cache and the 64×64 far cache are computed and stored independently within each BigChunk. A query with `y < 0` populates only the far cache; a subsequent `y >= 0` query on the same chunk still triggers full block rasterization. Conversely, if blocks are already computed, a `y < 0` query on that chunk still needs to compute the far cache separately. Mixing positive- and negative-y queries for the same chunk will ultimately cause both layers to be computed. If only far-distance values are needed, use exclusively negative `y` values to avoid triggering the expensive block rasterization.
 
 ## Parameters
 
@@ -244,7 +246,7 @@ DendryTerra uses several caching layers depending on return type:
 | BigChunk LRU cache | 10 MB | All BigChunk types |
 | Pixel cache (per-cell) | 10 MB | `PIXEL_ELEVATION`, `PIXEL_LEVEL`, `PIXEL_DEBUG`, `PIXEL_RIVER_LEGACY` |
 
-"BigChunk types" are: `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2`, `PIXEL_RIVER_FAR_NORM`. Both the SegmentList and BigChunk caches are only allocated when one of these return types is active. The FAR types populate only the 4×4 coarse sub-cache within each BigChunk; the full 256×256 block grid is only rasterized for `PIXEL_RIVER` and `PIXEL_RIVER_CTRL`.
+"BigChunk types" are: `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2`, `PIXEL_RIVER_FAR_NORM`. Both the SegmentList and BigChunk caches are only allocated when one of these return types is active. The FAR types populate only the 64×64 far-distance sub-cache within each BigChunk (~8 KB/chunk); the full 256×256 block grid (~200 KB/chunk) is only rasterized for `PIXEL_RIVER` and `PIXEL_RIVER_CTRL`.
 
 ## Architecture Overview
 

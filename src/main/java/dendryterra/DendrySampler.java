@@ -4466,7 +4466,7 @@ public class DendrySampler implements Sampler {
         // Project outward from sample point
         // If blot filling, we don't need to  extend all the way out since blotting will naturally fill it.
         //int maxSteps = (int) Math.max(0, Math.ceil(maxDistGrid / cachepixelsGrid)-((ENABLE_BLOT_FILLING > 0) ? 1 : 0));
-        int maxSteps = (int) Math.max(0, Math.ceil(maxDistPrune / cachepixelsGrid));
+        int maxSteps = (int) Math.max(0, 1 + Math.ceil(maxDistPrune / cachepixelsGrid));
         for (int step = 0; step <= maxSteps; step++) {
             double distanceGrid = step * cachepixelsGrid;
             if (step > 0 && distanceGrid > maxDistPrune) break;
