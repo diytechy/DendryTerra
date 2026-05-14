@@ -1797,3 +1797,11 @@ I see two alternatives here:
 2. Interpolation could be performed using surrounding points, but care would need to be taken at query points where actual distance is less than 2 to estimate distances that are less than all the surrounding points.  This would give more general accuracy for other points, but realistically this method will only be used on biome pipeline queries at the intervals noted above.
 
 What would you recommend.
+
+###########################################
+
+Let's plan some changes that will affect propagateElevationReduction and it's surrounding functions.
+
+When creating segments, step through the segment along it's path by the default river width distance (for the current river level), and based on the distance and the end point elevations, interpolate the expected elevation, and query elevation at that position.  If expected y level is more than the measured y, set the end point y level of the segment to the lower extrapolated position.
+
+After the segment is walked, performed "propagateElevationReduction" but instead of ratiometrically reducing all lower level segments, just cap / clamp them to the lowest elevation set for the current segment.  This will prevent over-aggressive reduction in lower level segment elevation that can occur today.
