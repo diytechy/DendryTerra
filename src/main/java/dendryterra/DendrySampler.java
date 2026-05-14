@@ -2187,9 +2187,9 @@ public class DendrySampler implements Sampler {
             unconnected.markRemoved(unconnIdx);
             if (budgetLimited) {
                 int segBudget = maxSegmentsPerLevel - (segList.getSegmentCount() - initialSegCount);
-                segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance, segBudget);
+                addSegmentWithElevationWalk(segList, unconnPt, neighborIdx, level, mergeDistance, segBudget);
             } else {
-                segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
+                addSegmentWithElevationWalk(segList, unconnPt, neighborIdx, level, mergeDistance, Integer.MAX_VALUE);
             }
 
             // Check for crossings and proximity between newly added segments and pre-existing ones.
@@ -2767,6 +2767,91 @@ public class DendrySampler implements Sampler {
 
 
 
+
+    /**
+     * Walk a Hermite spline segment at river-width intervals and return a potentially
+     * lower end-point elevation. At each step the linearly-interpolated "expected"
+     * elevation is compared against the control-function sample. Whenever the terrain
+     * dips below the expected value, the end elevation is extrapolated downward from
+     * the start through the measured dip, preventing the network from riding over
+     * terrain depressions such as terraces or cliff edges.
+     *
+     * @param srt      Segment start position (grid units)
+     * @param end      Segment end position (grid units)
+     * @param tSrt     Normalized start tangent (from prepareSegmentTangents)
+     * @param tEnd     Normalized end tangent
+     * @param level    River level, used to derive step size from river width
+     * @return Adjusted end elevation (≤ end.z)
+     */
+    private double walkSplineForEndElevation(Point3D srt, Point3D end,
+                                              Vec2D tSrt, Vec2D tEnd, int level) {
+        double segLen2D = srt.projectZ().distanceTo(end.projectZ());
+        double stepDist = (defaultRiverwidth / gridsize) * Math.pow(riverWidthFalloff, level);
+        if (segLen2D <= stepDist + MathUtils.EPSILON) return end.z;
+
+        double srtZ = srt.z;
+        double endZ = end.z;
+        double minEndZ = endZ;
+
+        // Tangent scale used by the Hermite basis (same formula as interpolateHermiteSpline)
+        double tangentScale = segLen2D * curvature;
+        boolean doSpline = useSplines && curvature > 0 && tSrt != null && tEnd != null;
+
+        double step = stepDist / segLen2D;
+        for (double t = step; t < 1.0 - MathUtils.EPSILON; t += step) {
+            double px, py;
+            if (doSpline) {
+                double t2 = t * t, t3 = t2 * t;
+                double h00 =  2*t3 - 3*t2 + 1;
+                double h10 =    t3 - 2*t2 + t;
+                double h01 = -2*t3 + 3*t2;
+                double h11 =    t3 -   t2;
+                px = h00*srt.x + h10*tSrt.x*tangentScale + h01*end.x + h11*tEnd.x*tangentScale;
+                py = h00*srt.y + h10*tSrt.y*tangentScale + h01*end.y + h11*tEnd.y*tangentScale;
+            } else {
+                px = MathUtils.lerp(srt.x, end.x, t);
+                py = MathUtils.lerp(srt.y, end.y, t);
+            }
+
+            double expectedZ  = MathUtils.lerp(srtZ, endZ, t);
+            double measuredZ  = evaluateControlFunction(px, py);
+
+            if (measuredZ < expectedZ) {
+                // Extrapolate: if the gradient from srt through this dip continued to t=1
+                double extrapolated = srtZ + (measuredZ - srtZ) / t;
+                if (extrapolated < minEndZ) minEndZ = extrapolated;
+            }
+        }
+        return minEndZ;
+    }
+
+    /**
+     * Full segment-addition flow for DendrySampler call sites, incorporating the
+     * spline elevation walk before downhill enforcement and segment creation.
+     *
+     * @return The index of the newly added start point.
+     */
+    private int addSegmentWithElevationWalk(SegmentList segList, NetworkPoint srtNetPnt,
+                                             int endIdx, int level,
+                                             double maxSegmentLength, int maxSegments) {
+        int srtIdx = segList.addPoint(srtNetPnt);
+
+        SegmentList.SegmentTangentState state = segList.prepareSegmentTangents(srtIdx, endIdx, level);
+
+        NetworkPoint endPt = segList.getPoint(endIdx);
+        double adjustedZ = walkSplineForEndElevation(
+            srtNetPnt.position, endPt.position,
+            state.tangentSrt, state.tangentEnd, level);
+
+        if (adjustedZ < endPt.position.z) {
+            segList.updatePoint(endIdx,
+                endPt.withPosition(new Point3D(endPt.position.x, endPt.position.y, adjustedZ)));
+        }
+
+        segList.ensureDownhillFlow(srtIdx, endIdx, level);
+        segList.addSegmentFromState(state, level, maxSegmentLength, maxSegments);
+        return srtIdx;
+    }
 
     private double evaluateControlFunction(double x, double y) {
         if (controlSampler != null) {
