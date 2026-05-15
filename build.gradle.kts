@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.github.diytechy"
-version = "1.0.0-BETA-F"
+version = "1.0.0-BETA-G"
 
 repositories {
     mavenCentral()

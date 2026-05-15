@@ -2183,6 +2183,10 @@ public class DendrySampler implements Sampler {
             int pointsBefore = segList.getPointCount();
             int segsBefore = segList.getSegmentCount();
 
+            // Open elevation transaction so any endpoint / propagation changes
+            // can be fully reverted if the crossing check rejects this segment.
+            segList.beginElevationTracking();
+
             // Create connection: move point to SegmentList and create segment
             unconnected.markRemoved(unconnIdx);
             if (budgetLimited) {
@@ -2288,7 +2292,10 @@ public class DendrySampler implements Sampler {
                 }
             }
             if (hasCrossing) {
+                segList.rollbackElevationChanges();  // restore elevations before structural rollback
                 segList.rollback(pointsBefore, segsBefore);
+            } else {
+                segList.clearElevationTracking();    // commit elevation changes
             }
         }
     }

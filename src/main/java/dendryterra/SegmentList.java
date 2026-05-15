@@ -18,6 +18,10 @@ public class SegmentList {
     private int nextIndex;  // For generating unique indices
     private SegmentListConfig config;  // Global configuration
 
+    // Per-transaction elevation snapshot: records the original z of any point whose
+    // elevation is mutated while tracking is active. null means no transaction is open.
+    private Map<Integer, Double> elevationSnapshot = null;
+
     /**
      * Tracks a segment connection to a point, storing which end of the segment connects.
      */
@@ -118,6 +122,12 @@ public class SegmentList {
      * Update a point at the given index.
      */
     public void updatePoint(int index, NetworkPoint newPoint) {
+        if (elevationSnapshot != null) {
+            double oldZ = points.get(index).position.z;
+            if (newPoint.position.z != oldZ) {
+                elevationSnapshot.putIfAbsent(index, oldZ);
+            }
+        }
         points.set(index, newPoint);
     }
 
@@ -176,6 +186,9 @@ public class SegmentList {
         NetworkPoint p = points.get(pointIdx);
 
         if (p.position.z > maxZ) {
+            if (elevationSnapshot != null) {
+                elevationSnapshot.putIfAbsent(pointIdx, p.position.z);
+            }
             points.set(pointIdx, p.withPosition(new Point3D(p.position.x, p.position.y, maxZ)));
         }
 
@@ -1209,6 +1222,39 @@ public class SegmentList {
 
         // Reset nextIndex
         nextIndex = savedPointCount;
+    }
+
+    /**
+     * Open an elevation transaction. While active, any elevation mutation records the
+     * point's original z before it is changed for the first time (first-write wins).
+     */
+    public void beginElevationTracking() {
+        elevationSnapshot = new HashMap<>();
+    }
+
+    /**
+     * Restore all points whose elevations were mutated since the last beginElevationTracking
+     * call, then close the transaction.
+     * Must be called BEFORE rollback() so that all snapshotted indices still exist.
+     */
+    public void rollbackElevationChanges() {
+        if (elevationSnapshot == null) return;
+        for (Map.Entry<Integer, Double> entry : elevationSnapshot.entrySet()) {
+            int idx = entry.getKey();
+            if (idx < points.size()) {
+                NetworkPoint p = points.get(idx);
+                points.set(idx, p.withPosition(
+                    new Point3D(p.position.x, p.position.y, entry.getValue())));
+            }
+        }
+        elevationSnapshot = null;
+    }
+
+    /**
+     * Commit the current elevation transaction — discard the snapshot without restoring.
+     */
+    public void clearElevationTracking() {
+        elevationSnapshot = null;
     }
 
     /**
