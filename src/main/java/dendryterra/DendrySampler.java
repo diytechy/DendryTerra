@@ -2769,31 +2769,33 @@ public class DendrySampler implements Sampler {
 
 
     /**
-     * Walk a Hermite spline segment at river-width intervals and return a potentially
-     * lower end-point elevation. At each step the linearly-interpolated "expected"
-     * elevation is compared against the control-function sample. Whenever the terrain
-     * dips below the expected value, the end elevation is extrapolated downward from
-     * the start through the measured dip, preventing the network from riding over
-     * terrain depressions such as terraces or cliff edges.
+     * Walk a Hermite spline from srt (flow source, level 1+ upstream end) to end
+     * (downstream end closer to level 0) at river-width intervals and return adjusted
+     * elevations for both endpoints.
      *
-     * @param srt      Segment start position (grid units)
-     * @param end      Segment end position (grid units)
-     * @param tSrt     Normalized start tangent (from prepareSegmentTangents)
-     * @param tEnd     Normalized end tangent
-     * @param level    River level, used to derive step size from river width
-     * @return Adjusted end elevation (≤ end.z)
+     * srt is always the topological "higher" end (flow origin); tFromSrt = t always.
+     *
+     * Per sample at walk parameter t:
+     *   Rule 1 — if measuredZ is below the current downstream (end) elevation, lower it.
+     *   Rule 2 — extrapolate the upstream (srt) elevation through the dip:
+     *     extrapolated = srtZOrig + (measuredZ - srtZOrig) / t
+     *     Accept the extrapolation only when it falls within [endZ_adjusted, srtZOrig];
+     *     otherwise cap to measuredZ. Always track the running minimum.
+     *
+     * @return double[]{ adjustedSrtZ, adjustedEndZ }, each ≤ their original value
      */
-    private double walkSplineForEndElevation(Point3D srt, Point3D end,
-                                              Vec2D tSrt, Vec2D tEnd, int level) {
+    private double[] walkSplineAdjustEndpoints(Point3D srt, Point3D end,
+                                                Vec2D tSrt, Vec2D tEnd, int level) {
         double segLen2D = srt.projectZ().distanceTo(end.projectZ());
         double stepDist = (defaultRiverwidth / gridsize) * Math.pow(riverWidthFalloff, level);
-        if (segLen2D <= stepDist + MathUtils.EPSILON) return end.z;
+        if (segLen2D <= stepDist + MathUtils.EPSILON) {
+            return new double[]{ srt.z, end.z };
+        }
 
-        double srtZ = srt.z;
-        double endZ = end.z;
-        double minEndZ = endZ;
+        double srtZOrig = srt.z;
+        double higherZ  = srtZOrig;   // running min for the upstream (srt) end
+        double lowerZ   = end.z;      // running min for the downstream (end) end
 
-        // Tangent scale used by the Hermite basis (same formula as interpolateHermiteSpline)
         double tangentScale = segLen2D * curvature;
         boolean doSpline = useSplines && curvature > 0 && tSrt != null && tEnd != null;
 
@@ -2813,16 +2815,26 @@ public class DendrySampler implements Sampler {
                 py = MathUtils.lerp(srt.y, end.y, t);
             }
 
-            double expectedZ  = MathUtils.lerp(srtZ, endZ, t);
-            double measuredZ  = evaluateControlFunction(px, py);
+            double measuredZ = evaluateControlFunction(px, py);
 
-            if (measuredZ < expectedZ) {
-                // Extrapolate: if the gradient from srt through this dip continued to t=1
-                double extrapolated = srtZ + (measuredZ - srtZ) / t;
-                if (extrapolated < minEndZ) minEndZ = extrapolated;
+            // Rule 1: downstream end follows terrain down
+            if (measuredZ < lowerZ) {
+                lowerZ = measuredZ;
+            }
+
+            // Rule 2: extrapolate for the upstream (srt) end.
+            // tFromSrt == t since the walk starts at srt.
+            // Accept extrapolation only when bounded within [lowerZ, srtZOrig].
+            double extrapolated = srtZOrig + (measuredZ - srtZOrig) / t;
+            double candidate = (extrapolated >= lowerZ && extrapolated <= srtZOrig)
+                ? extrapolated
+                : measuredZ;
+            if (candidate < higherZ) {
+                higherZ = candidate;
             }
         }
-        return minEndZ;
+
+        return new double[]{ higherZ, lowerZ };
     }
 
     /**
@@ -2839,13 +2851,20 @@ public class DendrySampler implements Sampler {
         SegmentList.SegmentTangentState state = segList.prepareSegmentTangents(srtIdx, endIdx, level);
 
         NetworkPoint endPt = segList.getPoint(endIdx);
-        double adjustedZ = walkSplineForEndElevation(
+        double[] adjusted = walkSplineAdjustEndpoints(
             srtNetPnt.position, endPt.position,
             state.tangentSrt, state.tangentEnd, level);
+        double adjustedSrtZ = adjusted[0];
+        double adjustedEndZ = adjusted[1];
 
-        if (adjustedZ < endPt.position.z) {
+        if (adjustedEndZ < endPt.position.z) {
             segList.updatePoint(endIdx,
-                endPt.withPosition(new Point3D(endPt.position.x, endPt.position.y, adjustedZ)));
+                endPt.withPosition(new Point3D(endPt.position.x, endPt.position.y, adjustedEndZ)));
+        }
+        if (adjustedSrtZ < srtNetPnt.position.z) {
+            NetworkPoint srtPt = segList.getPoint(srtIdx);
+            segList.updatePoint(srtIdx,
+                srtPt.withPosition(new Point3D(srtPt.position.x, srtPt.position.y, adjustedSrtZ)));
         }
 
         segList.ensureDownhillFlow(srtIdx, endIdx, level);
