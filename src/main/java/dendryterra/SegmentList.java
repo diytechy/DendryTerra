@@ -18,6 +18,10 @@ public class SegmentList {
     private int nextIndex;  // For generating unique indices
     private SegmentListConfig config;  // Global configuration
 
+    // Per-transaction elevation snapshot: records the original z of any point whose
+    // elevation is mutated while tracking is active. null means no transaction is open.
+    private Map<Integer, Double> elevationSnapshot = null;
+
     /**
      * Tracks a segment connection to a point, storing which end of the segment connects.
      */
@@ -28,6 +32,28 @@ public class SegmentList {
         SegmentConnection(int segmentIndex, boolean isStart) {
             this.segmentIndex = segmentIndex;
             this.isStart = isStart;
+        }
+    }
+
+    /**
+     * Carries ready-to-use tangents and the RNG state after tangent computation,
+     * allowing the caller to inspect tangents (e.g. for a spline elevation walk)
+     * before segment creation without disturbing jitter determinism.
+     */
+    static class SegmentTangentState {
+        final int srtIdx, endIdx;
+        final Vec2D tangentSrt, tangentEnd;
+        final Random rng;       // advanced past tangent RNG consumption
+        final double distance;  // 2D distance between srt and end
+
+        SegmentTangentState(int srtIdx, int endIdx, Vec2D tangentSrt, Vec2D tangentEnd,
+                            Random rng, double distance) {
+            this.srtIdx = srtIdx;
+            this.endIdx = endIdx;
+            this.tangentSrt = tangentSrt;
+            this.tangentEnd = tangentEnd;
+            this.rng = rng;
+            this.distance = distance;
         }
     }
 
@@ -96,6 +122,12 @@ public class SegmentList {
      * Update a point at the given index.
      */
     public void updatePoint(int index, NetworkPoint newPoint) {
+        if (elevationSnapshot != null) {
+            double oldZ = points.get(index).position.z;
+            if (newPoint.position.z != oldZ) {
+                elevationSnapshot.putIfAbsent(index, oldZ);
+            }
+        }
         points.set(index, newPoint);
     }
 
@@ -114,11 +146,8 @@ public class SegmentList {
     }
 
     /**
-     * Ensure water flows downhill by propagating elevation reduction when a new point
-     * connects at a lower elevation than the existing network.
-     *
-     * When sourceIdx has lower elevation than targetIdx, all points connected to targetIdx
-     * (in the chain toward level 0) are reduced ratiometrically by (sourceZ / targetZ).
+     * Ensure water flows downhill by capping connected lower-level points to the
+     * source elevation when a new point connects lower than the existing network.
      *
      * @param sourceIdx The newly added point index
      * @param targetIdx The existing point it's connecting to
@@ -136,47 +165,42 @@ public class SegmentList {
         // Only adjust if source is lower than target (water would flow uphill)
         if (sourceZ >= targetZ || targetZ <= MathUtils.EPSILON) return;
 
-        // Calculate reduction ratio
-        double ratio = sourceZ / targetZ;
-
-        // Propagate reduction through the chain toward level 0
+        // Cap all downstream points to sourceZ rather than scaling ratiometrically,
+        // preventing compounded over-reduction across multiple tributary connections.
         Set<Integer> visited = new HashSet<>();
-        propagateElevationReduction(targetIdx, ratio, visited);
+        propagateElevationCap(targetIdx, sourceZ, visited);
     }
 
     /**
-     * Recursively propagate elevation reduction through connected points.
+     * Recursively clamp connected points to maxZ, walking toward level 0.
      * Only follows connections to points at the same or lower level (toward asterism).
      *
-     * @param pointIdx Current point to reduce
-     * @param ratio Reduction ratio to apply (new_elevation = old_elevation * ratio)
-     * @param visited Set of already visited point indices (to avoid cycles)
+     * @param pointIdx Current point to clamp
+     * @param maxZ     Elevation ceiling — any point above this is pulled down to it
+     * @param visited  Cycle guard for the current propagation walk
      */
-    private void propagateElevationReduction(int pointIdx, double ratio, Set<Integer> visited) {
+    private void propagateElevationCap(int pointIdx, double maxZ, Set<Integer> visited) {
         if (visited.contains(pointIdx)) return;
         visited.add(pointIdx);
 
         NetworkPoint p = points.get(pointIdx);
 
-        // Reduce this point's elevation
-        double newZ = p.position.z * ratio;
-        Point3D newPosition = new Point3D(p.position.x, p.position.y, newZ);
-        points.set(pointIdx, p.withPosition(newPosition));
+        if (p.position.z > maxZ) {
+            if (elevationSnapshot != null) {
+                elevationSnapshot.putIfAbsent(pointIdx, p.position.z);
+            }
+            points.set(pointIdx, p.withPosition(new Point3D(p.position.x, p.position.y, maxZ)));
+        }
 
-        // Find connected points through segments
         List<SegmentConnection> connections = pointToSegments.get(pointIdx);
         if (connections == null) return;
 
         for (SegmentConnection conn : connections) {
             SegmentIdx seg = segments.get(conn.segmentIndex);
-
-            // Get the other endpoint
             int otherIdx = conn.isStart ? seg.endIdx : seg.srtIdx;
-
-            // Only propagate to points at same or lower level (toward level 0)
             NetworkPoint other = points.get(otherIdx);
             if (other.level <= p.level) {
-                propagateElevationReduction(otherIdx, ratio, visited);
+                propagateElevationCap(otherIdx, maxZ, visited);
             }
         }
     }
@@ -264,71 +288,8 @@ public class SegmentList {
      * @param maxSegments Maximum segments to create. When limited, keeps segments closest to end.
      */
     public void addSegmentWithDivisions(int A, int B, int level, double maxSegmentLength, int maxSegments) {
-        // Fetch points once and cache hash codes to avoid duplicate calculations
-        NetworkPoint ptA = points.get(A);
-        NetworkPoint ptB = points.get(B);
-        int hashA = ptA.position.hashCode();
-        int hashB = ptB.position.hashCode();
-
-        // Determine start/end ordering for consistent spline generation
-        int srtIdx, endIdx;
-        if (ptA.connections > 0 && ptB.connections == 0) {
-            // Side B has no connections, it should be the start for consistency
-            srtIdx = B;
-            endIdx = A;
-        } else if (ptB.connections > 0 && ptA.connections == 0) {
-            // Side A has no connections, it should be the start for consistency
-            srtIdx = A;
-            endIdx = B;
-        } else {
-            // Both sides have connections or both have none, order by hash for consistency
-            if (hashA < hashB) {
-                srtIdx = A;
-                endIdx = B;
-            } else {
-                srtIdx = B;
-                endIdx = A;
-            }
-        }
-
-        NetworkPoint srt = (srtIdx == A) ? ptA : ptB;
-        NetworkPoint end = (endIdx == A) ? ptA : ptB;
-        int hashSrt = (srtIdx == A) ? hashA : hashB;
-        int hashEnd = (endIdx == A) ? hashA : hashB;
-
-        // Instantiate a random generator for consistent "random" artifacts per segment
-        long seed = (541L * (hashSrt + hashEnd) + config.salt) & 0x7FFFFFFFL;
-        Random rng = new Random(seed);
-
-        // Step 1: Compute tangents based on connection patterns using global config
-        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, level, rng);
-        Vec2D tangentSrt = tangents[0];
-        Vec2D tangentEnd = tangents[1];
-
-        // Step 1b: Normalize tangents to unit length — the Hermite evaluation in
-        // evaluateHermiteSpline applies segLen * curvature, giving
-        // linear scaling with segment length (not quadratic).
-        double distance = srt.position.distanceTo(end.position);
-        tangentSrt = scaleTangentMagnitude(tangentSrt, 1.0);
-        tangentEnd = scaleTangentMagnitude(tangentEnd, 1.0);
-
-        // Step 1c: Clamp tangent components near cell boundaries to prevent spline overshoot
-        tangentSrt = clampTangentToCellBoundary(tangentSrt, srt.position, distance);
-        tangentEnd = clampTangentToCellBoundary(tangentEnd, end.position, distance);
-
-        // Step 2: Subdivide long segments if needed using provided maxSegmentLength
-        int numDivisions = (int) Math.ceil(distance / maxSegmentLength);
-        // TODO: Allow subdivision at higher levels after confirming basic segment shape is appropriate.
-        //if (level>0){
-        //    numDivisions = 0;
-        //}
-        if (numDivisions <= 1) {
-            // Single segment - add directly
-            addBasicSegment(srtIdx, endIdx, level, tangentSrt, tangentEnd);
-        } else {
-            // Multiple segments - pass computed tangents and RNG to avoid recomputation
-            createSubdividedSegments(srtIdx, endIdx, level, maxSegmentLength, distance, tangentSrt, tangentEnd, rng, maxSegments);
-        }
+        SegmentTangentState state = prepareSegmentTangents(A, B, level);
+        addSegmentFromState(state, level, maxSegmentLength, maxSegments);
     }
 
     /**
@@ -344,6 +305,63 @@ public class SegmentList {
         return endIdx;
     }
     
+    /**
+     * Prepare normalized, clamped tangents for the segment A→B, returning them alongside
+     * the RNG state already advanced past tangent computation. This allows callers to
+     * inspect the spline shape (e.g. walk it for elevation) before committing to
+     * segment creation, without altering jitter determinism.
+     */
+    SegmentTangentState prepareSegmentTangents(int A, int B, int level) {
+        NetworkPoint ptA = points.get(A);
+        NetworkPoint ptB = points.get(B);
+        int hashA = ptA.position.hashCode();
+        int hashB = ptB.position.hashCode();
+
+        int srtIdx, endIdx;
+        if (ptA.connections > 0 && ptB.connections == 0) {
+            srtIdx = B; endIdx = A;
+        } else if (ptB.connections > 0 && ptA.connections == 0) {
+            srtIdx = A; endIdx = B;
+        } else {
+            if (hashA < hashB) { srtIdx = A; endIdx = B; }
+            else { srtIdx = B; endIdx = A; }
+        }
+
+        NetworkPoint srt = (srtIdx == A) ? ptA : ptB;
+        NetworkPoint end = (endIdx == A) ? ptA : ptB;
+        int hashSrt = (srtIdx == A) ? hashA : hashB;
+        int hashEnd = (endIdx == A) ? hashA : hashB;
+
+        long seed = (541L * (hashSrt + hashEnd) + config.salt) & 0x7FFFFFFFL;
+        Random rng = new Random(seed);
+
+        Vec2D[] tangents = computeTangentsForConnection(srtIdx, endIdx, level, rng);
+        Vec2D tangentSrt = tangents[0];
+        Vec2D tangentEnd = tangents[1];
+
+        double distance = srt.position.distanceTo(end.position);
+        tangentSrt = scaleTangentMagnitude(tangentSrt, 1.0);
+        tangentEnd = scaleTangentMagnitude(tangentEnd, 1.0);
+        tangentSrt = clampTangentToCellBoundary(tangentSrt, srt.position, distance);
+        tangentEnd = clampTangentToCellBoundary(tangentEnd, end.position, distance);
+
+        return new SegmentTangentState(srtIdx, endIdx, tangentSrt, tangentEnd, rng, distance);
+    }
+
+    /**
+     * Create the actual segments for a previously prepared SegmentTangentState.
+     * Uses the preserved RNG so jitter is identical to what addSegmentWithDivisions produces.
+     */
+    void addSegmentFromState(SegmentTangentState state, int level, double maxSegmentLength, int maxSegments) {
+        int numDivisions = (int) Math.ceil(state.distance / maxSegmentLength);
+        if (numDivisions <= 1) {
+            addBasicSegment(state.srtIdx, state.endIdx, level, state.tangentSrt, state.tangentEnd);
+        } else {
+            createSubdividedSegments(state.srtIdx, state.endIdx, level, maxSegmentLength,
+                state.distance, state.tangentSrt, state.tangentEnd, state.rng, maxSegments);
+        }
+    }
+
     /**
      * Helper method to rotate a vector by an angle.
      */
@@ -1204,6 +1222,39 @@ public class SegmentList {
 
         // Reset nextIndex
         nextIndex = savedPointCount;
+    }
+
+    /**
+     * Open an elevation transaction. While active, any elevation mutation records the
+     * point's original z before it is changed for the first time (first-write wins).
+     */
+    public void beginElevationTracking() {
+        elevationSnapshot = new HashMap<>();
+    }
+
+    /**
+     * Restore all points whose elevations were mutated since the last beginElevationTracking
+     * call, then close the transaction.
+     * Must be called BEFORE rollback() so that all snapshotted indices still exist.
+     */
+    public void rollbackElevationChanges() {
+        if (elevationSnapshot == null) return;
+        for (Map.Entry<Integer, Double> entry : elevationSnapshot.entrySet()) {
+            int idx = entry.getKey();
+            if (idx < points.size()) {
+                NetworkPoint p = points.get(idx);
+                points.set(idx, p.withPosition(
+                    new Point3D(p.position.x, p.position.y, entry.getValue())));
+            }
+        }
+        elevationSnapshot = null;
+    }
+
+    /**
+     * Commit the current elevation transaction — discard the snapshot without restoring.
+     */
+    public void clearElevationTracking() {
+        elevationSnapshot = null;
     }
 
     /**

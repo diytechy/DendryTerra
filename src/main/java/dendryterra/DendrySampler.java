@@ -2183,13 +2183,17 @@ public class DendrySampler implements Sampler {
             int pointsBefore = segList.getPointCount();
             int segsBefore = segList.getSegmentCount();
 
+            // Open elevation transaction so any endpoint / propagation changes
+            // can be fully reverted if the crossing check rejects this segment.
+            segList.beginElevationTracking();
+
             // Create connection: move point to SegmentList and create segment
             unconnected.markRemoved(unconnIdx);
             if (budgetLimited) {
                 int segBudget = maxSegmentsPerLevel - (segList.getSegmentCount() - initialSegCount);
-                segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance, segBudget);
+                addSegmentWithElevationWalk(segList, unconnPt, neighborIdx, level, mergeDistance, segBudget);
             } else {
-                segList.addSegmentWithDivisions(unconnPt, neighborIdx, level, mergeDistance);
+                addSegmentWithElevationWalk(segList, unconnPt, neighborIdx, level, mergeDistance, Integer.MAX_VALUE);
             }
 
             // Check for crossings and proximity between newly added segments and pre-existing ones.
@@ -2288,7 +2292,10 @@ public class DendrySampler implements Sampler {
                 }
             }
             if (hasCrossing) {
+                segList.rollbackElevationChanges();  // restore elevations before structural rollback
                 segList.rollback(pointsBefore, segsBefore);
+            } else {
+                segList.clearElevationTracking();    // commit elevation changes
             }
         }
     }
@@ -2767,6 +2774,110 @@ public class DendrySampler implements Sampler {
 
 
 
+
+    /**
+     * Walk a Hermite spline from srt (flow source, level 1+ upstream end) to end
+     * (downstream end closer to level 0) at river-width intervals and return adjusted
+     * elevations for both endpoints.
+     *
+     * srt is always the topological "higher" end (flow origin); tFromSrt = t always.
+     *
+     * Per sample at walk parameter t:
+     *   Rule 1 — if measuredZ is below the current downstream (end) elevation, lower it.
+     *   Rule 2 — extrapolate the upstream (srt) elevation through the dip:
+     *     extrapolated = srtZOrig + (measuredZ - srtZOrig) / t
+     *     Accept the extrapolation only when it falls within [endZ_adjusted, srtZOrig];
+     *     otherwise cap to measuredZ. Always track the running minimum.
+     *
+     * @return double[]{ adjustedSrtZ, adjustedEndZ }, each ≤ their original value
+     */
+    private double[] walkSplineAdjustEndpoints(Point3D srt, Point3D end,
+                                                Vec2D tSrt, Vec2D tEnd, int level) {
+        double segLen2D = srt.projectZ().distanceTo(end.projectZ());
+        double stepDist = (defaultRiverwidth / gridsize) * Math.pow(riverWidthFalloff, level);
+        if (segLen2D <= stepDist + MathUtils.EPSILON) {
+            return new double[]{ srt.z, end.z };
+        }
+
+        double srtZOrig = srt.z;
+        double higherZ  = srtZOrig;   // running min for the upstream (srt) end
+        double lowerZ   = end.z;      // running min for the downstream (end) end
+
+        double tangentScale = segLen2D * curvature;
+        boolean doSpline = useSplines && curvature > 0 && tSrt != null && tEnd != null;
+
+        double step = stepDist / segLen2D;
+        for (double t = step; t < 1.0 - MathUtils.EPSILON; t += step) {
+            double px, py;
+            if (doSpline) {
+                double t2 = t * t, t3 = t2 * t;
+                double h00 =  2*t3 - 3*t2 + 1;
+                double h10 =    t3 - 2*t2 + t;
+                double h01 = -2*t3 + 3*t2;
+                double h11 =    t3 -   t2;
+                px = h00*srt.x + h10*tSrt.x*tangentScale + h01*end.x + h11*tEnd.x*tangentScale;
+                py = h00*srt.y + h10*tSrt.y*tangentScale + h01*end.y + h11*tEnd.y*tangentScale;
+            } else {
+                px = MathUtils.lerp(srt.x, end.x, t);
+                py = MathUtils.lerp(srt.y, end.y, t);
+            }
+
+            double measuredZ = evaluateControlFunction(px, py);
+
+            // Rule 1: downstream end follows terrain down
+            if (measuredZ < lowerZ) {
+                lowerZ = measuredZ;
+            }
+
+            // Rule 2: extrapolate for the upstream (srt) end.
+            // tFromSrt == t since the walk starts at srt.
+            // Accept extrapolation only when bounded within [lowerZ, srtZOrig].
+            double extrapolated = srtZOrig + (measuredZ - srtZOrig) / t;
+            double candidate = (extrapolated >= lowerZ && extrapolated <= srtZOrig)
+                ? extrapolated
+                : measuredZ;
+            if (candidate < higherZ) {
+                higherZ = candidate;
+            }
+        }
+
+        return new double[]{ higherZ, lowerZ };
+    }
+
+    /**
+     * Full segment-addition flow for DendrySampler call sites, incorporating the
+     * spline elevation walk before downhill enforcement and segment creation.
+     *
+     * @return The index of the newly added start point.
+     */
+    private int addSegmentWithElevationWalk(SegmentList segList, NetworkPoint srtNetPnt,
+                                             int endIdx, int level,
+                                             double maxSegmentLength, int maxSegments) {
+        int srtIdx = segList.addPoint(srtNetPnt);
+
+        SegmentList.SegmentTangentState state = segList.prepareSegmentTangents(srtIdx, endIdx, level);
+
+        NetworkPoint endPt = segList.getPoint(endIdx);
+        double[] adjusted = walkSplineAdjustEndpoints(
+            srtNetPnt.position, endPt.position,
+            state.tangentSrt, state.tangentEnd, level);
+        double adjustedSrtZ = adjusted[0];
+        double adjustedEndZ = adjusted[1];
+
+        if (adjustedEndZ < endPt.position.z) {
+            segList.updatePoint(endIdx,
+                endPt.withPosition(new Point3D(endPt.position.x, endPt.position.y, adjustedEndZ)));
+        }
+        if (adjustedSrtZ < srtNetPnt.position.z) {
+            NetworkPoint srtPt = segList.getPoint(srtIdx);
+            segList.updatePoint(srtIdx,
+                srtPt.withPosition(new Point3D(srtPt.position.x, srtPt.position.y, adjustedSrtZ)));
+        }
+
+        segList.ensureDownhillFlow(srtIdx, endIdx, level);
+        segList.addSegmentFromState(state, level, maxSegmentLength, maxSegments);
+        return srtIdx;
+    }
 
     private double evaluateControlFunction(double x, double y) {
         if (controlSampler != null) {
