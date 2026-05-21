@@ -6,6 +6,15 @@ package dendryterra.math;
  * Optional slope properties (slopeX, slopeY) represent elevation gradient.
  */
 public final class Point3D {
+    /**
+     * Debug aid: when -Ddendryterra.debug.nanPointCheck=true is set, throw at construction
+     * if x or y is non-finite. The resulting stack trace points at the NaN producer.
+     * Slopes are intentionally allowed to be NaN (see slopeX/slopeY docs); z is allowed
+     * to be NaN because some flows store sentinel z values.
+     */
+    private static final boolean NAN_POINT_CHECK =
+            Boolean.getBoolean("dendryterra.debug.nanPointCheck");
+
     public final double x;
     public final double y;
     public final double z;
@@ -16,6 +25,7 @@ public final class Point3D {
     public final double slopeY;
 
     public Point3D(double x, double y, double z) {
+        checkFiniteXY(x, y, z);
         this.x = x;
         this.y = y;
         this.z = z;
@@ -24,6 +34,7 @@ public final class Point3D {
     }
 
     public Point3D(double x, double y, double z, double slopeX, double slopeY) {
+        checkFiniteXY(x, y, z);
         this.x = x;
         this.y = y;
         this.z = z;
@@ -32,11 +43,19 @@ public final class Point3D {
     }
 
     public Point3D(Point2D point, double z) {
+        checkFiniteXY(point.x, point.y, z);
         this.x = point.x;
         this.y = point.y;
         this.z = z;
         this.slopeX = Double.NaN;
         this.slopeY = Double.NaN;
+    }
+
+    private static void checkFiniteXY(double x, double y, double z) {
+        if (NAN_POINT_CHECK && (!Double.isFinite(x) || !Double.isFinite(y))) {
+            throw new IllegalArgumentException(
+                    "Point3D constructed with non-finite x/y: (" + x + ", " + y + ", " + z + ")");
+        }
     }
 
     /**

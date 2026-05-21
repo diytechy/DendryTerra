@@ -352,6 +352,19 @@ public class DendrySampler implements Sampler {
             this.pixelGridSize = 0;
         }
 
+        // Bypass mode (resolution < 0): allocate nothing and skip unused-param warnings.
+        // All getSample queries short-circuit to bypassReturnValue() without touching caches.
+        if (resolution < 0) {
+            this.pixelCache = null;
+            this.segmentListCache = null;
+            this.bigChunkCache = null;
+            if (debugTiming) {
+                LOGGER.info("DendrySampler in bypass mode (n<0): all samples return {} for returnType={}",
+                    bypassReturnValue(), returnType);
+            }
+            return;
+        }
+
         // Initialize pixel cache only for return types that use cell-based pixel caching
         if (cachepixels > 0 && (returnType == DendryReturnType.PIXEL_LEVEL
                 || returnType == DendryReturnType.PIXEL_ELEVATION)) {
@@ -378,6 +391,35 @@ public class DendrySampler implements Sampler {
         }
 
         warnUnusedParams(returnType);
+    }
+
+    /**
+     * Bypass-mode return value per return type. Used when resolution < 0 to provide
+     * a "no river anywhere" sentinel without solving segments or querying sub-samplers.
+     * Distance metrics return max-dist; elevation metrics return the configured max;
+     * categorical/debug types return their established "no segment" sentinel.
+     */
+    private double bypassReturnValue() {
+        switch (returnType) {
+            case DISTANCE:
+            case WEIGHTED:
+            case PIXEL_RIVER:
+            case PIXEL_RIVER_FAR:
+            case PIXEL_RIVER_FAR2:
+                return maxDistGrid * gridsize;
+            case ELEVATION:
+            case PIXEL_ELEVATION:
+            case PIXEL_RIVER_CTRL:
+                return max;
+            case PIXEL_RIVER_FAR_NORM:
+                return Double.POSITIVE_INFINITY;
+            case PIXEL_RIVER_LEGACY:
+                return 2;
+            case PIXEL_LEVEL:
+            case PIXEL_DEBUG:
+            default:
+                return -1;
+        }
     }
 
     private void warnUnusedParams(DendryReturnType returnType) {
@@ -425,6 +467,11 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double z) {
+        // Bypass mode: no segment generation, no sampler queries, no cache access.
+        if (resolution < 0) {
+            return bypassReturnValue();
+        }
+
         long startTime = debugTiming ? System.nanoTime() : 0;
 
         double result;
@@ -473,6 +520,11 @@ public class DendrySampler implements Sampler {
 
     @Override
     public double getSample(long seed, double x, double y, double z) {
+        // Bypass mode: no segment generation, no sampler queries, no cache access.
+        // Takes precedence over the NaN sidechannel — when n<0 the sampler is fully inert.
+        if (resolution < 0) {
+            return bypassReturnValue();
+        }
         // NaN trigger: if x or z is NaN, interpret y as a level and return the
         // river width falloff factor for that level
         if (Double.isNaN(x) || Double.isNaN(z)) {
@@ -3916,6 +3968,16 @@ public class DendrySampler implements Sampler {
             for (int ep = 0; ep < 2; ep++) {
                 Point3D pt = (ep == 0) ? seg.srt : seg.end;
                 String label = (ep == 0) ? "srt" : "end";
+
+                // Non-finite endpoints can't be deduped by position — Math.round(NaN)==0 collides
+                // every NaN endpoint onto the same key and produces spurious mismatch reports.
+                // Log them as a distinct error class and skip.
+                if (!Double.isFinite(pt.x) || !Double.isFinite(pt.y) || !Double.isFinite(pt.z)) {
+                    LOGGER.error("NaN ENDPOINT in segment[{}].{} pos=({}, {}, {}) level={} | bigchunk origin=({}, {})",
+                        i, label, pt.x, pt.y, pt.z, level,
+                        chunk.gridOriginX, chunk.gridOriginY);
+                    continue;
+                }
 
                 // Quantize position to detect co-located points (using grid-scale tolerance)
                 // Use a resolution fine enough to catch true co-located points but not false positives

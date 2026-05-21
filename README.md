@@ -68,8 +68,17 @@ These parameters control how the river network is generated. Since all return ty
 - **Config key**: `n`
 - **Type**: int
 - **Default**: `2`
-- **Range**: 0–5
+- **Range**: -1 to 5
 - **Effect**: Resolution level / recursion depth. Level 0 produces the base constellation (trunk rivers). Each additional level subdivides cells and adds finer tributary branches. Higher values = more detailed networks but exponentially more computation.
+- **Bypass mode (`n = -1`)**: The sampler becomes fully inert — every query returns the "no river" sentinel for the configured return type. No segments are generated, no sub-samplers (`sampler`, `branches`, `riverwidth`, `borderwidth`) are queried, and no caches (BigChunk, SegmentList, pixel) are allocated. The 4-argument NaN sidechannel is also disabled. Use this to cheaply disable a Dendry layer without removing it from a pipeline. Per-return-type bypass values:
+
+  | Return type | Bypass value |
+  |---|---|
+  | `DISTANCE`, `WEIGHTED`, `PIXEL_RIVER`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2` | `max-dist` (world units) |
+  | `ELEVATION`, `PIXEL_ELEVATION`, `PIXEL_RIVER_CTRL` | `max` |
+  | `PIXEL_RIVER_LEGACY` | `2` (outside river and border) |
+  | `PIXEL_RIVER_FAR_NORM` | `+Infinity` |
+  | `PIXEL_LEVEL`, `PIXEL_DEBUG` | `-1` (no data) |
 
 #### `epsilon`
 - **Config key**: `epsilon`
