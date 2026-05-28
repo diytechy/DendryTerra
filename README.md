@@ -2,6 +2,19 @@
 
 DendryTerra is a procedural river network generator that produces dendritic (tree-like) flow patterns. It generates hierarchical segment networks within a tiling grid and provides several output modes for terrain integration.
 
+![Example DendryTerra output](Example.png)
+
+## ⚠️ Not a True Noise Sampler
+
+**DendryTerra is _not_ a stateless, scale-invariant noise function.** Unlike value/Perlin/simplex noise, its output at a given point depends on `gridsize`, and **changing `gridsize` changes the result — even if `cachepixels` is scaled proportionally to match.** The two parameters are not interchangeable scale knobs.
+
+This is fundamental to the algorithm, not an implementation limitation. Dendry-style river networks require **local context**: the value at any point is determined by the surrounding network topology (constellations, stitched segments, downhill flow across neighboring cells). A point's elevation/distance cannot be resolved in isolation — it can only be computed after the surrounding context has been generated and queried. There is no closed-form function that maps a single `(x, z)` to an output without first solving the local neighborhood.
+
+Practical consequences:
+- Do not treat `gridsize` purely as a zoom level; it reshapes the network, not just its scale.
+- Output is **not** guaranteed to be continuous or identical across `gridsize` changes, even with `cachepixels` adjusted to keep apparent resolution constant.
+- The sampler is most efficient when many nearby points are queried (the surrounding context is computed once and cached); single isolated queries still pay the full local-context cost.
+
 ## Coordinate Spaces
 
 DendryTerra operates in two coordinate spaces:
