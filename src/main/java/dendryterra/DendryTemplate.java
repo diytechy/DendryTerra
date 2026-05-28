@@ -14,6 +14,13 @@ import com.dfsek.terra.api.config.meta.Meta;
  */
 public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<Sampler> {
 
+    /**
+     * Resolution depth. Range: -1 to 5.
+     *   -1 = bypass mode: every query returns the "no river" sentinel for the
+     *        configured return type. No segments are generated, no sub-samplers
+     *        are queried, and no caches are allocated.
+     *    0+ = normal hierarchical generation up to the configured depth.
+     */
     @Value("n")
     @Default
     private @Meta int n = 2;
@@ -255,8 +262,8 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
 
     @Override
     public boolean validate() throws ValidationException {
-        if (n < 0 || n > 5) {
-            throw new ValidationException("n must be between 0 and 5, got: " + n);
+        if (n < -1 || n > 5) {
+            throw new ValidationException("n must be between -1 and 5, got: " + n);
         }
         if (epsilon < 0 || epsilon >= 0.5) {
             throw new ValidationException("epsilon must be in range [0, 0.5), got: " + epsilon);

@@ -5,17 +5,17 @@ plugins {
 }
 
 group = "com.github.diytechy"
-version = "1.0.0-BETA-G"
+version = "1.0.0-BETA-H"
 
 repositories {
     mavenCentral()
     maven {
-        name = "Solo Studios"
-        url = uri("https://maven.solo-studios.ca/releases")
-    }
-    maven {
         name = "Repsy-Terra"
         url = uri("https://repo.repsy.io/mvn/diytechy/terra")
+    }
+    maven {
+        name = "Solo Studios"
+        url = uri("https://maven.solo-studios.ca/releases")
     }
 }
 

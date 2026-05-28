@@ -2,6 +2,19 @@
 
 DendryTerra is a procedural river network generator that produces dendritic (tree-like) flow patterns. It generates hierarchical segment networks within a tiling grid and provides several output modes for terrain integration.
 
+![Example DendryTerra output](Example.png)
+
+## ⚠️ Not a True Noise Sampler
+
+**DendryTerra is _not_ a stateless, scale-invariant noise function.** Unlike value/Perlin/simplex noise, its output at a given point depends on `gridsize`, and **changing `gridsize` changes the result — even if `cachepixels` is scaled proportionally to match.** The two parameters are not interchangeable scale knobs.
+
+This is fundamental to the algorithm, not an implementation limitation. Dendry-style river networks require **local context**: the value at any point is determined by the surrounding network topology (constellations, stitched segments, downhill flow across neighboring cells). A point's elevation/distance cannot be resolved in isolation — it can only be computed after the surrounding context has been generated and queried. There is no closed-form function that maps a single `(x, z)` to an output without first solving the local neighborhood.
+
+Practical consequences:
+- Do not treat `gridsize` purely as a zoom level; it reshapes the network, not just its scale.
+- Output is **not** guaranteed to be continuous or identical across `gridsize` changes, even with `cachepixels` adjusted to keep apparent resolution constant.
+- The sampler is most efficient when many nearby points are queried (the surrounding context is computed once and cached); single isolated queries still pay the full local-context cost.
+
 ## Coordinate Spaces
 
 DendryTerra operates in two coordinate spaces:
@@ -30,8 +43,8 @@ The `return` parameter selects what value `getSample` produces. Different return
 | `PIXEL_RIVER_LEGACY` | River/border/outside classification (0/1/2) using pixel cache | `cachepixels > 0` |
 | `PIXEL_RIVER` | BigChunk-cached normalized distance on [-1, 1] scale | — |
 | `PIXEL_RIVER_CTRL` | BigChunk-cached elevation (de-quantized) | — |
-| `PIXEL_RIVER_FAR` | Coarse far-distance to nearest segment in world units (4x4 cache) | — |
-| `PIXEL_RIVER_FAR2` | Far-distance with normal-based sub-cell offset compensation (4x4 cache) | — |
+| `PIXEL_RIVER_FAR` | Coarse far-distance to nearest segment in world units (64×64 far cache) | — |
+| `PIXEL_RIVER_FAR2` | Far-distance with normal-based sub-cell offset compensation (64×64 far cache) | — |
 | `PIXEL_RIVER_FAR_NORM` | Far-distance normalized to same [-1, 1] scale as `PIXEL_RIVER` | — |
 
 **PIXEL_RIVER distance scale:**
@@ -68,8 +81,17 @@ These parameters control how the river network is generated. Since all return ty
 - **Config key**: `n`
 - **Type**: int
 - **Default**: `2`
-- **Range**: 0–5
+- **Range**: -1 to 5
 - **Effect**: Resolution level / recursion depth. Level 0 produces the base constellation (trunk rivers). Each additional level subdivides cells and adds finer tributary branches. Higher values = more detailed networks but exponentially more computation.
+- **Bypass mode (`n = -1`)**: The sampler becomes fully inert — every query returns the "no river" sentinel for the configured return type. No segments are generated, no sub-samplers (`sampler`, `branches`, `riverwidth`, `borderwidth`) are queried, and no caches (BigChunk, SegmentList, pixel) are allocated. The 4-argument NaN sidechannel is also disabled. Use this to cheaply disable a Dendry layer without removing it from a pipeline. Per-return-type bypass values:
+
+  | Return type | Bypass value |
+  |---|---|
+  | `DISTANCE`, `WEIGHTED`, `PIXEL_RIVER`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2` | `max-dist` (world units) |
+  | `ELEVATION`, `PIXEL_ELEVATION`, `PIXEL_RIVER_CTRL` | `max` |
+  | `PIXEL_RIVER_LEGACY` | `2` (outside river and border) |
+  | `PIXEL_RIVER_FAR_NORM` | `+Infinity` |
+  | `PIXEL_LEVEL`, `PIXEL_DEBUG` | `-1` (no data) |
 
 #### `epsilon`
 - **Config key**: `epsilon`
@@ -98,31 +120,24 @@ These parameters control how the river network is generated. Since all return ty
 - **Effect**: Seed modifier for deterministic random generation. Different salts produce different network layouts from the same control function.
 
 #### `branches` / `default-branches`
-- **Config key**: `branches` (Sampler, nullable), `default-branches` (int)
-- **Defaults**: `null` / `1`
-- **Range**: `default-branches` 1–8
-- **Effect**: Number of initial star points per cell at level 0. When a `branches` sampler is provided, it is queried at each cell center (in sampler coordinates) and the result is clamped to [1, 8]. Otherwise `default-branches` is used. More branches = denser networks with more river origins per cell.
+- **Config key**: `branches` (Sampler, nullable), `default-branches` (double)
+- **Defaults**: `null` / `1.0`
+- **Range**: `default-branches` [0, 1]
+- **Effect**: Controls tributary branch retention probability at levels 1+. `default-branches = 1.0` keeps all candidate branch points; `0.0` removes all. When a `branches` sampler is provided, it is queried at each point in sampler coordinates and its output [0, 1] is used as the per-point retention probability. Points far from existing segments receive an additional distance-based removal penalty. The sampler can also hard-block branches at any location by returning `<= 0`.
 
 #### `curvature`
 - **Config key**: `curvature`
 - **Type**: double
-- **Default**: `0.9`
-- **Range**: [0, 1]
-- **Effect**: Hermite spline curvature factor for segment subdivision. 0 = linear interpolation (straight segments, splines disabled), 1 = full spline curvature (smooth curves). Controls the visual smoothness of river bends. When set to 0, spline subdivision is completely disabled and simple linear subdivision is used instead (faster but produces straight-line segments between nodes).
+- **Default**: `1.5`
+- **Range**: [0, 2]
+- **Effect**: Hermite spline curvature factor for segment subdivision. 0 = linear interpolation (straight segments, splines disabled), values above 1 produce exaggerated curves beyond classic Hermite. Controls the visual smoothness of river bends. When set to 0, spline subdivision is completely disabled and simple linear subdivision is used instead (faster but produces straight-line segments between nodes).
 
 #### `tangent-angle`
 - **Config key**: `tangent-angle`
 - **Type**: double (degrees)
-- **Default**: `45.0`
+- **Default**: `39.0`
 - **Range**: 0–90
 - **Effect**: Maximum random twist angle for spline tangents at unconnected nodes. At 0, tangents point directly along the flow/slope direction (minimal curvature). At 90, tangents can deviate up to perpendicular to the connection direction (maximum curvature). The actual twist applied is scaled by terrain slope — steep terrain uses the full angle, flat terrain reduces it (see `slope-when-straight`).
-
-#### `tangent-strength`
-- **Config key**: `tangent-strength`
-- **Type**: double
-- **Default**: `1.0`
-- **Range**: [0, 1]
-- **Effect**: Strength of spline tangent control points as a fraction of segment length. Controls how far the Hermite control point extends from the node. 0 = control point at node (effectively linear), 1 = full tangent length. Higher values create more pronounced curves.
 
 #### `slope-when-straight`
 - **Config key**: `slope-when-straight`
@@ -183,7 +198,7 @@ These parameters control how the river network is generated. Since all return ty
 #### `max`
 - **Config key**: `max`
 - **Type**: double
-- **Default**: `2.0`
+- **Default**: `2.55`
 - **Range**: > 0
 - **Affects**: `PIXEL_RIVER_CTRL` (and `PIXEL_RIVER` for elevation storage)
 - **Effect**: Maximum expected elevation value from the control function. Used to quantize elevation to UInt8 (0–255) in the BigChunk cache. Elevation values above `max` will be clipped to 255. Set this to match the maximum output of your control sampler.
@@ -191,7 +206,7 @@ These parameters control how the river network is generated. Since all return ty
 #### `max-dist`
 - **Config key**: `max-dist`
 - **Type**: double
-- **Default**: `50.0`
+- **Default**: `250.0`
 - **Range**: > 0, must be >= `default-riverwidth + default-borderwidth`
 - **Units**: sampler (world) units
 - **Affects**: `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`
@@ -200,11 +215,34 @@ These parameters control how the river network is generated. Since all return ty
 #### `cachepixels`
 - **Config key**: `cachepixels`
 - **Type**: double
-- **Default**: `0`
+- **Default**: `1.0`
 - **Range**: [0, gridsize], and `gridsize / cachepixels <= 65535`
 - **Units**: sampler (world) units per pixel
 - **Affects**: `PIXEL_ELEVATION`, `PIXEL_LEVEL`, `PIXEL_DEBUG`, `PIXEL_RIVER_LEGACY`, `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`
 - **Effect**: Resolution of the pixel cache. Determines the size of each cached pixel in world units. Lower values = higher resolution = more memory per cell. For PIXEL_RIVER/PIXEL_RIVER_CTRL, this sets the block size of the BigChunk grid (each block = `cachepixels x cachepixels` world units). Required to be > 0 for all PIXEL_* return types. Also sets the minimum river width floor (`2 * cachepixels`).
+
+#### `river-width-falloff`
+- **Config key**: `river-width-falloff`
+- **Type**: double
+- **Default**: `0.65`
+- **Range**: (0, 1]
+- **Affects**: `PIXEL_RIVER_LEGACY`, `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2`, `PIXEL_RIVER_FAR_NORM`
+- **Effect**: Multiplicative width reduction applied at each river level. River width at level N = `baseWidth * river-width-falloff^N`. Values closer to 1 keep tributaries nearly as wide as trunk rivers; values closer to 0 make tributaries much narrower.
+
+#### `height-change-max-distance`
+- **Config key**: `height-change-max-distance`
+- **Type**: double
+- **Default**: `15.0`
+- **Units**: sampler (world) units
+- **Affects**: `PIXEL_RIVER` (y >= 3 sub-mode)
+- **Effect**: Maximum world-unit distance encoded in the distance-to-elevation-change nibble. The nibble stores values 0–15, where each step represents `height-change-max-distance / 15` world units. Larger values give coarser quantization; smaller values give finer detail near elevation transitions.
+
+#### `max-segments-per-level`
+- **Config key**: `max-segments-per-level`
+- **Type**: int
+- **Default**: `500`
+- **Range**: > 0
+- **Effect**: Cap on the number of segments created at the highest subdivision level (`level == n`). When the limit is reached mid-subdivision, only segments closest to the existing network endpoint are kept. Useful for controlling performance and memory in heavily subdivided networks. Has no effect on coarser levels.
 
 ---
 
@@ -213,7 +251,7 @@ These parameters control how the river network is generated. Since all return ty
 #### `use-parallel`
 - **Config key**: `use-parallel`
 - **Type**: boolean
-- **Default**: `true`
+- **Default**: `false`
 - **Affects**: `DISTANCE`, `WEIGHTED`, `ELEVATION` only
 - **Effect**: Enable parallel stream processing for nearest-segment search. Only activates when segment count exceeds `parallel-threshold`. Has no effect on PIXEL_* return types which use their own rendering pipeline.
 
@@ -243,8 +281,8 @@ DendryTerra uses several caching layers depending on return type:
 | Cache | Size Limit | Used By |
 |---|---|---|
 | SegmentList LRU cache | 10 MB | All BigChunk types |
-| BigChunk LRU cache | 10 MB | All BigChunk types |
-| Pixel cache (per-cell) | 10 MB | `PIXEL_ELEVATION`, `PIXEL_LEVEL`, `PIXEL_DEBUG`, `PIXEL_RIVER_LEGACY` |
+| BigChunk LRU cache | 20 MB | All BigChunk types |
+| Pixel cache (per-cell) | 20 MB | `PIXEL_ELEVATION`, `PIXEL_LEVEL`, `PIXEL_DEBUG`, `PIXEL_RIVER_LEGACY` |
 
 "BigChunk types" are: `PIXEL_RIVER`, `PIXEL_RIVER_CTRL`, `PIXEL_RIVER_FAR`, `PIXEL_RIVER_FAR2`, `PIXEL_RIVER_FAR_NORM`. Both the SegmentList and BigChunk caches are only allocated when one of these return types is active. The FAR types populate only the 64×64 far-distance sub-cache within each BigChunk (~8 KB/chunk); the full 256×256 block grid (~200 KB/chunk) is only rasterized for `PIXEL_RIVER` and `PIXEL_RIVER_CTRL`.
 
@@ -253,6 +291,6 @@ DendryTerra uses several caching layers depending on return type:
 1. **Constellation generation**: Stars (initial points) are placed in a tiling grid pattern. Each constellation covers multiple grid cells.
 2. **Slope estimation**: Each star's terrain slope is estimated from its neighbors by solving a 2x2 linear system.
 3. **Network construction**: Stars are connected into segments by following downhill gradients. Level 0 creates trunk rivers; levels 1+ add tributaries.
-4. **Spline subdivision**: Segments are subdivided using Hermite splines with tangents influenced by terrain slope and the `tangent-angle`/`tangent-strength` parameters.
+4. **Spline subdivision**: Segments are subdivided using Hermite splines with tangents influenced by terrain slope and the `tangent-angle` parameter.
 5. **Stitching**: Segments are clipped at cell boundaries and stitched across cells for seamless tiling.
 6. **Rendering**: For PIXEL_RIVER modes, segments are rasterized into 256x256 BigChunk blocks with quantized distance and elevation. Width transitions are applied at tributary junctions.
