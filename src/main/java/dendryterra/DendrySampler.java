@@ -49,6 +49,18 @@ public class DendrySampler implements Sampler {
     private final Sampler controlSampler;
     private final long salt;
 
+    // World seed captured from the most recent getSample() call. Terra hands the world
+    // seed in at sample time; we forward it to every child-sampler evaluation so the
+    // control/branch/width fields match the rest of the world (biomes, elevation, etc.).
+    // It is constant for a given sampler instance (one world), so capturing it per call
+    // is safe. salt remains an additive decorrelation offset, per Terra convention.
+    private volatile long worldSeed = 0;
+
+    /** Effective seed for child-sampler evaluations: world seed + configured salt offset. */
+    private long controlSeed() {
+        return worldSeed + salt;
+    }
+
     // Branch and curvature parameters
     private final Sampler branchesSampler;
     private final double defaultBranches;
@@ -59,6 +71,23 @@ public class DendrySampler implements Sampler {
     private final boolean useSplines;
     private final boolean debugTiming;
     private final int parallelThreshold;
+
+    // ---- Region-gated debug tracing ----
+    // Logs sampler / point / elevation-walk activity for queries that land inside a
+    // world-coordinate box. Zero overhead when disabled. Enable + configure via JVM flags:
+    //   -Ddendry.debugRegion=true -Ddendry.debugRegion.x=<worldX> -Ddendry.debugRegion.z=<worldZ>
+    //   [-Ddendry.debugRegion.radius=<halfExtent, default 8>]
+    private static final boolean DEBUG_REGION = Boolean.getBoolean("dendry.debugRegion");
+    private static final double DEBUG_REGION_X = Double.parseDouble(System.getProperty("dendry.debugRegion.x", "0"));
+    private static final double DEBUG_REGION_Z = Double.parseDouble(System.getProperty("dendry.debugRegion.z", "0"));
+    private static final double DEBUG_REGION_RADIUS = Double.parseDouble(System.getProperty("dendry.debugRegion.radius", "8"));
+
+    /** True when the given WORLD coordinate falls inside the configured debug box. */
+    private static boolean inDebugRegion(double worldX, double worldZ) {
+        return DEBUG_REGION
+            && Math.abs(worldX - DEBUG_REGION_X) <= DEBUG_REGION_RADIUS
+            && Math.abs(worldZ - DEBUG_REGION_Z) <= DEBUG_REGION_RADIUS;
+    }
 
     // Constellation parameters
     private final int ConstellationScale;
@@ -472,6 +501,9 @@ public class DendrySampler implements Sampler {
             return bypassReturnValue();
         }
 
+        // Capture the world seed so child-sampler evaluations match the rest of the world.
+        this.worldSeed = seed;
+
         long startTime = debugTiming ? System.nanoTime() : 0;
 
         double result;
@@ -530,6 +562,9 @@ public class DendrySampler implements Sampler {
         if (Double.isNaN(x) || Double.isNaN(z)) {
             return Math.pow(riverWidthFalloff, y);
         }
+        // Capture the world seed (the PIXEL_RIVER branches below sample directly without
+        // delegating to the 2D getSample, so we must record it here too).
+        this.worldSeed = seed;
         if (returnType == DendryReturnType.PIXEL_RIVER) {
             if (y >= 3.0) {
                 // 3<=y<4: quantized distance to next elevation change (world units)
@@ -1087,6 +1122,10 @@ public class DendrySampler implements Sampler {
                     }
                 }
 
+                if (DEBUG_REGION && inDebugRegion(bestX * gridsize, bestY * gridsize)) {
+                    System.out.println(String.format("dbgRegion point: level=%s norm=(%s, %s) world=(%s, %s) elev=%s",
+                        level, bestX, bestY, bestX * gridsize, bestY * gridsize, lowestElev));
+                }
                 points.add(new Point3D(bestX, bestY, lowestElev));
             }
         }
@@ -2707,7 +2746,7 @@ public class DendrySampler implements Sampler {
             // Base removal probability from branchesSampler
             double baseRemovalProbability = 0.0;
             if (branchesSampler != null) {
-                double branchProbability = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
+                double branchProbability = branchesSampler.getSample(controlSeed(), point.x * gridsize, point.y * gridsize);
                 baseRemovalProbability = 1.0 - branchProbability;
             }
             else{
@@ -2752,7 +2791,7 @@ public class DendrySampler implements Sampler {
     private List<Point3D> removeZeroProbabilityPoints(List<Point3D> points) {
         List<Point3D> result = new ArrayList<>();
         for (Point3D point : points) {
-            double sample = branchesSampler.getSample(salt, point.x * gridsize, point.y * gridsize);
+            double sample = branchesSampler.getSample(controlSeed(), point.x * gridsize, point.y * gridsize);
             if (sample > 0.0) {
                 result.add(point);
             }
@@ -2782,7 +2821,7 @@ public class DendrySampler implements Sampler {
 
         // Get base width in sampler coordinates
         double baseWidthSampler = (riverwidthSampler != null)
-            ? riverwidthSampler.getSample(salt, samplerX, 0, samplerY)
+            ? riverwidthSampler.getSample(controlSeed(), samplerX, 0, samplerY)
             : defaultRiverwidth;
         if (riverwidthSampler != null && baseWidthSampler > defaultRiverwidth) {
             if (!warnedRiverwidth) {
@@ -2916,6 +2955,16 @@ public class DendrySampler implements Sampler {
         double adjustedSrtZ = adjusted[0];
         double adjustedEndZ = adjusted[1];
 
+        if (DEBUG_REGION
+                && (inDebugRegion(srtNetPnt.position.x * gridsize, srtNetPnt.position.y * gridsize)
+                    || inDebugRegion(endPt.position.x * gridsize, endPt.position.y * gridsize))) {
+            System.out.println(String.format(
+                "dbgRegion walk: level=%s srtWorld=(%s, %s) srtZ %s->%s | endWorld=(%s, %s) endZ %s->%s",
+                level,
+                srtNetPnt.position.x * gridsize, srtNetPnt.position.y * gridsize, srtNetPnt.position.z, adjustedSrtZ,
+                endPt.position.x * gridsize, endPt.position.y * gridsize, endPt.position.z, adjustedEndZ));
+        }
+
         if (adjustedEndZ < endPt.position.z) {
             segList.updatePoint(endIdx,
                 endPt.withPosition(new Point3D(endPt.position.x, endPt.position.y, adjustedEndZ)));
@@ -2932,10 +2981,16 @@ public class DendrySampler implements Sampler {
     }
 
     private double evaluateControlFunction(double x, double y) {
-        if (controlSampler != null) {
-            return controlSampler.getSample(salt, x * gridsize, y * gridsize);
+        double worldX = x * gridsize;
+        double worldY = y * gridsize;
+        double value = (controlSampler != null)
+            ? controlSampler.getSample(controlSeed(), worldX, worldY)
+            : x * 0.1;
+        if (DEBUG_REGION && inDebugRegion(worldX, worldY)) {
+            System.out.println(String.format("dbgRegion control: norm=(%s, %s) world=(%s, %s) gridsize=%s -> %s",
+                x, y, worldX, worldY, gridsize, value));
         }
-        return x * 0.1;
+        return value;
     }
 
 
@@ -3022,6 +3077,15 @@ public class DendrySampler implements Sampler {
                 }
                 double baseElevation = nearest.closestPoint.z;
                 double slopeContribution = nearest.distance * slope;
+                if (DEBUG_REGION && inDebugRegion(x * gridsize, y * gridsize)) {
+                    System.out.println(String.format(
+                        "dbgRegion result: queryWorld=(%s, %s) -> elev=%s (base=%s + slope*dist=%s*%s) "
+                            + "nearestSeg srtZ=%s endZ=%s closest2D=%s dist=%s",
+                        x * gridsize, y * gridsize, baseElevation + slopeContribution,
+                        baseElevation, nearest.distance, slope,
+                        nearest.segment.srt.z, nearest.segment.end.z,
+                        nearest.closestPoint2D, nearest.distance));
+                }
                 return baseElevation + slopeContribution;
         }
     }
@@ -3395,7 +3459,7 @@ public class DendrySampler implements Sampler {
     private double getRiverWidth(double worldX, double worldY, int level) {
         double baseWidth;
         if (riverwidthSampler != null) {
-            baseWidth = riverwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+            baseWidth = riverwidthSampler.getSample(controlSeed(), worldX * gridsize, worldY * gridsize);
             if (baseWidth > defaultRiverwidth) {
                 if (!warnedRiverwidth) {
                     warnedRiverwidth = true;
@@ -3423,7 +3487,7 @@ public class DendrySampler implements Sampler {
     private double getBorderWidth(double worldX, double worldY) {
         double width;
         if (borderwidthSampler != null) {
-            width = borderwidthSampler.getSample(salt, worldX * gridsize, worldY * gridsize);
+            width = borderwidthSampler.getSample(controlSeed(), worldX * gridsize, worldY * gridsize);
             if (width > defaultBorderwidth) {
                 if (!warnedBorderwidth) {
                     warnedBorderwidth = true;
@@ -3660,7 +3724,14 @@ public class DendrySampler implements Sampler {
         double cpg = cachepixels / gridsize;
         int bx = clampBlock(gridToBlockIndex(gridX, chunk.gridOriginX, cpg));
         int by = clampBlock(gridToBlockIndex(gridY, chunk.gridOriginY, cpg));
-        return chunk.getBlockElevation(bx, by) / (255.0 / max);
+        int rawByte = chunk.getBlockElevation(bx, by);
+        double elev = rawByte / (255.0 / max);
+        if (DEBUG_REGION && inDebugRegion(gridX * gridsize, gridY * gridsize)) {
+            System.out.println(String.format(
+                "dbgRegion bigChunkElev: queryWorld=(%s, %s) block=(%s, %s) rawByte=%s max=%s -> elev=%s",
+                gridX * gridsize, gridY * gridsize, bx, by, rawByte, max, elev));
+        }
+        return elev;
     }
 
     /** Query segment level (high nibble). Returns 0-15, 15 = not available. */
@@ -4213,10 +4284,10 @@ public class DendrySampler implements Sampler {
         double samplerX = gridX * gridsize;
         double samplerZ = gridY * gridsize;
         double W = (riverwidthSampler != null)
-                ? Math.min(defaultRiverwidth, riverwidthSampler.getSample(salt, samplerX, 0, samplerZ))
+                ? Math.min(defaultRiverwidth, riverwidthSampler.getSample(controlSeed(), samplerX, 0, samplerZ))
                 : defaultRiverwidth;
         double B = (borderwidthSampler != null)
-                ? borderwidthSampler.getSample(salt, samplerX, 0, samplerZ)
+                ? borderwidthSampler.getSample(controlSeed(), samplerX, 0, samplerZ)
                 : defaultBorderwidth;
 
         // Apply the same normalization as PIXEL_RIVER (see evaluateWithBigChunkDistance):
@@ -4817,7 +4888,12 @@ public class DendrySampler implements Sampler {
             distU8 = (int)(128 + Math.min(127, ratio * 127));
         }
 
-        int finalElevU8 = Math.max(elevationU8, Math.min(1, level));
+        // No elevation floor: a level-1+ box may store a true 0 elevation. (Previously
+        // floored to byte 1 via Math.max(elevationU8, Math.min(1, level)) to keep level-1+
+        // rivers distinct from the zeroed level-0 trunk, but the segment level is already
+        // carried by levelNibble, so the floor only injected a spurious max/255 lift at
+        // genuine 0-elevation river starts.)
+        int finalElevU8 = elevationU8;
 
         applyBoxUpdate(chunk, blockX, blockY, distU8, finalElevU8, levelNibble, distChangeNibble);
 
