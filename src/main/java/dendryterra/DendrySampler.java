@@ -4086,39 +4086,45 @@ public class DendrySampler implements Sampler {
      * Grid: 64x64 cells, each covering 4x4 cachepixel blocks (4 cachepixels per axis).
      * Step size: farCellSize / 2 (2 cachepixels per step) for accurate coverage.
      *
-     * Performance optimizations:
-     * (1) Float arithmetic throughout Phase A. At AVX2 (UseAVX=2, the JVM default), float
-     *     SIMD registers hold 8 values vs 4 for double, giving the JIT twice the vectorization
-     *     width for the inner cj loop without requiring any global JVM flag changes.
-     * (2) Cell centers pre-computed as float[] arrays (256 bytes total), kept in L1 cache
-     *     across all step-point iterations for the same chunk.
-     * (3) Squared-distance early-exit: distSq * invCpgSq is compared against storedDist^2
+     * Phase A is intentionally done in double precision. An earlier float-arithmetic
+     * SIMD-width-doubling variant produced CPU- and JIT-dependent quantization results:
+     * at quantization boundaries the float (int)-cast rounded to different sides
+     * depending on auto-vectorization width and FMA contraction, and the float
+     * squared-distance early-exit was not a conservative reject. Both manifested as
+     * ±1-cachepixel river-edge shifts that flipped river/no-river classification at
+     * ocean boundaries between Intel and AMD JITs. Double precision halves the SIMD
+     * width but makes Phase A deterministic across CPUs.
+     *
+     * Performance optimizations retained:
+     * (1) Squared-distance early-exit: distSq * invCpgSq is compared against storedDist^2
      *     before calling Math.sqrt. After the first segment fills the cache, most cells
      *     already have a stored distance smaller than the current step point's distance,
      *     so sqrt is skipped for the majority of inner-loop iterations.
-     * (4) Row-skip: entire rows where |dy|*invCpg >= maxStoredDist are skipped.
+     * (2) Row-skip: entire rows where |dy|*invCpg >= maxStoredDist are skipped.
      *     maxStoredDist is refreshed after each segment as the cache tightens.
      */
     private void computeFarCache(BigChunk chunk, double chunkSizeGrid, List<Segment3D> farSegments) {
         final int FAR_GRID = 64;
         double farCellSize = chunkSizeGrid / FAR_GRID;
 
-        // Pre-compute cell reference points (corners) as float arrays — constant for this
-        // chunk, fits in L1 cache. Corners align with the biome pipeline's 4-unit query
-        // grid so queries at (0,4,8,...) are exact rather than offset by half a cell.
-        float[] cellRefX = new float[FAR_GRID];
-        float[] cellRefY = new float[FAR_GRID];
+        // Pre-compute cell reference points (corners) — constant for this chunk, fits in L1.
+        // Corners align with the biome pipeline's 4-unit query grid so queries at
+        // (0,4,8,...) are exact rather than offset by half a cell.
+        double[] cellRefX = new double[FAR_GRID];
+        double[] cellRefY = new double[FAR_GRID];
         for (int i = 0; i < FAR_GRID; i++) {
-            cellRefX[i] = (float)(chunk.gridOriginX + i * farCellSize);
-            cellRefY[i] = (float)(chunk.gridOriginY + i * farCellSize);
+            cellRefX[i] = chunk.gridOriginX + i * farCellSize;
+            cellRefY[i] = chunk.gridOriginY + i * farCellSize;
         }
 
-        // Float conversion of the quantization scale factor (grid dist → quantized units).
-        float invCpgF   = (float)(gridsize / cachepixels);
-        float invCpgSqF = invCpgF * invCpgF; // used for squared-distance comparison
+        // Quantization scale factor (grid dist → quantized units), kept in double for
+        // deterministic comparison and quantization.
+        double invCpg   = gridsize / cachepixels;
+        double invCpgSq = invCpg * invCpg;
 
         // Track closest segment point per cell for normal computation in Phase B.
-        // float precision is sufficient for the dot-product sign test used there.
+        // Phase B re-derives in double for its dot-product sign test; float storage is
+        // sufficient there because only the sign is consumed.
         float[][] closestPointX = new float[FAR_GRID][FAR_GRID];
         float[][] closestPointY = new float[FAR_GRID][FAR_GRID];
         Segment3D[][] closestSeg = new Segment3D[FAR_GRID][FAR_GRID];
@@ -4136,28 +4142,28 @@ public class DendrySampler implements Sampler {
             int numSteps = Math.max(1, (int) Math.ceil(segLen / (farCellSize * 0.5)));
             for (int step = 0; step <= numSteps; step++) {
                 Point3D pt = evaluateHermiteSpline(seg, (double) step / numSteps);
-                float ptXf = (float) pt.x;
-                float ptYf = (float) pt.y;
+                double ptX = pt.x;
+                double ptY = pt.y;
 
                 for (int ci = 0; ci < FAR_GRID; ci++) {
-                    float dy = ptYf - cellRefY[ci];
-                    // Row-skip (float): |dy| * invCpg >= maxStoredDist means no cell in
+                    double dy = ptY - cellRefY[ci];
+                    // Row-skip: |dy| * invCpg >= maxStoredDist means no cell in
                     // this row has a stored distance high enough to be improved.
-                    if (Math.abs(dy) * invCpgF >= maxStoredDist) continue;
+                    if (Math.abs(dy) * invCpg >= maxStoredDist) continue;
 
-                    float dySq = dy * dy;
+                    double dySq = dy * dy;
                     for (int cj = 0; cj < FAR_GRID; cj++) {
-                        float dx   = ptXf - cellRefX[cj];
-                        float distSq = dx * dx + dySq;
+                        double dx   = ptX - cellRefX[cj];
+                        double distSq = dx * dx + dySq;
                         int stored = chunk.getFarDistance(ci, cj);
                         // Squared-distance early-exit: distSq * invCpgSq >= stored^2 means
                         // sqrt(distSq)*invCpg >= stored, so quantized >= stored — no update.
-                        if (distSq * invCpgSqF >= (float)(stored * stored)) continue;
-                        int quantized = (int) Math.min(255, (float) Math.sqrt(distSq) * invCpgF);
+                        if (distSq * invCpgSq >= (double)(stored * stored)) continue;
+                        int quantized = (int) Math.min(255.0, Math.sqrt(distSq) * invCpg);
                         if (quantized < stored) {
                             chunk.setFarDistance(ci, cj, quantized);
-                            closestPointX[ci][cj] = ptXf;
-                            closestPointY[ci][cj] = ptYf;
+                            closestPointX[ci][cj] = (float) ptX;
+                            closestPointY[ci][cj] = (float) ptY;
                             closestSeg[ci][cj]    = seg;
                             closestT[ci][cj]      = (double) step / numSteps;
                         }
