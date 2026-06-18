@@ -275,7 +275,7 @@ public class DendryTemplate implements ValidatedConfigTemplate, ObjectTemplate<S
             throw new ValidationException("default-branches must be between 0 and 1, got: " + defaultBranches);
         }
         if (curvature < 0 || curvature > 2) {
-            throw new ValidationException("curvature must be in range [0, 1], got: " + curvature);
+            throw new ValidationException("curvature must be in range [0, 2], got: " + curvature);
         }
         if (ConstellationScale < 1 || ConstellationScale > 10) {
             throw new ValidationException("constellation-scale must be between 1 and 10, got: " + ConstellationScale);
