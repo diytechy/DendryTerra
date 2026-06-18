@@ -822,11 +822,11 @@ public class SegmentList {
                 intermediateTangent = computeHermiteTangent(srt.position, end.position,
                                                            tangentSrt, tangentEnd, t, config.curvature);
                 intermediateTangent = applyTangentTwist(intermediateTangent, jitterMagnitude,
-                                                       levelTwist, rng);
+                                                       levelTwist, level, rng);
             } else {
                 Vec2D baseDirection = new Vec2D(srt.position.projectZ(), end.position.projectZ()).normalize();
                 intermediateTangent = applyTangentTwist(baseDirection, jitterMagnitude,
-                                                       levelTwist, rng);
+                                                       levelTwist, level, rng);
             }
             // Normalize intermediate tangents to unit length (matching start/end tangent convention).
             // The sampler's evaluateHermiteSpline scales by segLength * curvature, so unit-length
@@ -1024,12 +1024,16 @@ public class SegmentList {
      * @param rng Random number generator
      * @return Twisted tangent vector
      */
-    private Vec2D applyTangentTwist(Vec2D tangent, double jitterMagnitude, double maxTwist, Random rng) {
-        // Compute twist reduction factor based on jitter
-        // More jitter (more displacement) -> less twist
-        // Use exponential decay: twist scales down as jitter increases
-        // Steeper linear decay: twist falls off faster with jitter to prevent tight S-curves
-        double twistScale = Math.max(0, 1.0 - 2.0 * jitterMagnitude);
+    private Vec2D applyTangentTwist(Vec2D tangent, double jitterMagnitude, double maxTwist, int level, Random rng) {
+        // Compute twist reduction factor based on jitter.
+        // More jitter (more displacement) -> less twist, to prevent tight S-curves.
+        // A 10% floor guarantees segments retain some waviness even at maximum displacement,
+        // avoiding intermittently dead-straight runs.
+        final double TWIST_FLOOR = 0.1;
+        // Level 0 uses a gentler rolloff that only reaches the floor at maximum displacement
+        // (jitterMagnitude == 1.0). Higher levels keep the steep rolloff, still floored.
+        double rolloff = (level == 0) ? 0.9 : 2.0;
+        double twistScale = Math.max(TWIST_FLOOR, 1.0 - rolloff * jitterMagnitude);
 
         // Random twist angle in range [-maxTwist, +maxTwist], scaled by twist reduction
         double twistAngle = (rng.nextDouble() * 2.0 - 1.0) * maxTwist * twistScale;
