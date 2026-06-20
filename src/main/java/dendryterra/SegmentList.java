@@ -1029,7 +1029,11 @@ public class SegmentList {
         // More jitter (more displacement) -> less twist, to prevent tight S-curves.
         // A 10% floor guarantees segments retain some waviness even at maximum displacement,
         // avoiding intermittently dead-straight runs.
-        final double TWIST_FLOOR = 0.1;
+        double TWIST_FLOOR = 0.1;
+        if (level==0)
+        {
+            TWIST_FLOOR = 0.2;
+        }
         // Level 0 uses a gentler rolloff that only reaches the floor at maximum displacement
         // (jitterMagnitude == 1.0). Higher levels keep the steep rolloff, still floored.
         double rolloff = (level == 0) ? 0.9 : 2.0;
